@@ -1,0 +1,4 @@
+func add(a, b) : i32 = {
+    val sum = a + b
+    return sum
+}

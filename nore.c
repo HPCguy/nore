@@ -7,9 +7,30 @@
 /* ================================= Tokens ================================= */
 
 typedef enum {
-    TOKEN_EOF,
     TOKEN_NUMBER,
     TOKEN_IDENTIFIER,
+
+    TOKEN_FUNC,
+    TOKEN_VAL,
+    TOKEN_MUT,
+    TOKEN_RETURN,
+    TOKEN_VOID,
+    TOKEN_I32,
+
+    TOKEN_PLUS,
+    TOKEN_MINUS,
+    TOKEN_STAR,
+    TOKEN_SLASH,
+    TOKEN_EQUALS,
+
+    TOKEN_LPAREN,
+    TOKEN_RPAREN,
+    TOKEN_LBRACE,
+    TOKEN_RBRACE,
+    TOKEN_COLON,
+    TOKEN_COMMA,
+
+    TOKEN_EOF,
     TOKEN_ERROR
 } TokenKind;
 
@@ -154,11 +175,33 @@ static Token scan_number(Lexer *lexer) {
     return make_token(lexer, TOKEN_NUMBER);
 }
 
+static TokenKind identify_keyword(const char *start, size_t length) {
+    switch (length) {
+        case 3:
+            if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
+            if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
+            if (memcmp(start, "i32", 3) == 0) return TOKEN_I32;
+            break;
+        case 4:
+            if (memcmp(start, "func", 4) == 0) return TOKEN_FUNC;
+            if (memcmp(start, "void", 4) == 0) return TOKEN_VOID;
+            break;
+        case 6:
+            if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
+            break;
+    }
+    return TOKEN_IDENTIFIER;
+}
+
 static Token scan_identifier(Lexer *lexer) {
     while (is_alnum(peek(lexer)) || peek(lexer) == '_') {
         advance(lexer);
     }
-    return make_token(lexer, TOKEN_IDENTIFIER);
+
+    size_t length = lexer->current - lexer->start;
+    TokenKind kind = identify_keyword(lexer->start, length);
+
+    return make_token(lexer, kind);
 }
 
 Token lexer_next_token(Lexer *lexer) {
@@ -178,6 +221,20 @@ Token lexer_next_token(Lexer *lexer) {
 
     if (is_alpha(c) || c == '_') {
         return scan_identifier(lexer);
+    }
+
+    switch (c) {
+        case '(': return make_token(lexer, TOKEN_LPAREN);
+        case ')': return make_token(lexer, TOKEN_RPAREN);
+        case '{': return make_token(lexer, TOKEN_LBRACE);
+        case '}': return make_token(lexer, TOKEN_RBRACE);
+        case ':': return make_token(lexer, TOKEN_COLON);
+        case ',': return make_token(lexer, TOKEN_COMMA);
+        case '+': return make_token(lexer, TOKEN_PLUS);
+        case '-': return make_token(lexer, TOKEN_MINUS);
+        case '*': return make_token(lexer, TOKEN_STAR);
+        case '/': return make_token(lexer, TOKEN_SLASH);
+        case '=': return make_token(lexer, TOKEN_EQUALS);
     }
 
     return error_token(lexer, "Unexpected character");
@@ -207,6 +264,61 @@ int main(int argc, char **argv) {
             case TOKEN_IDENTIFIER:
                 printf("IDENTIFIER '%.*s'\n", (int)token.length, token.start);
                 break;
+
+            case TOKEN_FUNC:
+                printf("FUNC '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_VAL:
+                printf("VAL '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_MUT:
+                printf("MUT '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_RETURN:
+                printf("RETURN '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_VOID:
+                printf("VOID '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_I32:
+                printf("I32 '%.*s'\n", (int)token.length, token.start);
+                break;
+
+            case TOKEN_PLUS:
+                printf("PLUS '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_MINUS:
+                printf("MINUS '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_STAR:
+                printf("STAR '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_SLASH:
+                printf("SLASH '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_EQUALS:
+                printf("EQUALS '%.*s'\n", (int)token.length, token.start);
+                break;
+
+            case TOKEN_LPAREN:
+                printf("LPAREN '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_RPAREN:
+                printf("RPAREN '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_LBRACE:
+                printf("LBRACE '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_RBRACE:
+                printf("RBRACE '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_COLON:
+                printf("COLON '%.*s'\n", (int)token.length, token.start);
+                break;
+            case TOKEN_COMMA:
+                printf("COMMA '%.*s'\n", (int)token.length, token.start);
+                break;
+
             case TOKEN_EOF:
                 printf("EOF\n");
                 free(source);
