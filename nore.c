@@ -240,6 +240,248 @@ Token lexer_next_token(Lexer *lexer) {
     return error_token(lexer, "Unexpected character");
 }
 
+/* ================================== AST =================================== */
+
+typedef enum {
+    AST_NUMBER,
+    AST_IDENTIFIER,
+    AST_BINARY
+} AstKind;
+
+typedef enum {
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV
+} BinaryOp;
+
+typedef struct Ast {
+    AstKind kind;
+    union {
+        struct {
+            long value;
+        } number;
+
+        struct {
+            const char *start;
+            size_t length;
+        } identifier;
+
+        struct {
+            BinaryOp op;
+            struct Ast *left;
+            struct Ast *right;
+        } binary;
+    } as;
+} Ast;
+
+/* ============================== AST Allocators ============================ */
+
+static Ast *ast_make_number(long value) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_NUMBER;
+    node->as.number.value = value;
+    return node;
+}
+
+static Ast *ast_make_identifier(const char *start, size_t length) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_IDENTIFIER;
+    node->as.identifier.start = start;
+    node->as.identifier.length = length;
+    return node;
+}
+
+static Ast *ast_make_binary(BinaryOp op, Ast *left, Ast *right) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_BINARY;
+    node->as.binary.op = op;
+    node->as.binary.left = left;
+    node->as.binary.right = right;
+    return node;
+}
+
+static void ast_free(Ast *node) {
+    if (!node) return;
+    if (node->kind == AST_BINARY) {
+        ast_free(node->as.binary.left);
+        ast_free(node->as.binary.right);
+    }
+    free(node);
+}
+
+/* ================================= Parser ================================= */
+
+typedef struct {
+    Lexer *lexer;
+    Token current;
+    Token previous;
+} Parser;
+
+static void parser_advance(Parser *parser) {
+    parser->previous = parser->current;
+    parser->current = lexer_next_token(parser->lexer);
+}
+
+static void parser_init(Parser *parser, Lexer *lexer) {
+    parser->lexer = lexer;
+    parser->previous.kind = TOKEN_EOF;
+    parser_advance(parser);
+}
+
+static int parser_check(Parser *parser, TokenKind kind) {
+    return parser->current.kind == kind;
+}
+
+static int parser_match(Parser *parser, TokenKind kind) {
+    if (!parser_check(parser, kind)) {
+        return 0;
+    }
+    parser_advance(parser);
+    return 1;
+}
+
+static void parser_error(Parser *parser, const char *message) {
+    Token *token = &parser->current;
+    fprintf(stderr, "Error at line %zu col %zu: %s\n",
+            token->line, token->column, message);
+    exit(1);
+}
+
+static void parser_consume(Parser *parser, TokenKind kind, const char *msg) {
+    if (!parser_match(parser, kind)) {
+        parser_error(parser, msg);
+    }
+}
+
+/* ============================ Operator Precedence ========================= */
+
+static int get_precedence(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_STAR:
+        case TOKEN_SLASH:
+            return 2;
+        case TOKEN_PLUS:
+        case TOKEN_MINUS:
+            return 1;
+        default:
+            return -1;
+    }
+}
+
+static BinaryOp token_to_binary_op(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_PLUS:  return OP_ADD;
+        case TOKEN_MINUS: return OP_SUB;
+        case TOKEN_STAR:  return OP_MUL;
+        case TOKEN_SLASH: return OP_DIV;
+        default:
+            fprintf(stderr, "Internal error: not a binary operator\n");
+            exit(1);
+    }
+}
+
+/* ============================= Expression Parsing ========================= */
+
+static Ast *parse_expression(Parser *parser);
+
+static Ast *parse_primary(Parser *parser) {
+    if (parser_match(parser, TOKEN_NUMBER)) {
+        char buffer[32];
+        size_t len = parser->previous.length;
+        if (len >= sizeof(buffer)) {
+            parser_error(parser, "Number too large");
+        }
+        memcpy(buffer, parser->previous.start, len);
+        buffer[len] = '\0';
+        long value = strtol(buffer, NULL, 10);
+        return ast_make_number(value);
+    }
+
+    if (parser_match(parser, TOKEN_IDENTIFIER)) {
+        return ast_make_identifier(parser->previous.start, parser->previous.length);
+    }
+
+    if (parser_match(parser, TOKEN_LPAREN)) {
+        Ast *expr = parse_expression(parser);
+        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
+        return expr;
+    }
+
+    parser_error(parser, "Expected expression");
+    return NULL;
+}
+
+static Ast *parse_precedence(Parser *parser, int min_precedence) {
+    /* Parse left operand */
+    Ast *left = parse_primary(parser);
+
+    /* Consume operators while precedence is high enough */
+    while (get_precedence(parser->current.kind) >= min_precedence) {
+        TokenKind op_kind = parser->current.kind;
+        int precedence = get_precedence(op_kind);
+        parser_advance(parser);
+
+        /* Parse right operand with higher precedence for left associativity */
+        Ast *right = parse_precedence(parser, precedence + 1);
+
+        /* Combine into binary operation */
+        left = ast_make_binary(token_to_binary_op(op_kind), left, right);
+    }
+
+    return left;
+}
+
+static Ast *parse_expression(Parser *parser) {
+    return parse_precedence(parser, 0);
+}
+
+/* ============================== AST Printer =============================== */
+
+static void ast_print(Ast *node, int indent) {
+    if (!node) return;
+
+    for (int i = 0; i < indent; i++) {
+        printf("  ");
+    }
+
+    switch (node->kind) {
+        case AST_NUMBER:
+            printf("NUMBER(%ld)\n", node->as.number.value);
+            break;
+
+        case AST_IDENTIFIER:
+            printf("IDENTIFIER(%.*s)\n",
+                   (int)node->as.identifier.length,
+                   node->as.identifier.start);
+            break;
+
+        case AST_BINARY: {
+            const char *op_name;
+            switch (node->as.binary.op) {
+                case OP_ADD: op_name = "ADD"; break;
+                case OP_SUB: op_name = "SUB"; break;
+                case OP_MUL: op_name = "MUL"; break;
+                case OP_DIV: op_name = "DIV"; break;
+                default: op_name = "UNKNOWN"; break;
+            }
+            printf("BINARY(%s)\n", op_name);
+            ast_print(node->as.binary.left, indent + 1);
+            ast_print(node->as.binary.right, indent + 1);
+            break;
+        }
+    }
+}
+
 /* =================================== Main ================================= */
 
 int main(int argc, char **argv) {
@@ -253,81 +495,16 @@ int main(int argc, char **argv) {
     Lexer lexer;
     lexer_init(&lexer, source);
 
-    for (;;) {
-        Token token = lexer_next_token(&lexer);
+    Parser parser;
+    parser_init(&parser, &lexer);
 
-        printf("Line %zu Col %zu: ", token.line, token.column);
-        switch (token.kind) {
-            case TOKEN_NUMBER:
-                printf("NUMBER '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_IDENTIFIER:
-                printf("IDENTIFIER '%.*s'\n", (int)token.length, token.start);
-                break;
+    Ast *ast = parse_expression(&parser);
 
-            case TOKEN_FUNC:
-                printf("FUNC '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_VAL:
-                printf("VAL '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_MUT:
-                printf("MUT '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_RETURN:
-                printf("RETURN '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_VOID:
-                printf("VOID '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_I32:
-                printf("I32 '%.*s'\n", (int)token.length, token.start);
-                break;
+    ast_print(ast, 0);
 
-            case TOKEN_PLUS:
-                printf("PLUS '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_MINUS:
-                printf("MINUS '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_STAR:
-                printf("STAR '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_SLASH:
-                printf("SLASH '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_EQUALS:
-                printf("EQUALS '%.*s'\n", (int)token.length, token.start);
-                break;
+    ast_free(ast);
+    free(source);
 
-            case TOKEN_LPAREN:
-                printf("LPAREN '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_RPAREN:
-                printf("RPAREN '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_LBRACE:
-                printf("LBRACE '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_RBRACE:
-                printf("RBRACE '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_COLON:
-                printf("COLON '%.*s'\n", (int)token.length, token.start);
-                break;
-            case TOKEN_COMMA:
-                printf("COMMA '%.*s'\n", (int)token.length, token.start);
-                break;
-
-            case TOKEN_EOF:
-                printf("EOF\n");
-                free(source);
-                return 0;
-            case TOKEN_ERROR:
-                printf("ERROR '%.*s'\n", (int)token.length, token.start);
-                free(source);
-                return 1;
-        }
-    }
+    return 0;
 }
 
