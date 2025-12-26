@@ -16,3 +16,6 @@ nore
 # Debug files
 *.dSYM/
 core
+
+#tmp folder
+tmp
