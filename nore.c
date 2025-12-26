@@ -22,6 +22,12 @@ typedef enum {
     TOKEN_STAR,
     TOKEN_SLASH,
     TOKEN_EQUALS,
+    TOKEN_EQUAL_EQUAL,
+    TOKEN_BANG_EQUAL,
+    TOKEN_LESS,
+    TOKEN_GREATER,
+    TOKEN_LESS_EQUAL,
+    TOKEN_GREATER_EQUAL,
 
     TOKEN_LPAREN,
     TOKEN_RPAREN,
@@ -234,7 +240,30 @@ Token lexer_next_token(Lexer *lexer) {
         case '-': return make_token(lexer, TOKEN_MINUS);
         case '*': return make_token(lexer, TOKEN_STAR);
         case '/': return make_token(lexer, TOKEN_SLASH);
-        case '=': return make_token(lexer, TOKEN_EQUALS);
+        case '=':
+            if (peek(lexer) == '=') {
+                advance(lexer);
+                return make_token(lexer, TOKEN_EQUAL_EQUAL);
+            }
+            return make_token(lexer, TOKEN_EQUALS);
+        case '!':
+            if (peek(lexer) == '=') {
+                advance(lexer);
+                return make_token(lexer, TOKEN_BANG_EQUAL);
+            }
+            return error_token(lexer, "Unexpected character '!'");
+        case '<':
+            if (peek(lexer) == '=') {
+                advance(lexer);
+                return make_token(lexer, TOKEN_LESS_EQUAL);
+            }
+            return make_token(lexer, TOKEN_LESS);
+        case '>':
+            if (peek(lexer) == '=') {
+                advance(lexer);
+                return make_token(lexer, TOKEN_GREATER_EQUAL);
+            }
+            return make_token(lexer, TOKEN_GREATER);
     }
 
     return error_token(lexer, "Unexpected character");
@@ -245,15 +274,26 @@ Token lexer_next_token(Lexer *lexer) {
 typedef enum {
     AST_NUMBER,
     AST_IDENTIFIER,
-    AST_BINARY
+    AST_BINARY,
+    AST_UNARY
 } AstKind;
 
 typedef enum {
     OP_ADD,
     OP_SUB,
     OP_MUL,
-    OP_DIV
+    OP_DIV,
+    OP_EQ,
+    OP_NEQ,
+    OP_LT,
+    OP_GT,
+    OP_LE,
+    OP_GE
 } BinaryOp;
+
+typedef enum {
+    OP_NEG
+} UnaryOp;
 
 typedef struct Ast {
     AstKind kind;
@@ -272,6 +312,11 @@ typedef struct Ast {
             struct Ast *left;
             struct Ast *right;
         } binary;
+
+        struct {
+            UnaryOp op;
+            struct Ast *operand;
+        } unary;
     } as;
 } Ast;
 
@@ -310,11 +355,25 @@ static Ast *ast_make_binary(BinaryOp op, Ast *left, Ast *right) {
     return node;
 }
 
+static Ast *ast_make_unary(UnaryOp op, Ast *operand) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_UNARY;
+    node->as.unary.op = op;
+    node->as.unary.operand = operand;
+    return node;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
     if (node->kind == AST_BINARY) {
         ast_free(node->as.binary.left);
         ast_free(node->as.binary.right);
+    }
+    if (node->kind == AST_UNARY) {
+        ast_free(node->as.unary.operand);
     }
     free(node);
 }
@@ -373,6 +432,13 @@ static int get_precedence(TokenKind kind) {
         case TOKEN_PLUS:
         case TOKEN_MINUS:
             return 1;
+        case TOKEN_EQUAL_EQUAL:
+        case TOKEN_BANG_EQUAL:
+        case TOKEN_LESS:
+        case TOKEN_GREATER:
+        case TOKEN_LESS_EQUAL:
+        case TOKEN_GREATER_EQUAL:
+            return 0;
         default:
             return -1;
     }
@@ -380,10 +446,16 @@ static int get_precedence(TokenKind kind) {
 
 static BinaryOp token_to_binary_op(TokenKind kind) {
     switch (kind) {
-        case TOKEN_PLUS:  return OP_ADD;
-        case TOKEN_MINUS: return OP_SUB;
-        case TOKEN_STAR:  return OP_MUL;
-        case TOKEN_SLASH: return OP_DIV;
+        case TOKEN_PLUS:           return OP_ADD;
+        case TOKEN_MINUS:          return OP_SUB;
+        case TOKEN_STAR:           return OP_MUL;
+        case TOKEN_SLASH:          return OP_DIV;
+        case TOKEN_EQUAL_EQUAL:    return OP_EQ;
+        case TOKEN_BANG_EQUAL:     return OP_NEQ;
+        case TOKEN_LESS:           return OP_LT;
+        case TOKEN_GREATER:        return OP_GT;
+        case TOKEN_LESS_EQUAL:     return OP_LE;
+        case TOKEN_GREATER_EQUAL:  return OP_GE;
         default:
             fprintf(stderr, "Internal error: not a binary operator\n");
             exit(1);
@@ -395,6 +467,12 @@ static BinaryOp token_to_binary_op(TokenKind kind) {
 static Ast *parse_expression(Parser *parser);
 
 static Ast *parse_primary(Parser *parser) {
+    /* Handle unary minus */
+    if (parser_match(parser, TOKEN_MINUS)) {
+        Ast *operand = parse_primary(parser);
+        return ast_make_unary(OP_NEG, operand);
+    }
+
     if (parser_match(parser, TOKEN_NUMBER)) {
         char buffer[32];
         size_t len = parser->previous.length;
@@ -472,11 +550,28 @@ static void ast_print(Ast *node, int indent) {
                 case OP_SUB: op_name = "SUB"; break;
                 case OP_MUL: op_name = "MUL"; break;
                 case OP_DIV: op_name = "DIV"; break;
+                case OP_EQ:  op_name = "EQ"; break;
+                case OP_NEQ: op_name = "NEQ"; break;
+                case OP_LT:  op_name = "LT"; break;
+                case OP_GT:  op_name = "GT"; break;
+                case OP_LE:  op_name = "LE"; break;
+                case OP_GE:  op_name = "GE"; break;
                 default: op_name = "UNKNOWN"; break;
             }
             printf("BINARY(%s)\n", op_name);
             ast_print(node->as.binary.left, indent + 1);
             ast_print(node->as.binary.right, indent + 1);
+            break;
+        }
+
+        case AST_UNARY: {
+            const char *op_name;
+            switch (node->as.unary.op) {
+                case OP_NEG: op_name = "NEG"; break;
+                default: op_name = "UNKNOWN"; break;
+            }
+            printf("UNARY(%s)\n", op_name);
+            ast_print(node->as.unary.operand, indent + 1);
             break;
         }
     }
