@@ -3,6 +3,8 @@
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 /* ================================= Tokens ================================= */
 
@@ -378,6 +380,107 @@ static void ast_free(Ast *node) {
     free(node);
 }
 
+/* ============================ Code Generation ============================= */
+
+static void codegen_emit_expression(FILE *out, Ast *node);
+
+static void codegen_emit_expression(FILE *out, Ast *node) {
+    switch (node->kind) {
+        case AST_NUMBER:
+            fprintf(out, "%ldL", node->as.number.value);
+            break;
+
+        case AST_IDENTIFIER:
+            fprintf(out, "%.*s", (int)node->as.identifier.length,
+                    node->as.identifier.start);
+            break;
+
+        case AST_BINARY: {
+            fprintf(out, "(");
+            codegen_emit_expression(out, node->as.binary.left);
+
+            switch (node->as.binary.op) {
+                case OP_ADD: fprintf(out, " + "); break;
+                case OP_SUB: fprintf(out, " - "); break;
+                case OP_MUL: fprintf(out, " * "); break;
+                case OP_DIV: fprintf(out, " / "); break;
+                case OP_EQ:  fprintf(out, " == "); break;
+                case OP_NEQ: fprintf(out, " != "); break;
+                case OP_LT:  fprintf(out, " < "); break;
+                case OP_GT:  fprintf(out, " > "); break;
+                case OP_LE:  fprintf(out, " <= "); break;
+                case OP_GE:  fprintf(out, " >= "); break;
+            }
+
+            codegen_emit_expression(out, node->as.binary.right);
+            fprintf(out, ")");
+            break;
+        }
+
+        case AST_UNARY: {
+            fprintf(out, "(");
+            switch (node->as.unary.op) {
+                case OP_NEG: fprintf(out, "-"); break;
+            }
+            codegen_emit_expression(out, node->as.unary.operand);
+            fprintf(out, ")");
+            break;
+        }
+    }
+}
+
+static void compile_with_clang(const char *c_source_path, const char *binary_path) {
+    char command[1024];
+    int written = snprintf(command, sizeof(command),
+                          "clang -std=c99 -O2 -o '%s' '%s' 2>&1",
+                          binary_path, c_source_path);
+
+    if (written < 0 || written >= (int)sizeof(command)) {
+        error("Command buffer too small");
+    }
+
+    int status = system(command);
+
+    if (status != 0) {
+        error("Clang compilation failed with exit code %d",
+              WEXITSTATUS(status));
+    }
+}
+
+static void codegen_compile(Ast *ast, const char *output_path) {
+    /* Create temporary C file */
+    char temp_path[] = "/tmp/nore_XXXXXX.c";
+    int fd = mkstemps(temp_path, 2);
+    if (fd == -1) {
+        error("Failed to create temporary file: %s", strerror(errno));
+    }
+
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        close(fd);
+        unlink(temp_path);
+        error("Failed to open temporary file: %s", strerror(errno));
+    }
+
+    /* Generate C program */
+    fprintf(out, "#include <stdio.h>\n");
+    fprintf(out, "int main() {\n");
+    fprintf(out, "    long result = ");
+    codegen_emit_expression(out, ast);
+    fprintf(out, ";\n");
+    fprintf(out, "    printf(\"%%ld\\n\", result);\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+
+    fclose(out);
+
+    /* Compile with Clang */
+    compile_with_clang(temp_path, output_path);
+
+    /* Cleanup temporary file */
+    unlink(temp_path);
+}
+
 /* ================================= Parser ================================= */
 
 typedef struct {
@@ -524,7 +627,7 @@ static Ast *parse_expression(Parser *parser) {
 }
 
 /* ============================== AST Printer =============================== */
-
+/* Commented out - not currently used, but useful for debugging
 static void ast_print(Ast *node, int indent) {
     if (!node) return;
 
@@ -576,16 +679,38 @@ static void ast_print(Ast *node, int indent) {
         }
     }
 }
+*/
 
 /* =================================== Main ================================= */
 
 int main(int argc, char **argv) {
-    if (argc != 2) {
-        error("Usage: %s <file.nore>", argv[0]);
+    if (argc < 2 || argc > 4) {
+        error("Usage: %s <file.nore> [-o output]", argv[0]);
     }
 
+    const char *input_path = argv[1];
+
+    /* Determine output path */
+    char output_path[256];
+    if (argc == 4 && strcmp(argv[2], "-o") == 0) {
+        strncpy(output_path, argv[3], sizeof(output_path) - 1);
+        output_path[sizeof(output_path) - 1] = '\0';
+    } else {
+        /* Strip .nore extension or use a.out */
+        const char *base = strrchr(input_path, '/');
+        base = base ? base + 1 : input_path;
+        const char *dot = strrchr(base, '.');
+        if (dot && strcmp(dot, ".nore") == 0) {
+            snprintf(output_path, sizeof(output_path), "%.*s",
+                    (int)(dot - base), base);
+        } else {
+            snprintf(output_path, sizeof(output_path), "a.out");
+        }
+    }
+
+    /* Parse expression */
     size_t length;
-    char *source = read_file(argv[1], &length);
+    char *source = read_file(input_path, &length);
 
     Lexer lexer;
     lexer_init(&lexer, source);
@@ -595,8 +720,10 @@ int main(int argc, char **argv) {
 
     Ast *ast = parse_expression(&parser);
 
-    ast_print(ast, 0);
+    /* Generate and compile */
+    codegen_compile(ast, output_path);
 
+    /* Cleanup */
     ast_free(ast);
     free(source);
 
