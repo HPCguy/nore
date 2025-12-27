@@ -6,6 +6,61 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
+/* ================================= Errors ================================= */
+
+void error(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    fprintf(stderr, "Error: ");
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+    exit(1);
+}
+
+/* ================================== Files ================================= */
+
+char *read_file(const char *path, size_t *out_length) {
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        error("Could not open file '%s': %s", path, strerror(errno));
+    }
+
+    fseek(file, 0, SEEK_END);
+    size_t length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    char *buffer = malloc(length + 1);
+    if (!buffer) {
+        error("Could not allocate memory for file '%s'", path);
+    }
+
+    size_t bytes_read = fread(buffer, 1, length, file);
+    if (bytes_read != length) {
+        error("Could not read file '%s'", path);
+    }
+
+    buffer[length] = '\0';
+    fclose(file);
+
+    *out_length = length;
+    return buffer;
+}
+
+/* ================================== Chars ================================= */
+
+static int is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+static int is_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static int is_alnum(char c) {
+    return is_alpha(c) || is_digit(c);
+}
+
 /* ================================= Tokens ================================= */
 
 typedef enum {
@@ -101,64 +156,7 @@ static void lexer_init(Lexer *lexer, const char *source) {
     lexer->column = 1;
 }
 
-/* ================================== Chars ================================= */
-
-static int is_digit(char c) {
-    return c >= '0' && c <= '9';
-}
-
-static int is_alpha(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
-
-static int is_alnum(char c) {
-    return is_alpha(c) || is_digit(c);
-}
-
-/* ================================= Errors ================================= */
-
-void error(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    fprintf(stderr, "Error: ");
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-    va_end(args);
-    exit(1);
-}
-
-/* ================================== Files ================================= */
-
-char *read_file(const char *path, size_t *out_length) {
-    FILE *file = fopen(path, "rb");
-    if (!file) {
-        error("Could not open file '%s': %s", path, strerror(errno));
-    }
-
-    fseek(file, 0, SEEK_END);
-    size_t length = ftell(file);
-    fseek(file, 0, SEEK_SET);
-
-    char *buffer = malloc(length + 1);
-    if (!buffer) {
-        error("Could not allocate memory for file '%s'", path);
-    }
-
-    size_t bytes_read = fread(buffer, 1, length, file);
-    if (bytes_read != length) {
-        error("Could not read file '%s'", path);
-    }
-
-    buffer[length] = '\0';
-    fclose(file);
-
-    *out_length = length;
-    return buffer;
-}
-
-/* ================================ Tokenizing ============================== */
-
-static Token make_token(Lexer *lexer, TokenKind kind) {
+static Token lexer_make_token(Lexer *lexer, TokenKind kind) {
     Token token;
     token.kind = kind;
     token.start = lexer->start;
@@ -168,7 +166,7 @@ static Token make_token(Lexer *lexer, TokenKind kind) {
     return token;
 }
 
-static Token error_token(Lexer *lexer, const char *message) {
+static Token lexer_error_token(Lexer *lexer, const char *message) {
     Token token;
     token.kind = TOKEN_ERROR;
     token.start = message;
@@ -178,11 +176,11 @@ static Token error_token(Lexer *lexer, const char *message) {
     return token;
 }
 
-static char peek(Lexer *lexer) {
+static char lexer_peek(Lexer *lexer) {
     return *lexer->current;
 }
 
-static char advance(Lexer *lexer) {
+static char lexer_advance(Lexer *lexer) {
     char c = *lexer->current++;
     if (c == '\n') {
         lexer->line++;
@@ -193,15 +191,15 @@ static char advance(Lexer *lexer) {
     return c;
 }
 
-static void skip_whitespace(Lexer *lexer) {
+static void lexer_skip_whitespace(Lexer *lexer) {
     for (;;) {
-        char c = peek(lexer);
+        char c = lexer_peek(lexer);
         switch (c) {
             case ' ':
             case '\t':
             case '\r':
             case '\n':
-                advance(lexer);
+                lexer_advance(lexer);
                 break;
             default:
                 return;
@@ -209,14 +207,14 @@ static void skip_whitespace(Lexer *lexer) {
     }
 }
 
-static Token scan_number(Lexer *lexer) {
-    while (is_digit(peek(lexer))) {
-        advance(lexer);
+static Token lexer_scan_number(Lexer *lexer) {
+    while (is_digit(lexer_peek(lexer))) {
+        lexer_advance(lexer);
     }
-    return make_token(lexer, TOKEN_NUMBER);
+    return lexer_make_token(lexer, TOKEN_NUMBER);
 }
 
-static TokenKind identify_keyword(const char *start, size_t length) {
+static TokenKind lexer_identify_keyword(const char *start, size_t length) {
     switch (length) {
         case 3:
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
@@ -234,76 +232,74 @@ static TokenKind identify_keyword(const char *start, size_t length) {
     return TOKEN_IDENTIFIER;
 }
 
-static Token scan_identifier(Lexer *lexer) {
-    while (is_alnum(peek(lexer)) || peek(lexer) == '_') {
-        advance(lexer);
+static Token lexer_scan_identifier(Lexer *lexer) {
+    while (is_alnum(lexer_peek(lexer)) || lexer_peek(lexer) == '_') {
+        lexer_advance(lexer);
     }
 
     size_t length = lexer->current - lexer->start;
-    TokenKind kind = identify_keyword(lexer->start, length);
+    TokenKind kind = lexer_identify_keyword(lexer->start, length);
 
-    return make_token(lexer, kind);
+    return lexer_make_token(lexer, kind);
 }
 
-static void lexer_print_tokens(Lexer *lexer, const char *source);
-
 Token lexer_next_token(Lexer *lexer) {
-    skip_whitespace(lexer);
+    lexer_skip_whitespace(lexer);
 
     lexer->start = lexer->current;
 
-    char c = advance(lexer);
+    char c = lexer_advance(lexer);
 
     if (c == '\0') {
-        return make_token(lexer, TOKEN_EOF);
+        return lexer_make_token(lexer, TOKEN_EOF);
     }
 
     if (is_digit(c)) {
-        return scan_number(lexer);
+        return lexer_scan_number(lexer);
     }
 
     if (is_alpha(c) || c == '_') {
-        return scan_identifier(lexer);
+        return lexer_scan_identifier(lexer);
     }
 
     switch (c) {
-        case '(': return make_token(lexer, TOKEN_LPAREN);
-        case ')': return make_token(lexer, TOKEN_RPAREN);
-        case '{': return make_token(lexer, TOKEN_LBRACE);
-        case '}': return make_token(lexer, TOKEN_RBRACE);
-        case ':': return make_token(lexer, TOKEN_COLON);
-        case ',': return make_token(lexer, TOKEN_COMMA);
-        case '+': return make_token(lexer, TOKEN_PLUS);
-        case '-': return make_token(lexer, TOKEN_MINUS);
-        case '*': return make_token(lexer, TOKEN_STAR);
-        case '/': return make_token(lexer, TOKEN_SLASH);
+        case '(': return lexer_make_token(lexer, TOKEN_LPAREN);
+        case ')': return lexer_make_token(lexer, TOKEN_RPAREN);
+        case '{': return lexer_make_token(lexer, TOKEN_LBRACE);
+        case '}': return lexer_make_token(lexer, TOKEN_RBRACE);
+        case ':': return lexer_make_token(lexer, TOKEN_COLON);
+        case ',': return lexer_make_token(lexer, TOKEN_COMMA);
+        case '+': return lexer_make_token(lexer, TOKEN_PLUS);
+        case '-': return lexer_make_token(lexer, TOKEN_MINUS);
+        case '*': return lexer_make_token(lexer, TOKEN_STAR);
+        case '/': return lexer_make_token(lexer, TOKEN_SLASH);
         case '=':
-            if (peek(lexer) == '=') {
-                advance(lexer);
-                return make_token(lexer, TOKEN_EQUAL_EQUAL);
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_EQUAL_EQUAL);
             }
-            return make_token(lexer, TOKEN_EQUALS);
+            return lexer_make_token(lexer, TOKEN_EQUALS);
         case '!':
-            if (peek(lexer) == '=') {
-                advance(lexer);
-                return make_token(lexer, TOKEN_BANG_EQUAL);
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_BANG_EQUAL);
             }
-            return error_token(lexer, "Unexpected character '!'");
+            return lexer_error_token(lexer, "Unexpected character '!'");
         case '<':
-            if (peek(lexer) == '=') {
-                advance(lexer);
-                return make_token(lexer, TOKEN_LESS_EQUAL);
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_LESS_EQUAL);
             }
-            return make_token(lexer, TOKEN_LESS);
+            return lexer_make_token(lexer, TOKEN_LESS);
         case '>':
-            if (peek(lexer) == '=') {
-                advance(lexer);
-                return make_token(lexer, TOKEN_GREATER_EQUAL);
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_GREATER_EQUAL);
             }
-            return make_token(lexer, TOKEN_GREATER);
+            return lexer_make_token(lexer, TOKEN_GREATER);
     }
 
-    return error_token(lexer, "Unexpected character");
+    return lexer_error_token(lexer, "Unexpected character");
 }
 
 static void lexer_print_tokens(Lexer *lexer, const char *source) {
@@ -478,7 +474,7 @@ static void parser_consume(Parser *parser, TokenKind kind, const char *msg) {
 
 /* ============================ Operator Precedence ========================= */
 
-static int get_precedence(TokenKind kind) {
+static int parser_get_precedence(TokenKind kind) {
     switch (kind) {
         case TOKEN_STAR:
         case TOKEN_SLASH:
@@ -498,7 +494,7 @@ static int get_precedence(TokenKind kind) {
     }
 }
 
-static BinaryOp token_to_binary_op(TokenKind kind) {
+static BinaryOp parser_token_to_binary_op(TokenKind kind) {
     switch (kind) {
         case TOKEN_PLUS:           return OP_ADD;
         case TOKEN_MINUS:          return OP_SUB;
@@ -518,12 +514,12 @@ static BinaryOp token_to_binary_op(TokenKind kind) {
 
 /* ============================= Expression Parsing ========================= */
 
-static Ast *parse_expression(Parser *parser);
+static Ast *parser_parse_expression(Parser *parser);
 
-static Ast *parse_primary(Parser *parser) {
+static Ast *parser_parse_primary(Parser *parser) {
     /* Handle unary minus */
     if (parser_match(parser, TOKEN_MINUS)) {
-        Ast *operand = parse_primary(parser);
+        Ast *operand = parser_parse_primary(parser);
         return ast_make_unary(OP_NEG, operand);
     }
 
@@ -544,7 +540,7 @@ static Ast *parse_primary(Parser *parser) {
     }
 
     if (parser_match(parser, TOKEN_LPAREN)) {
-        Ast *expr = parse_expression(parser);
+        Ast *expr = parser_parse_expression(parser);
         parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
         return expr;
     }
@@ -553,33 +549,33 @@ static Ast *parse_primary(Parser *parser) {
     return NULL;
 }
 
-static Ast *parse_precedence(Parser *parser, int min_precedence) {
+static Ast *parser_parse_precedence(Parser *parser, int min_precedence) {
     /* Parse left operand */
-    Ast *left = parse_primary(parser);
+    Ast *left = parser_parse_primary(parser);
 
     /* Consume operators while precedence is high enough */
-    while (get_precedence(parser->current.kind) >= min_precedence) {
+    while (parser_get_precedence(parser->current.kind) >= min_precedence) {
         TokenKind op_kind = parser->current.kind;
-        int precedence = get_precedence(op_kind);
+        int precedence = parser_get_precedence(op_kind);
         parser_advance(parser);
 
         /* Parse right operand with higher precedence for left associativity */
-        Ast *right = parse_precedence(parser, precedence + 1);
+        Ast *right = parser_parse_precedence(parser, precedence + 1);
 
         /* Combine into binary operation */
-        left = ast_make_binary(token_to_binary_op(op_kind), left, right);
+        left = ast_make_binary(parser_token_to_binary_op(op_kind), left, right);
     }
 
     return left;
 }
 
-static Ast *parse_expression(Parser *parser) {
-    return parse_precedence(parser, 0);
+static Ast *parser_parse_expression(Parser *parser) {
+    return parser_parse_precedence(parser, 0);
 }
 
 /* ============================== AST Printer =============================== */
 
-static void ast_print(Ast *node, int indent) {
+static void parser_print_ast_block(Ast *node, int indent) {
     if (!node) return;
 
     for (int i = 0; i < indent; i++) {
@@ -613,8 +609,8 @@ static void ast_print(Ast *node, int indent) {
                 default: op_name = "UNKNOWN"; break;
             }
             printf("BINARY(%s)\n", op_name);
-            ast_print(node->as.binary.left, indent + 1);
-            ast_print(node->as.binary.right, indent + 1);
+            parser_print_ast_block(node->as.binary.left, indent + 1);
+            parser_print_ast_block(node->as.binary.right, indent + 1);
             break;
         }
 
@@ -625,17 +621,21 @@ static void ast_print(Ast *node, int indent) {
                 default: op_name = "UNKNOWN"; break;
             }
             printf("UNARY(%s)\n", op_name);
-            ast_print(node->as.unary.operand, indent + 1);
+            parser_print_ast_block(node->as.unary.operand, indent + 1);
             break;
         }
     }
 }
 
+static void parser_print_ast(Ast *ast) {
+    printf("=== AST ===\n");
+    parser_print_ast_block(ast, 0);
+    printf("\n");
+}
 
 /* ============================ Code Generation ============================= */
 
 static void codegen_emit_expression(FILE *out, Ast *node);
-static void codegen_print(Ast *ast);
 
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
@@ -682,7 +682,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
     }
 }
 
-static void codegen_print(Ast *ast) {
+static void codegen_print_ir(Ast *ast) {
     printf("=== IR (C CODE) ===\n");
     printf("#include <stdio.h>\n");
     printf("int main() {\n");
@@ -695,7 +695,7 @@ static void codegen_print(Ast *ast) {
     printf("\n");
 }
 
-static void compile_with_clang(const char *c_source_path, const char *binary_path) {
+static void codegen_compile_with_clang(const char *c_source_path, const char *binary_path) {
     char command[1024];
     int written = snprintf(command, sizeof(command),
                           "clang -std=c99 -O2 -o '%s' '%s' 2>&1",
@@ -741,7 +741,7 @@ static void codegen_compile(Ast *ast, const char *output_path) {
     fclose(out);
 
     /* Compile with Clang */
-    compile_with_clang(temp_path, output_path);
+    codegen_compile_with_clang(temp_path, output_path);
 
     /* Cleanup temporary file */
     unlink(temp_path);
@@ -759,7 +759,7 @@ typedef struct {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        error("Usage: %s <file.nore> [--lex] [--parse] [--ir] [-o output]", argv[0]);
+        error("Usage: %s <file.nore> [--lexer] [--parser] [--codegen] [-o output]", argv[0]);
     }
 
     const char *input_path = NULL;
@@ -768,11 +768,11 @@ int main(int argc, char **argv) {
 
     /* Parse command-line arguments */
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--lex") == 0) {
+        if (strcmp(argv[i], "--lexer") == 0) {
             flags.print_tokens = 1;
-        } else if (strcmp(argv[i], "--parse") == 0) {
+        } else if (strcmp(argv[i], "--parser") == 0) {
             flags.print_ast = 1;
-        } else if (strcmp(argv[i], "--ir") == 0) {
+        } else if (strcmp(argv[i], "--codegen") == 0) {
             flags.print_ir = 1;
         } else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
@@ -818,7 +818,7 @@ int main(int argc, char **argv) {
     Lexer lexer;
     lexer_init(&lexer, source);
 
-    /* --lex: Print tokens */
+    /* --lexer: Print tokens */
     if (flags.print_tokens) {
         lexer_print_tokens(&lexer, source);
     }
@@ -826,18 +826,16 @@ int main(int argc, char **argv) {
     /* Parse expression */
     Parser parser;
     parser_init(&parser, &lexer);
-    Ast *ast = parse_expression(&parser);
+    Ast *ast = parser_parse_expression(&parser);
 
-    /* --parse: Print AST */
+    /* --parser: Print AST */
     if (flags.print_ast) {
-        printf("=== AST ===\n");
-        ast_print(ast, 0);
-        printf("\n");
+        parser_print_ast(ast);
     }
 
-    /* --ir: Print intermediate C code */
+    /* --codegen: Print intermediate C code */
     if (flags.print_ir) {
-        codegen_print(ast);
+        codegen_print_ir(ast);
     }
 
     /* Skip compilation if any debug flag is set */
