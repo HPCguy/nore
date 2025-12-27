@@ -1,4 +1,0 @@
-func calc() : i32 = {
-    val result = 5 + 3 * 2
-    return result
-}

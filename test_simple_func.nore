@@ -1,4 +1,0 @@
-func main() : void = {
-    val x = 42
-    return x
-}

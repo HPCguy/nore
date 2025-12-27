@@ -1,5 +1,0 @@
-func counter() : i32 = {
-    mut count : i32 = 0
-    count = count + 1
-    return count
-}
