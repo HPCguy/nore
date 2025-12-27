@@ -325,7 +325,11 @@ typedef enum {
     AST_NUMBER,
     AST_IDENTIFIER,
     AST_BINARY,
-    AST_UNARY
+    AST_UNARY,
+    AST_VAL_DECL,
+    AST_MUT_DECL,
+    AST_RETURN,
+    AST_PROGRAM
 } AstKind;
 
 typedef enum {
@@ -367,6 +371,28 @@ typedef struct Ast {
             UnaryOp op;
             struct Ast *operand;
         } unary;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            struct Ast *initializer;
+        } val_decl;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            struct Ast *initializer;
+        } mut_decl;
+
+        struct {
+            struct Ast *value;
+        } return_stmt;
+
+        struct {
+            struct Ast **statements;
+            size_t count;
+            size_t capacity;
+        } program;
     } as;
 } Ast;
 
@@ -416,6 +442,75 @@ static Ast *ast_make_unary(UnaryOp op, Ast *operand) {
     return node;
 }
 
+static Ast *ast_make_val_decl(const char *name_start, size_t name_length, Ast *initializer) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_VAL_DECL;
+    node->as.val_decl.name_start = name_start;
+    node->as.val_decl.name_length = name_length;
+    node->as.val_decl.initializer = initializer;
+    return node;
+}
+
+static Ast *ast_make_mut_decl(const char *name_start, size_t name_length, Ast *initializer) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_MUT_DECL;
+    node->as.mut_decl.name_start = name_start;
+    node->as.mut_decl.name_length = name_length;
+    node->as.mut_decl.initializer = initializer;
+    return node;
+}
+
+static Ast *ast_make_return(Ast *value) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_RETURN;
+    node->as.return_stmt.value = value;
+    return node;
+}
+
+static Ast *ast_make_program(void) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        error("Out of memory allocating AST node");
+    }
+    node->kind = AST_PROGRAM;
+    node->as.program.statements = malloc(8 * sizeof(Ast*));
+    if (!node->as.program.statements) {
+        free(node);
+        error("Out of memory allocating program statements");
+    }
+    node->as.program.count = 0;
+    node->as.program.capacity = 8;
+    return node;
+}
+
+static void ast_program_add_statement(Ast *program, Ast *statement) {
+    if (program->kind != AST_PROGRAM) {
+        error("Internal error: ast_program_add_statement called on non-program node");
+    }
+
+    if (program->as.program.count >= program->as.program.capacity) {
+        size_t new_capacity = program->as.program.capacity * 2;
+        Ast **new_statements = realloc(program->as.program.statements,
+                                       new_capacity * sizeof(Ast*));
+        if (!new_statements) {
+            error("Out of memory growing program statements");
+        }
+        program->as.program.statements = new_statements;
+        program->as.program.capacity = new_capacity;
+    }
+
+    program->as.program.statements[program->as.program.count++] = statement;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
     if (node->kind == AST_BINARY) {
@@ -424,6 +519,21 @@ static void ast_free(Ast *node) {
     }
     if (node->kind == AST_UNARY) {
         ast_free(node->as.unary.operand);
+    }
+    if (node->kind == AST_VAL_DECL) {
+        ast_free(node->as.val_decl.initializer);
+    }
+    if (node->kind == AST_MUT_DECL) {
+        ast_free(node->as.mut_decl.initializer);
+    }
+    if (node->kind == AST_RETURN) {
+        ast_free(node->as.return_stmt.value);
+    }
+    if (node->kind == AST_PROGRAM) {
+        for (size_t i = 0; i < node->as.program.count; i++) {
+            ast_free(node->as.program.statements[i]);
+        }
+        free(node->as.program.statements);
     }
     free(node);
 }
@@ -573,9 +683,92 @@ static Ast *parser_parse_expression(Parser *parser) {
     return parser_parse_precedence(parser, 0);
 }
 
+/* ============================= Statement Parsing ========================== */
+
+static Ast *parser_parse_val_declaration(Parser *parser) {
+    /* Already consumed TOKEN_VAL */
+
+    /* Expect identifier */
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        parser_error(parser, "Expected identifier after 'val'");
+    }
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Expect '=' */
+    parser_consume(parser, TOKEN_EQUALS, "Expected '=' in val declaration");
+
+    /* Parse initializer expression */
+    Ast *initializer = parser_parse_expression(parser);
+
+    return ast_make_val_decl(name_start, name_length, initializer);
+}
+
+static Ast *parser_parse_mut_declaration(Parser *parser) {
+    /* Already consumed TOKEN_MUT */
+
+    /* Expect identifier */
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        parser_error(parser, "Expected identifier after 'mut'");
+    }
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Expect '=' */
+    parser_consume(parser, TOKEN_EQUALS, "Expected '=' in mut declaration");
+
+    /* Parse initializer expression */
+    Ast *initializer = parser_parse_expression(parser);
+
+    return ast_make_mut_decl(name_start, name_length, initializer);
+}
+
+static Ast *parser_parse_return(Parser *parser) {
+    /* Already consumed TOKEN_RETURN */
+
+    /* Parse return value expression */
+    Ast *value = parser_parse_expression(parser);
+
+    return ast_make_return(value);
+}
+
+static Ast *parser_parse_statement(Parser *parser) {
+    if (parser_match(parser, TOKEN_VAL)) {
+        return parser_parse_val_declaration(parser);
+    }
+
+    if (parser_match(parser, TOKEN_MUT)) {
+        return parser_parse_mut_declaration(parser);
+    }
+
+    if (parser_match(parser, TOKEN_RETURN)) {
+        return parser_parse_return(parser);
+    }
+
+    if (parser_check(parser, TOKEN_EOF)) {
+        return NULL;
+    }
+
+    parser_error(parser, "Expected statement (val, mut, or return)");
+    return NULL;
+}
+
+static Ast *parser_parse_program(Parser *parser) {
+    Ast *program = ast_make_program();
+
+    while (!parser_check(parser, TOKEN_EOF)) {
+        Ast *statement = parser_parse_statement(parser);
+        if (statement) {
+            ast_program_add_statement(program, statement);
+        }
+    }
+
+    return program;
+}
+
 /* ============================== AST Printer =============================== */
 
-static void parser_print_ast_block(Ast *node, int indent) {
+static void parser_print_ast_step(Ast *node, int indent) {
     if (!node) return;
 
     for (int i = 0; i < indent; i++) {
@@ -609,8 +802,8 @@ static void parser_print_ast_block(Ast *node, int indent) {
                 default: op_name = "UNKNOWN"; break;
             }
             printf("BINARY(%s)\n", op_name);
-            parser_print_ast_block(node->as.binary.left, indent + 1);
-            parser_print_ast_block(node->as.binary.right, indent + 1);
+            parser_print_ast_step(node->as.binary.left, indent + 1);
+            parser_print_ast_step(node->as.binary.right, indent + 1);
             break;
         }
 
@@ -621,15 +814,41 @@ static void parser_print_ast_block(Ast *node, int indent) {
                 default: op_name = "UNKNOWN"; break;
             }
             printf("UNARY(%s)\n", op_name);
-            parser_print_ast_block(node->as.unary.operand, indent + 1);
+            parser_print_ast_step(node->as.unary.operand, indent + 1);
             break;
         }
+
+        case AST_VAL_DECL:
+            printf("VAL_DECL(%.*s)\n",
+                   (int)node->as.val_decl.name_length,
+                   node->as.val_decl.name_start);
+            parser_print_ast_step(node->as.val_decl.initializer, indent + 1);
+            break;
+
+        case AST_MUT_DECL:
+            printf("MUT_DECL(%.*s)\n",
+                   (int)node->as.mut_decl.name_length,
+                   node->as.mut_decl.name_start);
+            parser_print_ast_step(node->as.mut_decl.initializer, indent + 1);
+            break;
+
+        case AST_RETURN:
+            printf("RETURN\n");
+            parser_print_ast_step(node->as.return_stmt.value, indent + 1);
+            break;
+
+        case AST_PROGRAM:
+            printf("PROGRAM\n");
+            for (size_t i = 0; i < node->as.program.count; i++) {
+                parser_print_ast_step(node->as.program.statements[i], indent + 1);
+            }
+            break;
     }
 }
 
 static void parser_print_ast(Ast *ast) {
     printf("=== AST ===\n");
-    parser_print_ast_block(ast, 0);
+    parser_print_ast_step(ast, 0);
     printf("\n");
 }
 
@@ -679,6 +898,13 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
         }
+
+        case AST_VAL_DECL:
+        case AST_MUT_DECL:
+        case AST_RETURN:
+        case AST_PROGRAM:
+            error("Code generation not yet implemented for statements");
+            break;
     }
 }
 
@@ -823,10 +1049,10 @@ int main(int argc, char **argv) {
         lexer_print_tokens(&lexer, source);
     }
 
-    /* Parse expression */
+    /* Parse program */
     Parser parser;
     parser_init(&parser, &lexer);
-    Ast *ast = parser_parse_expression(&parser);
+    Ast *ast = parser_parse_program(&parser);
 
     /* --parser: Print AST */
     if (flags.print_ast) {
