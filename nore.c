@@ -908,16 +908,20 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
     }
 }
 
+static void codegen_emit_ir(FILE *out, Ast *ast) {
+    fprintf(out, "#include <stdio.h>\n");
+    fprintf(out, "int main() {\n");
+    fprintf(out, "    long result = ");
+    codegen_emit_expression(out, ast);
+    fprintf(out, ";\n");
+    fprintf(out, "    printf(\"%%ld\\n\", result);\n");
+    fprintf(out, "    return 0;\n");
+    fprintf(out, "}\n");
+}
+
 static void codegen_print_ir(Ast *ast) {
     printf("=== IR (C CODE) ===\n");
-    printf("#include <stdio.h>\n");
-    printf("int main() {\n");
-    printf("    long result = ");
-    codegen_emit_expression(stdout, ast);
-    printf(";\n");
-    printf("    printf(\"%%ld\\n\", result);\n");
-    printf("    return 0;\n");
-    printf("}\n");
+    codegen_emit_ir(stdout, ast);
     printf("\n");
 }
 
@@ -955,14 +959,7 @@ static void codegen_compile(Ast *ast, const char *output_path) {
     }
 
     /* Generate C program */
-    fprintf(out, "#include <stdio.h>\n");
-    fprintf(out, "int main() {\n");
-    fprintf(out, "    long result = ");
-    codegen_emit_expression(out, ast);
-    fprintf(out, ";\n");
-    fprintf(out, "    printf(\"%%ld\\n\", result);\n");
-    fprintf(out, "    return 0;\n");
-    fprintf(out, "}\n");
+    codegen_emit_ir(out, ast);
 
     fclose(out);
 
