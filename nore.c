@@ -50,6 +50,39 @@ typedef struct {
     size_t column;
 } Token;
 
+static const char *token_kind_name(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_NUMBER:        return "NUMBER";
+        case TOKEN_IDENTIFIER:    return "IDENTIFIER";
+        case TOKEN_FUNC:          return "FUNC";
+        case TOKEN_VAL:           return "VAL";
+        case TOKEN_MUT:           return "MUT";
+        case TOKEN_RETURN:        return "RETURN";
+        case TOKEN_VOID:          return "VOID";
+        case TOKEN_I32:           return "I32";
+        case TOKEN_PLUS:          return "PLUS";
+        case TOKEN_MINUS:         return "MINUS";
+        case TOKEN_STAR:          return "STAR";
+        case TOKEN_SLASH:         return "SLASH";
+        case TOKEN_EQUALS:        return "EQUALS";
+        case TOKEN_EQUAL_EQUAL:   return "EQUAL_EQUAL";
+        case TOKEN_BANG_EQUAL:    return "BANG_EQUAL";
+        case TOKEN_LESS:          return "LESS";
+        case TOKEN_GREATER:       return "GREATER";
+        case TOKEN_LESS_EQUAL:    return "LESS_EQUAL";
+        case TOKEN_GREATER_EQUAL: return "GREATER_EQUAL";
+        case TOKEN_LPAREN:        return "LPAREN";
+        case TOKEN_RPAREN:        return "RPAREN";
+        case TOKEN_LBRACE:        return "LBRACE";
+        case TOKEN_RBRACE:        return "RBRACE";
+        case TOKEN_COLON:         return "COLON";
+        case TOKEN_COMMA:         return "COMMA";
+        case TOKEN_EOF:           return "EOF";
+        case TOKEN_ERROR:         return "ERROR";
+        default:                  return "UNKNOWN";
+    }
+}
+
 /* ================================= Lexer ================================== */
 
 typedef struct {
@@ -212,6 +245,8 @@ static Token scan_identifier(Lexer *lexer) {
     return make_token(lexer, kind);
 }
 
+static void lexer_print_tokens(Lexer *lexer, const char *source);
+
 Token lexer_next_token(Lexer *lexer) {
     skip_whitespace(lexer);
 
@@ -269,6 +304,23 @@ Token lexer_next_token(Lexer *lexer) {
     }
 
     return error_token(lexer, "Unexpected character");
+}
+
+static void lexer_print_tokens(Lexer *lexer, const char *source) {
+    printf("=== TOKENS ===\n");
+    Token token;
+    do {
+        token = lexer_next_token(lexer);
+        printf("%-20s", token_kind_name(token.kind));
+        if (token.kind == TOKEN_NUMBER || token.kind == TOKEN_IDENTIFIER) {
+            printf(" '%.*s'", (int)token.length, token.start);
+        }
+        printf("\n");
+    } while (token.kind != TOKEN_EOF);
+    printf("\n");
+
+    /* Reinitialize lexer for potential next phase */
+    lexer_init(lexer, source);
 }
 
 /* ================================== AST =================================== */
@@ -527,7 +579,6 @@ static Ast *parse_expression(Parser *parser) {
 
 /* ============================== AST Printer =============================== */
 
-/* Commented out - not currently used, but useful for debugging
 static void ast_print(Ast *node, int indent) {
     if (!node) return;
 
@@ -579,12 +630,12 @@ static void ast_print(Ast *node, int indent) {
         }
     }
 }
-*/
 
 
 /* ============================ Code Generation ============================= */
 
 static void codegen_emit_expression(FILE *out, Ast *node);
+static void codegen_print(Ast *ast);
 
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
@@ -629,6 +680,19 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
         }
     }
+}
+
+static void codegen_print(Ast *ast) {
+    printf("=== IR (C CODE) ===\n");
+    printf("#include <stdio.h>\n");
+    printf("int main() {\n");
+    printf("    long result = ");
+    codegen_emit_expression(stdout, ast);
+    printf(";\n");
+    printf("    printf(\"%%ld\\n\", result);\n");
+    printf("    return 0;\n");
+    printf("}\n");
+    printf("\n");
 }
 
 static void compile_with_clang(const char *c_source_path, const char *binary_path) {
@@ -683,19 +747,56 @@ static void codegen_compile(Ast *ast, const char *output_path) {
     unlink(temp_path);
 }
 
+/* ================================ Compiler Flags ========================== */
+
+typedef struct {
+    int print_tokens;
+    int print_ast;
+    int print_ir;
+} CompilerFlags;
+
 /* =================================== Main ================================= */
 
 int main(int argc, char **argv) {
-    if (argc < 2 || argc > 4) {
-        error("Usage: %s <file.nore> [-o output]", argv[0]);
+    if (argc < 2) {
+        error("Usage: %s <file.nore> [--lex] [--parse] [--ir] [-o output]", argv[0]);
     }
 
-    const char *input_path = argv[1];
+    const char *input_path = NULL;
+    const char *output_arg = NULL;
+    CompilerFlags flags = {0};
+
+    /* Parse command-line arguments */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--lex") == 0) {
+            flags.print_tokens = 1;
+        } else if (strcmp(argv[i], "--parse") == 0) {
+            flags.print_ast = 1;
+        } else if (strcmp(argv[i], "--ir") == 0) {
+            flags.print_ir = 1;
+        } else if (strcmp(argv[i], "-o") == 0) {
+            if (i + 1 >= argc) {
+                error("Expected output path after -o");
+            }
+            output_arg = argv[++i];
+        } else if (argv[i][0] == '-') {
+            error("Unknown flag: %s", argv[i]);
+        } else {
+            if (input_path) {
+                error("Multiple input files specified");
+            }
+            input_path = argv[i];
+        }
+    }
+
+    if (!input_path) {
+        error("No input file specified");
+    }
 
     /* Determine output path */
     char output_path[256];
-    if (argc == 4 && strcmp(argv[2], "-o") == 0) {
-        strncpy(output_path, argv[3], sizeof(output_path) - 1);
+    if (output_arg) {
+        strncpy(output_path, output_arg, sizeof(output_path) - 1);
         output_path[sizeof(output_path) - 1] = '\0';
     } else {
         /* Strip .nore extension or use a.out */
@@ -710,20 +811,42 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Parse expression */
+    /* Read source file */
     size_t length;
     char *source = read_file(input_path, &length);
 
     Lexer lexer;
     lexer_init(&lexer, source);
 
+    /* --lex: Print tokens */
+    if (flags.print_tokens) {
+        lexer_print_tokens(&lexer, source);
+    }
+
+    /* Parse expression */
     Parser parser;
     parser_init(&parser, &lexer);
-
     Ast *ast = parse_expression(&parser);
 
-    /* Generate and compile */
-    codegen_compile(ast, output_path);
+    /* --parse: Print AST */
+    if (flags.print_ast) {
+        printf("=== AST ===\n");
+        ast_print(ast, 0);
+        printf("\n");
+    }
+
+    /* --ir: Print intermediate C code */
+    if (flags.print_ir) {
+        codegen_print(ast);
+    }
+
+    /* Skip compilation if any debug flag is set */
+    int skip_compilation = flags.print_tokens || flags.print_ast || flags.print_ir;
+
+    if (!skip_compilation) {
+        /* Generate and compile */
+        codegen_compile(ast, output_path);
+    }
 
     /* Cleanup */
     ast_free(ast);
