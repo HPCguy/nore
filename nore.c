@@ -852,6 +852,56 @@ static void parser_print_ast(Ast *ast) {
     printf("\n");
 }
 
+/* ============================== Variables ================================= */
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+} Variable;
+
+typedef struct {
+    Variable *vars;
+    size_t count;
+    size_t capacity;
+} VarTable;
+
+static void vartable_init(VarTable *table) {
+    table->vars = malloc(8 * sizeof(Variable));
+    if (!table->vars) {
+        error("Out of memory allocating variable table");
+    }
+    table->count = 0;
+    table->capacity = 8;
+}
+
+static void vartable_free(VarTable *table) {
+    free(table->vars);
+}
+
+static void vartable_add(VarTable *table, const char *name_start, size_t name_length) {
+    /* Check for duplicates */
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->vars[i].name_length == name_length &&
+            memcmp(table->vars[i].name_start, name_start, name_length) == 0) {
+            error("Variable '%.*s' already declared", (int)name_length, name_start);
+        }
+    }
+
+    /* Grow if needed */
+    if (table->count >= table->capacity) {
+        table->capacity *= 2;
+        table->vars = realloc(table->vars, table->capacity * sizeof(Variable));
+        if (!table->vars) {
+            error("Out of memory growing variable table");
+        }
+    }
+
+    /* Add variable */
+    table->vars[table->count].name_start = name_start;
+    table->vars[table->count].name_length = name_length;
+    table->count++;
+}
+
 /* ============================ Code Generation ============================= */
 
 static void codegen_emit_expression(FILE *out, Ast *node);
@@ -903,19 +953,68 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_MUT_DECL:
         case AST_RETURN:
         case AST_PROGRAM:
-            error("Code generation not yet implemented for statements");
+            /* These should never appear in expressions */
+            error("Internal error: statement node in expression context");
             break;
+    }
+}
+
+static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
+    switch (node->kind) {
+        case AST_VAL_DECL:
+            vartable_add(table, node->as.val_decl.name_start,
+                         node->as.val_decl.name_length);
+            fprintf(out, "    const long %.*s = ",
+                    (int)node->as.val_decl.name_length,
+                    node->as.val_decl.name_start);
+            codegen_emit_expression(out, node->as.val_decl.initializer);
+            fprintf(out, ";\n");
+            break;
+
+        case AST_MUT_DECL:
+            vartable_add(table, node->as.mut_decl.name_start,
+                         node->as.mut_decl.name_length);
+            fprintf(out, "    long %.*s = ",
+                    (int)node->as.mut_decl.name_length,
+                    node->as.mut_decl.name_start);
+            codegen_emit_expression(out, node->as.mut_decl.initializer);
+            fprintf(out, ";\n");
+            break;
+
+        case AST_RETURN:
+            fprintf(out, "    return ");
+            codegen_emit_expression(out, node->as.return_stmt.value);
+            fprintf(out, ";\n");
+            break;
+
+        default:
+            error("Invalid statement type in code generation");
     }
 }
 
 static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "int main() {\n");
-    fprintf(out, "    long result = ");
-    codegen_emit_expression(out, ast);
-    fprintf(out, ";\n");
-    fprintf(out, "    printf(\"%%ld\\n\", result);\n");
-    fprintf(out, "    return 0;\n");
+
+    if (ast->kind == AST_PROGRAM) {
+        /* Statement-based program */
+        VarTable table;
+        vartable_init(&table);
+
+        for (size_t i = 0; i < ast->as.program.count; i++) {
+            codegen_emit_statement(out, ast->as.program.statements[i], &table);
+        }
+
+        vartable_free(&table);
+    } else {
+        /* Legacy: single expression (backwards compatibility) */
+        fprintf(out, "    long result = ");
+        codegen_emit_expression(out, ast);
+        fprintf(out, ";\n");
+        fprintf(out, "    printf(\"%%ld\\n\", result);\n");
+        fprintf(out, "    return 0;\n");
+    }
+
     fprintf(out, "}\n");
 }
 
