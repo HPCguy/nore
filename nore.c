@@ -8,14 +8,106 @@
 
 /* ================================= Errors ================================= */
 
-void error(const char *fmt, ...) {
+#define EXIT_USER_ERROR 1
+#define EXIT_INTERNAL 101
+
+/* Error code group offsets */
+#define ERR_GROUP_INTERNAL 1000
+#define ERR_GROUP_DRIVER   2000
+#define ERR_GROUP_LEXER    3000
+#define ERR_GROUP_PARSER   4000
+#define ERR_GROUP_SEMANTIC 5000
+
+typedef struct {
+    size_t line;
+    size_t column;
+} SourceLoc;
+
+typedef enum {
+    /* Internal errors: I001-I099 */
+    ERR_I001_OUT_OF_MEMORY  = ERR_GROUP_INTERNAL + 1,
+    ERR_I002_INTERNAL_ERROR = ERR_GROUP_INTERNAL + 2,
+
+    /* Driver errors: D001-D099 */
+    ERR_D001_NO_INPUT_FILE      = ERR_GROUP_DRIVER + 1,
+    ERR_D002_UNKNOWN_FLAG       = ERR_GROUP_DRIVER + 2,
+    ERR_D003_MULTIPLE_INPUTS    = ERR_GROUP_DRIVER + 3,
+    ERR_D004_MISSING_OUTPUT_PATH = ERR_GROUP_DRIVER + 4,
+    ERR_D005_FILE_NOT_FOUND     = ERR_GROUP_DRIVER + 5,
+    ERR_D006_CLANG_FAILED       = ERR_GROUP_DRIVER + 6,
+
+    /* Lexer errors: L001-L099 */
+    ERR_L001_INVALID_CHAR = ERR_GROUP_LEXER + 1,
+
+    /* Parser errors: P001-P099 */
+    ERR_P001_EXPECTED_EXPRESSION = ERR_GROUP_PARSER + 1,
+    ERR_P002_EXPECTED_RPAREN     = ERR_GROUP_PARSER + 2,
+    ERR_P003_EXPECTED_IDENTIFIER = ERR_GROUP_PARSER + 3,
+    ERR_P004_EXPECTED_EQUALS     = ERR_GROUP_PARSER + 4,
+    ERR_P005_EXPECTED_STATEMENT  = ERR_GROUP_PARSER + 5,
+    ERR_P006_NUMBER_TOO_LARGE    = ERR_GROUP_PARSER + 6,
+
+    /* Semantic errors: S001-S099 */
+    ERR_S001_DUPLICATE_VARIABLE = ERR_GROUP_SEMANTIC + 1,
+} ErrorCode;
+
+static const char *error_code_str(ErrorCode code) {
+    static char buffer[8];
+    char prefix;
+    int num;
+
+    if (code >= ERR_GROUP_SEMANTIC) {
+        prefix = 'S'; num = code - ERR_GROUP_SEMANTIC;
+    } else if (code >= ERR_GROUP_PARSER) {
+        prefix = 'P'; num = code - ERR_GROUP_PARSER;
+    } else if (code >= ERR_GROUP_LEXER) {
+        prefix = 'L'; num = code - ERR_GROUP_LEXER;
+    } else if (code >= ERR_GROUP_DRIVER) {
+        prefix = 'D'; num = code - ERR_GROUP_DRIVER;
+    } else {
+        prefix = 'I'; num = code - ERR_GROUP_INTERNAL;
+    }
+
+    snprintf(buffer, sizeof(buffer), "%c%03d", prefix, num);
+    return buffer;
+}
+
+/* Internal errors (bugs, OOM) - exits with 101 */
+static void panic(ErrorCode code, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    fprintf(stderr, "Error: ");
+    fprintf(stderr, "internal error[%s]: ", error_code_str(code));
     vfprintf(stderr, fmt, args);
     fprintf(stderr, "\n");
     va_end(args);
-    exit(1);
+    exit(EXIT_INTERNAL);
+}
+
+/* User errors without source location (CLI, file I/O) */
+static void error(ErrorCode code, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    fprintf(stderr, "error[%s]: ", error_code_str(code));
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+    exit(EXIT_USER_ERROR);
+}
+
+/* Global source file path for diagnostics */
+static const char *g_source_file = "<unknown>";
+
+/* User errors with source location */
+static void diagnostic(ErrorCode code, size_t line, size_t column,
+                       const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    fprintf(stderr, "%s:%zu:%zu: error[%s]: ", g_source_file, line, column,
+            error_code_str(code));
+    vfprintf(stderr, fmt, args);
+    fprintf(stderr, "\n");
+    va_end(args);
+    exit(EXIT_USER_ERROR);
 }
 
 /* ================================== Files ================================= */
@@ -23,7 +115,8 @@ void error(const char *fmt, ...) {
 char *read_file(const char *path, size_t *out_length) {
     FILE *file = fopen(path, "rb");
     if (!file) {
-        error("Could not open file '%s': %s", path, strerror(errno));
+        error(ERR_D005_FILE_NOT_FOUND,
+                     "Could not open file '%s': %s", path, strerror(errno));
     }
 
     fseek(file, 0, SEEK_END);
@@ -32,12 +125,13 @@ char *read_file(const char *path, size_t *out_length) {
 
     char *buffer = malloc(length + 1);
     if (!buffer) {
-        error("Could not allocate memory for file '%s'", path);
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating buffer for file '%s'", path);
     }
 
     size_t bytes_read = fread(buffer, 1, length, file);
     if (bytes_read != length) {
-        error("Could not read file '%s'", path);
+        error(ERR_D005_FILE_NOT_FOUND,
+                     "Could not read file '%s'", path);
     }
 
     buffer[length] = '\0';
@@ -319,6 +413,12 @@ static void lexer_print_tokens(Lexer *lexer, const char *source) {
     lexer_init(lexer, source);
 }
 
+/* ============================== Token Location ============================ */
+
+static SourceLoc token_loc(Token *token) {
+    return (SourceLoc){ .line = token->line, .column = token->column };
+}
+
 /* ================================== AST =================================== */
 
 typedef enum {
@@ -351,6 +451,7 @@ typedef enum {
 
 typedef struct Ast {
     AstKind kind;
+    SourceLoc loc;
     union {
         struct {
             long value;
@@ -398,80 +499,89 @@ typedef struct Ast {
 
 /* ============================== AST Allocators ============================ */
 
-static Ast *ast_make_number(long value) {
+static Ast *ast_make_number(long value, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_NUMBER;
+    node->loc = loc;
     node->as.number.value = value;
     return node;
 }
 
-static Ast *ast_make_identifier(const char *start, size_t length) {
+static Ast *ast_make_identifier(const char *start, size_t length, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_IDENTIFIER;
+    node->loc = loc;
     node->as.identifier.start = start;
     node->as.identifier.length = length;
     return node;
 }
 
-static Ast *ast_make_binary(BinaryOp op, Ast *left, Ast *right) {
+static Ast *ast_make_binary(BinaryOp op, Ast *left, Ast *right, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_BINARY;
+    node->loc = loc;
     node->as.binary.op = op;
     node->as.binary.left = left;
     node->as.binary.right = right;
     return node;
 }
 
-static Ast *ast_make_unary(UnaryOp op, Ast *operand) {
+static Ast *ast_make_unary(UnaryOp op, Ast *operand, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_UNARY;
+    node->loc = loc;
     node->as.unary.op = op;
     node->as.unary.operand = operand;
     return node;
 }
 
-static Ast *ast_make_val_decl(const char *name_start, size_t name_length, Ast *initializer) {
+static Ast *ast_make_val_decl(const char *name_start, size_t name_length,
+                              Ast *initializer, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_VAL_DECL;
+    node->loc = loc;
     node->as.val_decl.name_start = name_start;
     node->as.val_decl.name_length = name_length;
     node->as.val_decl.initializer = initializer;
     return node;
 }
 
-static Ast *ast_make_mut_decl(const char *name_start, size_t name_length, Ast *initializer) {
+static Ast *ast_make_mut_decl(const char *name_start, size_t name_length,
+                              Ast *initializer, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_MUT_DECL;
+    node->loc = loc;
     node->as.mut_decl.name_start = name_start;
     node->as.mut_decl.name_length = name_length;
     node->as.mut_decl.initializer = initializer;
     return node;
 }
 
-static Ast *ast_make_return(Ast *value) {
+static Ast *ast_make_return(Ast *value, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_RETURN;
+    node->loc = loc;
     node->as.return_stmt.value = value;
     return node;
 }
@@ -479,13 +589,14 @@ static Ast *ast_make_return(Ast *value) {
 static Ast *ast_make_program(void) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
-        error("Out of memory allocating AST node");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_PROGRAM;
+    node->loc = (SourceLoc){ .line = 0, .column = 0 };
     node->as.program.statements = malloc(8 * sizeof(Ast*));
     if (!node->as.program.statements) {
         free(node);
-        error("Out of memory allocating program statements");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating program statements");
     }
     node->as.program.count = 0;
     node->as.program.capacity = 8;
@@ -494,7 +605,8 @@ static Ast *ast_make_program(void) {
 
 static void ast_program_add_statement(Ast *program, Ast *statement) {
     if (program->kind != AST_PROGRAM) {
-        error("Internal error: ast_program_add_statement called on non-program node");
+        panic(ERR_I002_INTERNAL_ERROR,
+              "ast_program_add_statement called on non-program node");
     }
 
     if (program->as.program.count >= program->as.program.capacity) {
@@ -502,7 +614,7 @@ static void ast_program_add_statement(Ast *program, Ast *statement) {
         Ast **new_statements = realloc(program->as.program.statements,
                                        new_capacity * sizeof(Ast*));
         if (!new_statements) {
-            error("Out of memory growing program statements");
+            panic(ERR_I001_OUT_OF_MEMORY, "growing program statements");
         }
         program->as.program.statements = new_statements;
         program->as.program.capacity = new_capacity;
@@ -549,6 +661,13 @@ typedef struct {
 static void parser_advance(Parser *parser) {
     parser->previous = parser->current;
     parser->current = lexer_next_token(parser->lexer);
+
+    /* Handle lexer errors immediately */
+    if (parser->current.kind == TOKEN_ERROR) {
+        diagnostic(ERR_L001_INVALID_CHAR, parser->current.line,
+                   parser->current.column, "%.*s",
+                   (int)parser->current.length, parser->current.start);
+    }
 }
 
 static void parser_init(Parser *parser, Lexer *lexer) {
@@ -569,16 +688,10 @@ static int parser_match(Parser *parser, TokenKind kind) {
     return 1;
 }
 
-static void parser_error(Parser *parser, const char *message) {
-    Token *token = &parser->current;
-    fprintf(stderr, "Error at line %zu col %zu: %s\n",
-            token->line, token->column, message);
-    exit(1);
-}
-
-static void parser_consume(Parser *parser, TokenKind kind, const char *msg) {
+static void parser_consume(Parser *parser, TokenKind kind, ErrorCode code,
+                           const char *msg) {
     if (!parser_match(parser, kind)) {
-        parser_error(parser, msg);
+        diagnostic(code, parser->current.line, parser->current.column, "%s", msg);
     }
 }
 
@@ -629,33 +742,39 @@ static Ast *parser_parse_expression(Parser *parser);
 static Ast *parser_parse_primary(Parser *parser) {
     /* Handle unary minus */
     if (parser_match(parser, TOKEN_MINUS)) {
+        SourceLoc loc = token_loc(&parser->previous);
         Ast *operand = parser_parse_primary(parser);
-        return ast_make_unary(OP_NEG, operand);
+        return ast_make_unary(OP_NEG, operand, loc);
     }
 
     if (parser_match(parser, TOKEN_NUMBER)) {
+        SourceLoc loc = token_loc(&parser->previous);
         char buffer[32];
         size_t len = parser->previous.length;
         if (len >= sizeof(buffer)) {
-            parser_error(parser, "Number too large");
+            diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+                       "Number literal too large");
         }
         memcpy(buffer, parser->previous.start, len);
         buffer[len] = '\0';
         long value = strtol(buffer, NULL, 10);
-        return ast_make_number(value);
+        return ast_make_number(value, loc);
     }
 
     if (parser_match(parser, TOKEN_IDENTIFIER)) {
-        return ast_make_identifier(parser->previous.start, parser->previous.length);
+        SourceLoc loc = token_loc(&parser->previous);
+        return ast_make_identifier(parser->previous.start, parser->previous.length, loc);
     }
 
     if (parser_match(parser, TOKEN_LPAREN)) {
         Ast *expr = parser_parse_expression(parser);
-        parser_consume(parser, TOKEN_RPAREN, "Expected ')' after expression");
+        parser_consume(parser, TOKEN_RPAREN, ERR_P002_EXPECTED_RPAREN,
+                       "Expected ')' after expression");
         return expr;
     }
 
-    parser_error(parser, "Expected expression");
+    diagnostic(ERR_P001_EXPECTED_EXPRESSION, parser->current.line, parser->current.column,
+               "Expected expression");
     return NULL;
 }
 
@@ -666,6 +785,7 @@ static Ast *parser_parse_precedence(Parser *parser, int min_precedence) {
     /* Consume operators while precedence is high enough */
     while (parser_get_precedence(parser->current.kind) >= min_precedence) {
         TokenKind op_kind = parser->current.kind;
+        SourceLoc op_loc = token_loc(&parser->current);
         int precedence = parser_get_precedence(op_kind);
         parser_advance(parser);
 
@@ -673,7 +793,7 @@ static Ast *parser_parse_precedence(Parser *parser, int min_precedence) {
         Ast *right = parser_parse_precedence(parser, precedence + 1);
 
         /* Combine into binary operation */
-        left = ast_make_binary(parser_token_to_binary_op(op_kind), left, right);
+        left = ast_make_binary(parser_token_to_binary_op(op_kind), left, right, op_loc);
     }
 
     return left;
@@ -686,50 +806,61 @@ static Ast *parser_parse_expression(Parser *parser) {
 /* ============================= Statement Parsing ========================== */
 
 static Ast *parser_parse_val_declaration(Parser *parser) {
-    /* Already consumed TOKEN_VAL */
+    /* Already consumed TOKEN_VAL - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
 
     /* Expect identifier */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        parser_error(parser, "Expected identifier after 'val'");
+        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                   parser->current.column, "Expected identifier after 'val'");
     }
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
 
     /* Expect '=' */
-    parser_consume(parser, TOKEN_EQUALS, "Expected '=' in val declaration");
+    if (!parser_match(parser, TOKEN_EQUALS)) {
+        diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
+                   parser->current.column, "Expected '=' in val declaration");
+    }
 
     /* Parse initializer expression */
     Ast *initializer = parser_parse_expression(parser);
 
-    return ast_make_val_decl(name_start, name_length, initializer);
+    return ast_make_val_decl(name_start, name_length, initializer, loc);
 }
 
 static Ast *parser_parse_mut_declaration(Parser *parser) {
-    /* Already consumed TOKEN_MUT */
+    /* Already consumed TOKEN_MUT - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
 
     /* Expect identifier */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        parser_error(parser, "Expected identifier after 'mut'");
+        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                   parser->current.column, "Expected identifier after 'mut'");
     }
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
 
     /* Expect '=' */
-    parser_consume(parser, TOKEN_EQUALS, "Expected '=' in mut declaration");
+    if (!parser_match(parser, TOKEN_EQUALS)) {
+        diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
+                   parser->current.column, "Expected '=' in mut declaration");
+    }
 
     /* Parse initializer expression */
     Ast *initializer = parser_parse_expression(parser);
 
-    return ast_make_mut_decl(name_start, name_length, initializer);
+    return ast_make_mut_decl(name_start, name_length, initializer, loc);
 }
 
 static Ast *parser_parse_return(Parser *parser) {
-    /* Already consumed TOKEN_RETURN */
+    /* Already consumed TOKEN_RETURN - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
 
     /* Parse return value expression */
     Ast *value = parser_parse_expression(parser);
 
-    return ast_make_return(value);
+    return ast_make_return(value, loc);
 }
 
 static Ast *parser_parse_statement(Parser *parser) {
@@ -749,7 +880,8 @@ static Ast *parser_parse_statement(Parser *parser) {
         return NULL;
     }
 
-    parser_error(parser, "Expected statement (val, mut, or return)");
+    diagnostic(ERR_P005_EXPECTED_STATEMENT, parser->current.line,
+               parser->current.column, "Expected statement (val, mut, or return)");
     return NULL;
 }
 
@@ -868,7 +1000,7 @@ typedef struct {
 static void vartable_init(VarTable *table) {
     table->vars = malloc(8 * sizeof(Variable));
     if (!table->vars) {
-        error("Out of memory allocating variable table");
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating variable table");
     }
     table->count = 0;
     table->capacity = 8;
@@ -878,12 +1010,14 @@ static void vartable_free(VarTable *table) {
     free(table->vars);
 }
 
-static void vartable_add(VarTable *table, const char *name_start, size_t name_length) {
+static void vartable_add(VarTable *table, const char *name_start,
+                         size_t name_length, SourceLoc loc) {
     /* Check for duplicates */
     for (size_t i = 0; i < table->count; i++) {
         if (table->vars[i].name_length == name_length &&
             memcmp(table->vars[i].name_start, name_start, name_length) == 0) {
-            error("Variable '%.*s' already declared", (int)name_length, name_start);
+            diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
+                       "Variable '%.*s' already declared", (int)name_length, name_start);
         }
     }
 
@@ -892,7 +1026,7 @@ static void vartable_add(VarTable *table, const char *name_start, size_t name_le
         table->capacity *= 2;
         table->vars = realloc(table->vars, table->capacity * sizeof(Variable));
         if (!table->vars) {
-            error("Out of memory growing variable table");
+            panic(ERR_I001_OUT_OF_MEMORY, "growing variable table");
         }
     }
 
@@ -954,7 +1088,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_RETURN:
         case AST_PROGRAM:
             /* These should never appear in expressions */
-            error("Internal error: statement node in expression context");
+            panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
             break;
     }
 }
@@ -963,7 +1097,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
     switch (node->kind) {
         case AST_VAL_DECL:
             vartable_add(table, node->as.val_decl.name_start,
-                         node->as.val_decl.name_length);
+                         node->as.val_decl.name_length, node->loc);
             fprintf(out, "    const long %.*s = ",
                     (int)node->as.val_decl.name_length,
                     node->as.val_decl.name_start);
@@ -973,7 +1107,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
 
         case AST_MUT_DECL:
             vartable_add(table, node->as.mut_decl.name_start,
-                         node->as.mut_decl.name_length);
+                         node->as.mut_decl.name_length, node->loc);
             fprintf(out, "    long %.*s = ",
                     (int)node->as.mut_decl.name_length,
                     node->as.mut_decl.name_start);
@@ -988,7 +1122,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
             break;
 
         default:
-            error("Invalid statement type in code generation");
+            panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
     }
 }
 
@@ -1031,14 +1165,15 @@ static void codegen_compile_with_clang(const char *c_source_path, const char *bi
                           binary_path, c_source_path);
 
     if (written < 0 || written >= (int)sizeof(command)) {
-        error("Command buffer too small");
+        panic(ERR_I002_INTERNAL_ERROR, "command buffer too small");
     }
 
     int status = system(command);
 
     if (status != 0) {
-        error("Clang compilation failed with exit code %d",
-              WEXITSTATUS(status));
+        error(ERR_D006_CLANG_FAILED,
+                     "Clang compilation failed with exit code %d",
+                     WEXITSTATUS(status));
     }
 }
 
@@ -1047,14 +1182,16 @@ static void codegen_compile(Ast *ast, const char *output_path) {
     char temp_path[] = "/tmp/nore_XXXXXX.c";
     int fd = mkstemps(temp_path, 2);
     if (fd == -1) {
-        error("Failed to create temporary file: %s", strerror(errno));
+        panic(ERR_I002_INTERNAL_ERROR,
+              "failed to create temporary file: %s", strerror(errno));
     }
 
     FILE *out = fdopen(fd, "w");
     if (!out) {
         close(fd);
         unlink(temp_path);
-        error("Failed to open temporary file: %s", strerror(errno));
+        panic(ERR_I002_INTERNAL_ERROR,
+              "failed to open temporary file: %s", strerror(errno));
     }
 
     /* Generate C program */
@@ -1081,7 +1218,9 @@ typedef struct {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        error("Usage: %s <file.nore> [--lexer] [--parser] [--codegen] [-o output]", argv[0]);
+        error(ERR_D001_NO_INPUT_FILE,
+                     "Usage: %s <file.nore> [--lexer] [--parser] [--codegen] [-o output]",
+                     argv[0]);
     }
 
     const char *input_path = NULL;
@@ -1098,22 +1237,27 @@ int main(int argc, char **argv) {
             flags.print_ir = 1;
         } else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
-                error("Expected output path after -o");
+                error(ERR_D004_MISSING_OUTPUT_PATH,
+                             "Expected output path after -o");
             }
             output_arg = argv[++i];
         } else if (argv[i][0] == '-') {
-            error("Unknown flag: %s", argv[i]);
+            error(ERR_D002_UNKNOWN_FLAG, "Unknown flag: %s", argv[i]);
         } else {
             if (input_path) {
-                error("Multiple input files specified");
+                error(ERR_D003_MULTIPLE_INPUTS,
+                             "Multiple input files specified");
             }
             input_path = argv[i];
         }
     }
 
     if (!input_path) {
-        error("No input file specified");
+        error(ERR_D001_NO_INPUT_FILE, "No input file specified");
     }
+
+    /* Set global source file for diagnostics */
+    g_source_file = input_path;
 
     /* Determine output path */
     char output_path[256];

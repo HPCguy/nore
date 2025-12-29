@@ -36,5 +36,10 @@ debug: $(SOURCE)
 clean:
 	rm -f $(TARGET)
 
+# Run error code tests
+test-errors: $(TARGET)
+	@chmod +x tests/run_error_tests.sh
+	@./tests/run_error_tests.sh
+
 # Phony targets
-.PHONY: all debug clean
+.PHONY: all debug clean test-errors
