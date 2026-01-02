@@ -1130,24 +1130,18 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "int main() {\n");
 
-    if (ast->kind == AST_PROGRAM) {
-        /* Statement-based program */
-        VarTable table;
-        vartable_init(&table);
-
-        for (size_t i = 0; i < ast->as.program.count; i++) {
-            codegen_emit_statement(out, ast->as.program.statements[i], &table);
-        }
-
-        vartable_free(&table);
-    } else {
-        /* Legacy: single expression (backwards compatibility) */
-        fprintf(out, "    long result = ");
-        codegen_emit_expression(out, ast);
-        fprintf(out, ";\n");
-        fprintf(out, "    printf(\"%%ld\\n\", result);\n");
-        fprintf(out, "    return 0;\n");
+    if (ast->kind != AST_PROGRAM) {
+        panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
     }
+
+    VarTable table;
+    vartable_init(&table);
+
+    for (size_t i = 0; i < ast->as.program.count; i++) {
+        codegen_emit_statement(out, ast->as.program.statements[i], &table);
+    }
+
+    vartable_free(&table);
 
     fprintf(out, "}\n");
 }
