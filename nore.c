@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
@@ -48,7 +49,9 @@ typedef enum {
     ERR_P006_NUMBER_TOO_LARGE    = ERR_GROUP_PARSER + 6,
 
     /* Semantic errors: S001-S099 */
-    ERR_S001_DUPLICATE_VARIABLE = ERR_GROUP_SEMANTIC + 1,
+    ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
+    ERR_S002_UNDECLARED_VARIABLE   = ERR_GROUP_SEMANTIC + 2,
+    ERR_S003_IMMUTABLE_ASSIGNMENT  = ERR_GROUP_SEMANTIC + 3,
 } ErrorCode;
 
 static const char *error_code_str(ErrorCode code) {
@@ -429,6 +432,7 @@ typedef enum {
     AST_VAL_DECL,
     AST_MUT_DECL,
     AST_RETURN,
+    AST_ASSIGNMENT,
     AST_PROGRAM
 } AstKind;
 
@@ -488,6 +492,12 @@ typedef struct Ast {
         struct {
             struct Ast *value;
         } return_stmt;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            struct Ast *value;
+        } assignment;
 
         struct {
             struct Ast **statements;
@@ -586,6 +596,20 @@ static Ast *ast_make_return(Ast *value, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_assignment(const char *name_start, size_t name_length,
+                                Ast *value, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_ASSIGNMENT;
+    node->loc = loc;
+    node->as.assignment.name_start = name_start;
+    node->as.assignment.name_length = name_length;
+    node->as.assignment.value = value;
+    return node;
+}
+
 static Ast *ast_make_program(void) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
@@ -641,6 +665,9 @@ static void ast_free(Ast *node) {
     if (node->kind == AST_RETURN) {
         ast_free(node->as.return_stmt.value);
     }
+    if (node->kind == AST_ASSIGNMENT) {
+        ast_free(node->as.assignment.value);
+    }
     if (node->kind == AST_PROGRAM) {
         for (size_t i = 0; i < node->as.program.count; i++) {
             ast_free(node->as.program.statements[i]);
@@ -693,6 +720,15 @@ static void parser_consume(Parser *parser, TokenKind kind, ErrorCode code,
     if (!parser_match(parser, kind)) {
         diagnostic(code, parser->current.line, parser->current.column, "%s", msg);
     }
+}
+
+static TokenKind parser_peek_next(Parser *parser) {
+    /* Save lexer state */
+    Lexer saved = *parser->lexer;
+    Token next = lexer_next_token(parser->lexer);
+    /* Restore lexer state */
+    *parser->lexer = saved;
+    return next.kind;
 }
 
 /* ============================ Operator Precedence ========================= */
@@ -863,6 +899,21 @@ static Ast *parser_parse_return(Parser *parser) {
     return ast_make_return(value, loc);
 }
 
+static Ast *parser_parse_assignment(Parser *parser) {
+    /* Already consumed TOKEN_IDENTIFIER - capture location and name */
+    SourceLoc loc = token_loc(&parser->previous);
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Consume '=' */
+    parser_advance(parser);
+
+    /* Parse value expression */
+    Ast *value = parser_parse_expression(parser);
+
+    return ast_make_assignment(name_start, name_length, value, loc);
+}
+
 static Ast *parser_parse_statement(Parser *parser) {
     if (parser_match(parser, TOKEN_VAL)) {
         return parser_parse_val_declaration(parser);
@@ -876,12 +927,19 @@ static Ast *parser_parse_statement(Parser *parser) {
         return parser_parse_return(parser);
     }
 
+    /* Check for assignment: identifier followed by '=' */
+    if (parser_check(parser, TOKEN_IDENTIFIER) &&
+        parser_peek_next(parser) == TOKEN_EQUALS) {
+        parser_advance(parser);  /* consume identifier */
+        return parser_parse_assignment(parser);
+    }
+
     if (parser_check(parser, TOKEN_EOF)) {
         return NULL;
     }
 
     diagnostic(ERR_P005_EXPECTED_STATEMENT, parser->current.line,
-               parser->current.column, "Expected statement (val, mut, or return)");
+               parser->current.column, "Expected statement");
     return NULL;
 }
 
@@ -969,6 +1027,13 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.return_stmt.value, indent + 1);
             break;
 
+        case AST_ASSIGNMENT:
+            printf("ASSIGNMENT(%.*s)\n",
+                   (int)node->as.assignment.name_length,
+                   node->as.assignment.name_start);
+            parser_print_ast_step(node->as.assignment.value, indent + 1);
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -989,6 +1054,7 @@ static void parser_print_ast(Ast *ast) {
 typedef struct {
     const char *name_start;
     size_t name_length;
+    bool is_mutable;
 } Variable;
 
 typedef struct {
@@ -1010,15 +1076,23 @@ static void vartable_free(VarTable *table) {
     free(table->vars);
 }
 
-static void vartable_add(VarTable *table, const char *name_start,
-                         size_t name_length, SourceLoc loc) {
-    /* Check for duplicates */
+static Variable *vartable_lookup(VarTable *table, const char *name_start,
+                                  size_t name_length) {
     for (size_t i = 0; i < table->count; i++) {
         if (table->vars[i].name_length == name_length &&
             memcmp(table->vars[i].name_start, name_start, name_length) == 0) {
-            diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
-                       "Variable '%.*s' already declared", (int)name_length, name_start);
+            return &table->vars[i];
         }
+    }
+    return NULL;
+}
+
+static void vartable_add(VarTable *table, const char *name_start,
+                         size_t name_length, bool is_mutable, SourceLoc loc) {
+    /* Check for duplicates */
+    if (vartable_lookup(table, name_start, name_length) != NULL) {
+        diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
+                   "Variable '%.*s' already declared", (int)name_length, name_start);
     }
 
     /* Grow if needed */
@@ -1033,6 +1107,7 @@ static void vartable_add(VarTable *table, const char *name_start,
     /* Add variable */
     table->vars[table->count].name_start = name_start;
     table->vars[table->count].name_length = name_length;
+    table->vars[table->count].is_mutable = is_mutable;
     table->count++;
 }
 
@@ -1086,6 +1161,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
+        case AST_ASSIGNMENT:
         case AST_PROGRAM:
             /* These should never appear in expressions */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
@@ -1097,7 +1173,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
     switch (node->kind) {
         case AST_VAL_DECL:
             vartable_add(table, node->as.val_decl.name_start,
-                         node->as.val_decl.name_length, node->loc);
+                         node->as.val_decl.name_length, false, node->loc);
             fprintf(out, "    const long %.*s = ",
                     (int)node->as.val_decl.name_length,
                     node->as.val_decl.name_start);
@@ -1107,7 +1183,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
 
         case AST_MUT_DECL:
             vartable_add(table, node->as.mut_decl.name_start,
-                         node->as.mut_decl.name_length, node->loc);
+                         node->as.mut_decl.name_length, true, node->loc);
             fprintf(out, "    long %.*s = ",
                     (int)node->as.mut_decl.name_length,
                     node->as.mut_decl.name_start);
@@ -1120,6 +1196,29 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
             codegen_emit_expression(out, node->as.return_stmt.value);
             fprintf(out, ";\n");
             break;
+
+        case AST_ASSIGNMENT: {
+            const char *name_start = node->as.assignment.name_start;
+            size_t name_length = node->as.assignment.name_length;
+
+            Variable *v = vartable_lookup(table, name_start, name_length);
+            if (v == NULL) {
+                diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
+                           node->loc.column, "Undeclared variable '%.*s'",
+                           (int)name_length, name_start);
+            }
+            if (!v->is_mutable) {
+                diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
+                           node->loc.column,
+                           "Cannot assign to immutable variable '%.*s'",
+                           (int)name_length, name_start);
+            }
+
+            fprintf(out, "    %.*s = ", (int)name_length, name_start);
+            codegen_emit_expression(out, node->as.assignment.value);
+            fprintf(out, ";\n");
+            break;
+        }
 
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
