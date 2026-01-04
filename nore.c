@@ -49,6 +49,7 @@ typedef enum {
     ERR_P004_EXPECTED_EQUALS     = ERR_GROUP_PARSER + 4,
     ERR_P005_EXPECTED_STATEMENT  = ERR_GROUP_PARSER + 5,
     ERR_P006_NUMBER_TOO_LARGE    = ERR_GROUP_PARSER + 6,
+    ERR_P007_EXPECTED_RBRACE     = ERR_GROUP_PARSER + 7,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -444,6 +445,7 @@ typedef enum {
     AST_RETURN,
     AST_ASSIGNMENT,
     AST_ASSERT,
+    AST_BLOCK,
     AST_PROGRAM
 } AstKind;
 
@@ -513,6 +515,12 @@ typedef struct Ast {
         struct {
             struct Ast *condition;
         } assert_stmt;
+
+        struct {
+            struct Ast **statements;
+            size_t count;
+            size_t capacity;
+        } block;
 
         struct {
             struct Ast **statements;
@@ -636,6 +644,43 @@ static Ast *ast_make_assert(Ast *condition, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_block(SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_BLOCK;
+    node->loc = loc;
+    node->as.block.statements = malloc(8 * sizeof(Ast*));
+    if (!node->as.block.statements) {
+        free(node);
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating block statements");
+    }
+    node->as.block.count = 0;
+    node->as.block.capacity = 8;
+    return node;
+}
+
+static void ast_block_add_statement(Ast *block, Ast *statement) {
+    if (block->kind != AST_BLOCK) {
+        panic(ERR_I002_INTERNAL_ERROR,
+              "ast_block_add_statement called on non-block node");
+    }
+
+    if (block->as.block.count >= block->as.block.capacity) {
+        size_t new_capacity = block->as.block.capacity * 2;
+        Ast **new_statements = realloc(block->as.block.statements,
+                                       new_capacity * sizeof(Ast*));
+        if (!new_statements) {
+            panic(ERR_I001_OUT_OF_MEMORY, "growing block statements");
+        }
+        block->as.block.statements = new_statements;
+        block->as.block.capacity = new_capacity;
+    }
+
+    block->as.block.statements[block->as.block.count++] = statement;
+}
+
 static Ast *ast_make_program(void) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
@@ -696,6 +741,12 @@ static void ast_free(Ast *node) {
     }
     if (node->kind == AST_ASSERT) {
         ast_free(node->as.assert_stmt.condition);
+    }
+    if (node->kind == AST_BLOCK) {
+        for (size_t i = 0; i < node->as.block.count; i++) {
+            ast_free(node->as.block.statements[i]);
+        }
+        free(node->as.block.statements);
     }
     if (node->kind == AST_PROGRAM) {
         for (size_t i = 0; i < node->as.program.count; i++) {
@@ -953,7 +1004,35 @@ static Ast *parser_parse_assert(Parser *parser) {
     return ast_make_assert(condition, loc);
 }
 
+/* Forward declaration for mutual recursion with parser_parse_block */
+static Ast *parser_parse_statement(Parser *parser);
+
+static Ast *parser_parse_block(Parser *parser) {
+    /* LBRACE already consumed - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    Ast *block = ast_make_block(loc);
+
+    while (!parser_check(parser, TOKEN_RBRACE) &&
+           !parser_check(parser, TOKEN_EOF)) {
+        Ast *statement = parser_parse_statement(parser);
+        if (statement) {
+            ast_block_add_statement(block, statement);
+        }
+    }
+
+    parser_consume(parser, TOKEN_RBRACE, ERR_P007_EXPECTED_RBRACE,
+                   "Expected '}' to close block");
+
+    return block;
+}
+
 static Ast *parser_parse_statement(Parser *parser) {
+    /* Block statement */
+    if (parser_match(parser, TOKEN_LBRACE)) {
+        return parser_parse_block(parser);
+    }
+
     if (parser_match(parser, TOKEN_VAL)) {
         return parser_parse_val_declaration(parser);
     }
@@ -1082,6 +1161,13 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.assert_stmt.condition, indent + 1);
             break;
 
+        case AST_BLOCK:
+            printf("BLOCK\n");
+            for (size_t i = 0; i < node->as.block.count; i++) {
+                parser_print_ast_step(node->as.block.statements[i], indent + 1);
+            }
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -1097,7 +1183,7 @@ static void parser_print_ast(Ast *ast) {
     printf("\n");
 }
 
-/* ============================== Variables ================================= */
+/* ============================= Scope Management =========================== */
 
 typedef struct {
     const char *name_start;
@@ -1105,58 +1191,82 @@ typedef struct {
     bool is_mutable;
 } Variable;
 
-typedef struct {
+typedef struct Scope {
     Variable *vars;
     size_t count;
     size_t capacity;
-} VarTable;
+    struct Scope *parent;
+} Scope;
 
-static void vartable_init(VarTable *table) {
-    table->vars = malloc(8 * sizeof(Variable));
-    if (!table->vars) {
-        panic(ERR_I001_OUT_OF_MEMORY, "allocating variable table");
+static Scope *scope_create(Scope *parent) {
+    Scope *scope = malloc(sizeof(Scope));
+    if (!scope) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating scope");
     }
-    table->count = 0;
-    table->capacity = 8;
+    scope->vars = malloc(8 * sizeof(Variable));
+    if (!scope->vars) {
+        free(scope);
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating scope variables");
+    }
+    scope->count = 0;
+    scope->capacity = 8;
+    scope->parent = parent;
+    return scope;
 }
 
-static void vartable_free(VarTable *table) {
-    free(table->vars);
+static void scope_destroy(Scope *scope) {
+    free(scope->vars);
+    free(scope);
 }
 
-static Variable *vartable_lookup(VarTable *table, const char *name_start,
-                                  size_t name_length) {
-    for (size_t i = 0; i < table->count; i++) {
-        if (table->vars[i].name_length == name_length &&
-            memcmp(table->vars[i].name_start, name_start, name_length) == 0) {
-            return &table->vars[i];
+/* Lookup in current scope only (for duplicate detection) */
+static Variable *scope_lookup_local(Scope *scope, const char *name_start,
+                                     size_t name_length) {
+    for (size_t i = 0; i < scope->count; i++) {
+        if (scope->vars[i].name_length == name_length &&
+            memcmp(scope->vars[i].name_start, name_start, name_length) == 0) {
+            return &scope->vars[i];
         }
     }
     return NULL;
 }
 
-static void vartable_add(VarTable *table, const char *name_start,
-                         size_t name_length, bool is_mutable, SourceLoc loc) {
-    /* Check for duplicates */
-    if (vartable_lookup(table, name_start, name_length) != NULL) {
+/* Lookup walking up the scope chain (for variable resolution) */
+static Variable *scope_lookup(Scope *scope, const char *name_start,
+                               size_t name_length) {
+    while (scope != NULL) {
+        Variable *v = scope_lookup_local(scope, name_start, name_length);
+        if (v != NULL) {
+            return v;
+        }
+        scope = scope->parent;
+    }
+    return NULL;
+}
+
+static void scope_add(Scope *scope, const char *name_start,
+                      size_t name_length, bool is_mutable, SourceLoc loc) {
+    /* Check for duplicates in current scope only */
+    if (scope_lookup_local(scope, name_start, name_length) != NULL) {
         diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
-                   "Variable '%.*s' already declared", (int)name_length, name_start);
+                   "Variable '%.*s' already declared in this scope",
+                   (int)name_length, name_start);
     }
 
     /* Grow if needed */
-    if (table->count >= table->capacity) {
-        table->capacity *= 2;
-        table->vars = realloc(table->vars, table->capacity * sizeof(Variable));
-        if (!table->vars) {
-            panic(ERR_I001_OUT_OF_MEMORY, "growing variable table");
+    if (scope->count >= scope->capacity) {
+        scope->capacity *= 2;
+        scope->vars = realloc(scope->vars, scope->capacity * sizeof(Variable));
+        if (!scope->vars) {
+            panic(ERR_I001_OUT_OF_MEMORY, "growing scope variables");
         }
     }
 
     /* Add variable */
-    table->vars[table->count].name_start = name_start;
-    table->vars[table->count].name_length = name_length;
-    table->vars[table->count].is_mutable = is_mutable;
-    table->count++;
+    scope->vars[scope->count].name_start = name_start;
+    scope->vars[scope->count].name_length = name_length;
+    scope->vars[scope->count].is_mutable = is_mutable;
+    scope->count++;
 }
 
 /* ============================ Code Generation ============================= */
@@ -1211,6 +1321,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_RETURN:
         case AST_ASSIGNMENT:
         case AST_ASSERT:
+        case AST_BLOCK:
         case AST_PROGRAM:
             /* These should never appear in expressions */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
@@ -1218,12 +1329,19 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
     }
 }
 
-static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
+static void codegen_indent(FILE *out, int indent) {
+    for (int i = 0; i < indent; i++) {
+        fprintf(out, "    ");
+    }
+}
+
+static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent) {
     switch (node->kind) {
         case AST_VAL_DECL:
-            vartable_add(table, node->as.val_decl.name_start,
-                         node->as.val_decl.name_length, false, node->loc);
-            fprintf(out, "    const long %.*s = ",
+            scope_add(*scope, node->as.val_decl.name_start,
+                      node->as.val_decl.name_length, false, node->loc);
+            codegen_indent(out, indent);
+            fprintf(out, "const long %.*s = ",
                     (int)node->as.val_decl.name_length,
                     node->as.val_decl.name_start);
             codegen_emit_expression(out, node->as.val_decl.initializer);
@@ -1231,9 +1349,10 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
             break;
 
         case AST_MUT_DECL:
-            vartable_add(table, node->as.mut_decl.name_start,
-                         node->as.mut_decl.name_length, true, node->loc);
-            fprintf(out, "    long %.*s = ",
+            scope_add(*scope, node->as.mut_decl.name_start,
+                      node->as.mut_decl.name_length, true, node->loc);
+            codegen_indent(out, indent);
+            fprintf(out, "long %.*s = ",
                     (int)node->as.mut_decl.name_length,
                     node->as.mut_decl.name_start);
             codegen_emit_expression(out, node->as.mut_decl.initializer);
@@ -1241,7 +1360,8 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
             break;
 
         case AST_RETURN:
-            fprintf(out, "    return ");
+            codegen_indent(out, indent);
+            fprintf(out, "return ");
             codegen_emit_expression(out, node->as.return_stmt.value);
             fprintf(out, ";\n");
             break;
@@ -1250,7 +1370,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
             const char *name_start = node->as.assignment.name_start;
             size_t name_length = node->as.assignment.name_length;
 
-            Variable *v = vartable_lookup(table, name_start, name_length);
+            Variable *v = scope_lookup(*scope, name_start, name_length);
             if (v == NULL) {
                 diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
                            node->loc.column, "Undeclared variable '%.*s'",
@@ -1263,21 +1383,45 @@ static void codegen_emit_statement(FILE *out, Ast *node, VarTable *table) {
                            (int)name_length, name_start);
             }
 
-            fprintf(out, "    %.*s = ", (int)name_length, name_start);
+            codegen_indent(out, indent);
+            fprintf(out, "%.*s = ", (int)name_length, name_start);
             codegen_emit_expression(out, node->as.assignment.value);
             fprintf(out, ";\n");
             break;
         }
 
         case AST_ASSERT:
-            fprintf(out, "    if (!(");
+            codegen_indent(out, indent);
+            fprintf(out, "if (!(");
             codegen_emit_expression(out, node->as.assert_stmt.condition);
             fprintf(out, ")) {\n");
-            fprintf(out, "        fprintf(stderr, \"%s:%zu:%zu: error[R001]: Assertion failed\\n\");\n",
+            codegen_indent(out, indent + 1);
+            fprintf(out, "fprintf(stderr, \"%s:%zu:%zu: error[R001]: Assertion failed\\n\");\n",
                     g_source_file, node->loc.line, node->loc.column);
-            fprintf(out, "        exit(%d);\n", EXIT_RUNTIME);
-            fprintf(out, "    }\n");
+            codegen_indent(out, indent + 1);
+            fprintf(out, "exit(%d);\n", EXIT_RUNTIME);
+            codegen_indent(out, indent);
+            fprintf(out, "}\n");
             break;
+
+        case AST_BLOCK: {
+            /* Enter new scope */
+            *scope = scope_create(*scope);
+
+            codegen_indent(out, indent);
+            fprintf(out, "{\n");
+            for (size_t i = 0; i < node->as.block.count; i++) {
+                codegen_emit_statement(out, node->as.block.statements[i], scope, indent + 1);
+            }
+            codegen_indent(out, indent);
+            fprintf(out, "}\n");
+
+            /* Exit scope */
+            Scope *old = *scope;
+            *scope = old->parent;
+            scope_destroy(old);
+            break;
+        }
 
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
@@ -1293,14 +1437,13 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
     }
 
-    VarTable table;
-    vartable_init(&table);
+    Scope *scope = scope_create(NULL);
 
     for (size_t i = 0; i < ast->as.program.count; i++) {
-        codegen_emit_statement(out, ast->as.program.statements[i], &table);
+        codegen_emit_statement(out, ast->as.program.statements[i], &scope, 1);
     }
 
-    vartable_free(&table);
+    scope_destroy(scope);
 
     fprintf(out, "}\n");
 }
