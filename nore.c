@@ -244,6 +244,9 @@ typedef enum {
     TOKEN_GREATER,
     TOKEN_LESS_EQUAL,
     TOKEN_GREATER_EQUAL,
+    TOKEN_AND_AND,
+    TOKEN_OR_OR,
+    TOKEN_BANG,
 
     TOKEN_LPAREN,
     TOKEN_RPAREN,
@@ -461,7 +464,19 @@ Token lexer_next_token(Lexer *lexer) {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_BANG_EQUAL);
             }
-            return lexer_error_token(lexer, "Unexpected character '!'");
+            return lexer_make_token(lexer, TOKEN_BANG);
+        case '&':
+            if (lexer_peek(lexer) == '&') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_AND_AND);
+            }
+            return lexer_error_token(lexer, "Expected '&&'");
+        case '|':
+            if (lexer_peek(lexer) == '|') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_OR_OR);
+            }
+            return lexer_error_token(lexer, "Expected '||'");
         case '<':
             if (lexer_peek(lexer) == '=') {
                 lexer_advance(lexer);
@@ -532,11 +547,14 @@ typedef enum {
     OP_LT,
     OP_GT,
     OP_LE,
-    OP_GE
+    OP_GE,
+    OP_AND,
+    OP_OR
 } BinaryOp;
 
 typedef enum {
-    OP_NEG
+    OP_NEG,
+    OP_NOT
 } UnaryOp;
 
 typedef struct Ast {
@@ -965,16 +983,20 @@ static int parser_get_precedence(TokenKind kind) {
     switch (kind) {
         case TOKEN_STAR:
         case TOKEN_SLASH:
-            return 2;
+            return 4;
         case TOKEN_PLUS:
         case TOKEN_MINUS:
-            return 1;
+            return 3;
         case TOKEN_EQUAL_EQUAL:
         case TOKEN_BANG_EQUAL:
         case TOKEN_LESS:
         case TOKEN_GREATER:
         case TOKEN_LESS_EQUAL:
         case TOKEN_GREATER_EQUAL:
+            return 2;
+        case TOKEN_AND_AND:
+            return 1;
+        case TOKEN_OR_OR:
             return 0;
         default:
             return -1;
@@ -993,6 +1015,8 @@ static BinaryOp parser_token_to_binary_op(TokenKind kind) {
         case TOKEN_GREATER:        return OP_GT;
         case TOKEN_LESS_EQUAL:     return OP_LE;
         case TOKEN_GREATER_EQUAL:  return OP_GE;
+        case TOKEN_AND_AND:        return OP_AND;
+        case TOKEN_OR_OR:          return OP_OR;
         default:
             fprintf(stderr, "Internal error: not a binary operator\n");
             exit(1);
@@ -1010,6 +1034,14 @@ static Ast *parser_parse_primary(Parser *parser) {
         Ast *operand = parser_parse_primary(parser);
         if (!operand) return NULL;
         return ast_make_unary(OP_NEG, operand, loc);
+    }
+
+    /* Handle unary NOT */
+    if (parser_match(parser, TOKEN_BANG)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        Ast *operand = parser_parse_primary(parser);
+        if (!operand) return NULL;
+        return ast_make_unary(OP_NOT, operand, loc);
     }
 
     if (parser_match(parser, TOKEN_NUMBER)) {
@@ -1419,7 +1451,8 @@ static void parser_print_ast_step(Ast *node, int indent) {
                 case OP_GT:  op_name = "GT"; break;
                 case OP_LE:  op_name = "LE"; break;
                 case OP_GE:  op_name = "GE"; break;
-                default: op_name = "UNKNOWN"; break;
+                case OP_AND: op_name = "AND"; break;
+                case OP_OR:  op_name = "OR"; break;
             }
             printf("BINARY(%s)\n", op_name);
             parser_print_ast_step(node->as.binary.left, indent + 1);
@@ -1431,7 +1464,7 @@ static void parser_print_ast_step(Ast *node, int indent) {
             const char *op_name;
             switch (node->as.unary.op) {
                 case OP_NEG: op_name = "NEG"; break;
-                default: op_name = "UNKNOWN"; break;
+                case OP_NOT: op_name = "NOT"; break;
             }
             printf("UNARY(%s)\n", op_name);
             parser_print_ast_step(node->as.unary.operand, indent + 1);
@@ -1643,6 +1676,8 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 case OP_GT:  fprintf(out, " > "); break;
                 case OP_LE:  fprintf(out, " <= "); break;
                 case OP_GE:  fprintf(out, " >= "); break;
+                case OP_AND: fprintf(out, " && "); break;
+                case OP_OR:  fprintf(out, " || "); break;
             }
 
             codegen_emit_expression(out, node->as.binary.right);
@@ -1654,6 +1689,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, "(");
             switch (node->as.unary.op) {
                 case OP_NEG: fprintf(out, "-"); break;
+                case OP_NOT: fprintf(out, "!"); break;
             }
             codegen_emit_expression(out, node->as.unary.operand);
             fprintf(out, ")");
