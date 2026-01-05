@@ -116,17 +116,57 @@ static void error(ErrorCode code, const char *fmt, ...) {
 /* Global source file path for diagnostics */
 static const char *g_source_file = "<unknown>";
 
-/* User errors with source location */
+/* Error collection for multi-error reporting */
+#define MAX_ERRORS 10
+
+typedef struct {
+    ErrorCode code;
+    size_t line;
+    size_t column;
+    char message[256];
+} CollectedError;
+
+static CollectedError g_errors[MAX_ERRORS];
+static size_t g_error_count = 0;
+static bool g_had_error = false;
+
+/* Record error for later reporting (does not exit) */
 static void diagnostic(ErrorCode code, size_t line, size_t column,
                        const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    fprintf(stderr, "%s:%zu:%zu: error[%s]: ", g_source_file, line, column,
-            error_code_str(code));
-    vfprintf(stderr, fmt, args);
-    fprintf(stderr, "\n");
-    va_end(args);
+    g_had_error = true;
+
+    if (g_error_count < MAX_ERRORS) {
+        CollectedError *err = &g_errors[g_error_count++];
+        err->code = code;
+        err->line = line;
+        err->column = column;
+
+        va_list args;
+        va_start(args, fmt);
+        vsnprintf(err->message, sizeof(err->message), fmt, args);
+        va_end(args);
+    }
+}
+
+/* Print all collected errors and exit */
+static void report_errors_and_exit(void) {
+    for (size_t i = 0; i < g_error_count; i++) {
+        CollectedError *err = &g_errors[i];
+        fprintf(stderr, "%s:%zu:%zu: error[%s]: %s\n",
+                g_source_file, err->line, err->column,
+                error_code_str(err->code), err->message);
+    }
+
+    if (g_error_count == MAX_ERRORS) {
+        fprintf(stderr, "Too many errors, stopping.\n");
+    }
+
     exit(EXIT_USER_ERROR);
+}
+
+/* Check if we should stop (too many errors) */
+static bool too_many_errors(void) {
+    return g_error_count >= MAX_ERRORS;
 }
 
 /* ================================== Files ================================= */
@@ -890,13 +930,6 @@ static int parser_match(Parser *parser, TokenKind kind) {
     return 1;
 }
 
-static void parser_consume(Parser *parser, TokenKind kind, ErrorCode code,
-                           const char *msg) {
-    if (!parser_match(parser, kind)) {
-        diagnostic(code, parser->current.line, parser->current.column, "%s", msg);
-    }
-}
-
 static TokenKind parser_peek_next(Parser *parser) {
     /* Save lexer state */
     Lexer saved = *parser->lexer;
@@ -904,6 +937,26 @@ static TokenKind parser_peek_next(Parser *parser) {
     /* Restore lexer state */
     *parser->lexer = saved;
     return next.kind;
+}
+
+/* Panic mode: skip tokens until we reach a synchronization point */
+static void parser_synchronize(Parser *parser) {
+    while (!parser_check(parser, TOKEN_EOF)) {
+        switch (parser->current.kind) {
+            case TOKEN_VAL:
+            case TOKEN_MUT:
+            case TOKEN_RETURN:
+            case TOKEN_ASSERT:
+            case TOKEN_IF:
+            case TOKEN_WHILE:
+            case TOKEN_BREAK:
+            case TOKEN_CONTINUE:
+            case TOKEN_RBRACE:
+                return;
+            default:
+                parser_advance(parser);
+        }
+    }
 }
 
 /* ============================ Operator Precedence ========================= */
@@ -955,6 +1008,7 @@ static Ast *parser_parse_primary(Parser *parser) {
     if (parser_match(parser, TOKEN_MINUS)) {
         SourceLoc loc = token_loc(&parser->previous);
         Ast *operand = parser_parse_primary(parser);
+        if (!operand) return NULL;
         return ast_make_unary(OP_NEG, operand, loc);
     }
 
@@ -965,6 +1019,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         if (len >= sizeof(buffer)) {
             diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
                        "Number literal too large");
+            return NULL;
         }
         memcpy(buffer, parser->previous.start, len);
         buffer[len] = '\0';
@@ -979,8 +1034,12 @@ static Ast *parser_parse_primary(Parser *parser) {
 
     if (parser_match(parser, TOKEN_LPAREN)) {
         Ast *expr = parser_parse_expression(parser);
-        parser_consume(parser, TOKEN_RPAREN, ERR_P002_EXPECTED_RPAREN,
-                       "Expected ')' after expression");
+        if (!expr) return NULL;
+        if (!parser_match(parser, TOKEN_RPAREN)) {
+            diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                       parser->current.column, "Expected ')' after expression");
+            return NULL;
+        }
         return expr;
     }
 
@@ -992,6 +1051,7 @@ static Ast *parser_parse_primary(Parser *parser) {
 static Ast *parser_parse_precedence(Parser *parser, int min_precedence) {
     /* Parse left operand */
     Ast *left = parser_parse_primary(parser);
+    if (!left) return NULL;
 
     /* Consume operators while precedence is high enough */
     while (parser_get_precedence(parser->current.kind) >= min_precedence) {
@@ -1002,6 +1062,7 @@ static Ast *parser_parse_precedence(Parser *parser, int min_precedence) {
 
         /* Parse right operand with higher precedence for left associativity */
         Ast *right = parser_parse_precedence(parser, precedence + 1);
+        if (!right) return NULL;
 
         /* Combine into binary operation */
         left = ast_make_binary(parser_token_to_binary_op(op_kind), left, right, op_loc);
@@ -1024,6 +1085,8 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                    parser->current.column, "Expected identifier after 'val'");
+        parser_synchronize(parser);
+        return NULL;
     }
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
@@ -1032,10 +1095,16 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
     if (!parser_match(parser, TOKEN_EQUALS)) {
         diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
                    parser->current.column, "Expected '=' in val declaration");
+        parser_synchronize(parser);
+        return NULL;
     }
 
     /* Parse initializer expression */
     Ast *initializer = parser_parse_expression(parser);
+    if (!initializer) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     return ast_make_val_decl(name_start, name_length, initializer, loc);
 }
@@ -1048,6 +1117,8 @@ static Ast *parser_parse_mut_declaration(Parser *parser) {
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                    parser->current.column, "Expected identifier after 'mut'");
+        parser_synchronize(parser);
+        return NULL;
     }
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
@@ -1056,10 +1127,16 @@ static Ast *parser_parse_mut_declaration(Parser *parser) {
     if (!parser_match(parser, TOKEN_EQUALS)) {
         diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
                    parser->current.column, "Expected '=' in mut declaration");
+        parser_synchronize(parser);
+        return NULL;
     }
 
     /* Parse initializer expression */
     Ast *initializer = parser_parse_expression(parser);
+    if (!initializer) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     return ast_make_mut_decl(name_start, name_length, initializer, loc);
 }
@@ -1070,6 +1147,10 @@ static Ast *parser_parse_return(Parser *parser) {
 
     /* Parse return value expression */
     Ast *value = parser_parse_expression(parser);
+    if (!value) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     return ast_make_return(value, loc);
 }
@@ -1085,6 +1166,10 @@ static Ast *parser_parse_assignment(Parser *parser) {
 
     /* Parse value expression */
     Ast *value = parser_parse_expression(parser);
+    if (!value) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     return ast_make_assignment(name_start, name_length, value, loc);
 }
@@ -1095,6 +1180,10 @@ static Ast *parser_parse_assert(Parser *parser) {
 
     /* Parse condition expression */
     Ast *condition = parser_parse_expression(parser);
+    if (!condition) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     return ast_make_assert(condition, loc);
 }
@@ -1109,15 +1198,18 @@ static Ast *parser_parse_block(Parser *parser) {
     Ast *block = ast_make_block(loc);
 
     while (!parser_check(parser, TOKEN_RBRACE) &&
-           !parser_check(parser, TOKEN_EOF)) {
+           !parser_check(parser, TOKEN_EOF) &&
+           !too_many_errors()) {
         Ast *statement = parser_parse_statement(parser);
         if (statement) {
             ast_block_add_statement(block, statement);
         }
     }
 
-    parser_consume(parser, TOKEN_RBRACE, ERR_P007_EXPECTED_RBRACE,
-                   "Expected '}' to close block");
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        diagnostic(ERR_P007_EXPECTED_RBRACE, parser->current.line,
+                   parser->current.column, "Expected '}' to close block");
+    }
 
     return block;
 }
@@ -1127,26 +1219,46 @@ static Ast *parser_parse_if(Parser *parser) {
     SourceLoc loc = token_loc(&parser->previous);
 
     /* Expect '(' */
-    parser_consume(parser, TOKEN_LPAREN, ERR_P008_EXPECTED_LPAREN_IF,
-                   "Expected '(' after 'if'");
+    if (!parser_match(parser, TOKEN_LPAREN)) {
+        diagnostic(ERR_P008_EXPECTED_LPAREN_IF, parser->current.line,
+                   parser->current.column, "Expected '(' after 'if'");
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     /* Parse condition */
     Ast *condition = parser_parse_expression(parser);
+    if (!condition) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     /* Expect ')' */
-    parser_consume(parser, TOKEN_RPAREN, ERR_P009_EXPECTED_RPAREN_IF,
-                   "Expected ')' after condition");
+    if (!parser_match(parser, TOKEN_RPAREN)) {
+        diagnostic(ERR_P009_EXPECTED_RPAREN_IF, parser->current.line,
+                   parser->current.column, "Expected ')' after condition");
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     /* Expect '{' and parse block */
-    parser_consume(parser, TOKEN_LBRACE, ERR_P010_EXPECTED_LBRACE_IF,
-                   "Expected '{' for if body");
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
+                   parser->current.column, "Expected '{' for if body");
+        parser_synchronize(parser);
+        return NULL;
+    }
     Ast *then_block = parser_parse_block(parser);
 
     /* Optional else */
     Ast *else_block = NULL;
     if (parser_match(parser, TOKEN_ELSE)) {
-        parser_consume(parser, TOKEN_LBRACE, ERR_P010_EXPECTED_LBRACE_IF,
-                       "Expected '{' for else body");
+        if (!parser_match(parser, TOKEN_LBRACE)) {
+            diagnostic(ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
+                       parser->current.column, "Expected '{' for else body");
+            parser_synchronize(parser);
+            return NULL;
+        }
         else_block = parser_parse_block(parser);
     }
 
@@ -1158,19 +1270,35 @@ static Ast *parser_parse_while(Parser *parser) {
     SourceLoc loc = token_loc(&parser->previous);
 
     /* Expect '(' */
-    parser_consume(parser, TOKEN_LPAREN, ERR_P011_EXPECTED_LPAREN_WHILE,
-                   "Expected '(' after 'while'");
+    if (!parser_match(parser, TOKEN_LPAREN)) {
+        diagnostic(ERR_P011_EXPECTED_LPAREN_WHILE, parser->current.line,
+                   parser->current.column, "Expected '(' after 'while'");
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     /* Parse condition */
     Ast *condition = parser_parse_expression(parser);
+    if (!condition) {
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     /* Expect ')' */
-    parser_consume(parser, TOKEN_RPAREN, ERR_P012_EXPECTED_RPAREN_WHILE,
-                   "Expected ')' after condition");
+    if (!parser_match(parser, TOKEN_RPAREN)) {
+        diagnostic(ERR_P012_EXPECTED_RPAREN_WHILE, parser->current.line,
+                   parser->current.column, "Expected ')' after condition");
+        parser_synchronize(parser);
+        return NULL;
+    }
 
     /* Expect '{' and parse block */
-    parser_consume(parser, TOKEN_LBRACE, ERR_P013_EXPECTED_LBRACE_WHILE,
-                   "Expected '{' for while body");
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P013_EXPECTED_LBRACE_WHILE, parser->current.line,
+                   parser->current.column, "Expected '{' for while body");
+        parser_synchronize(parser);
+        return NULL;
+    }
     Ast *body = parser_parse_block(parser);
 
     return ast_make_while(condition, body, loc);
@@ -1189,6 +1317,8 @@ static Ast *parser_parse_continue(Parser *parser) {
 }
 
 static Ast *parser_parse_statement(Parser *parser) {
+    if (too_many_errors()) return NULL;
+
     /* Block statement */
     if (parser_match(parser, TOKEN_LBRACE)) {
         return parser_parse_block(parser);
@@ -1239,13 +1369,14 @@ static Ast *parser_parse_statement(Parser *parser) {
 
     diagnostic(ERR_P005_EXPECTED_STATEMENT, parser->current.line,
                parser->current.column, "Expected statement");
+    parser_synchronize(parser);
     return NULL;
 }
 
 static Ast *parser_parse_program(Parser *parser) {
     Ast *program = ast_make_program();
 
-    while (!parser_check(parser, TOKEN_EOF)) {
+    while (!parser_check(parser, TOKEN_EOF) && !too_many_errors()) {
         Ast *statement = parser_parse_statement(parser);
         if (statement) {
             ast_program_add_statement(program, statement);
@@ -1463,6 +1594,7 @@ static void scope_add(Scope *scope, const char *name_start,
         diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
                    "Variable '%.*s' already declared in this scope",
                    (int)name_length, name_start);
+        return;  /* Skip adding duplicate */
     }
 
     /* Grow if needed */
@@ -1591,12 +1723,14 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
                 diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
                            node->loc.column, "Undeclared variable '%.*s'",
                            (int)name_length, name_start);
+                break;  /* Skip code generation */
             }
             if (!v->is_mutable) {
                 diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
                            node->loc.column,
                            "Cannot assign to immutable variable '%.*s'",
                            (int)name_length, name_start);
+                break;  /* Skip code generation */
             }
 
             codegen_indent(out, indent);
@@ -1687,6 +1821,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             if ((*scope)->loop_depth == 0) {
                 diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'break' outside of loop");
+                break;  /* Skip code generation */
             }
             codegen_indent(out, indent);
             fprintf(out, "break;\n");
@@ -1696,6 +1831,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             if ((*scope)->loop_depth == 0) {
                 diagnostic(ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'continue' outside of loop");
+                break;  /* Skip code generation */
             }
             codegen_indent(out, indent);
             fprintf(out, "continue;\n");
@@ -1791,6 +1927,12 @@ static void codegen_compile(Ast *ast, const char *output_path) {
     codegen_emit_ir(out, ast);
 
     fclose(out);
+
+    /* Don't compile if there were errors */
+    if (g_had_error) {
+        unlink(temp_path);
+        return;
+    }
 
     /* Compile with Clang */
     codegen_compile_with_clang(temp_path, output_path);
@@ -1892,7 +2034,7 @@ int main(int argc, char **argv) {
         parser_print_ast(ast);
     }
 
-    /* --codegen: Print intermediate C code */
+    /* --codegen: Print intermediate C code (also runs semantic checks) */
     if (flags.print_ir) {
         codegen_print_ir(ast);
     }
@@ -1903,6 +2045,13 @@ int main(int argc, char **argv) {
     if (!skip_compilation) {
         /* Generate and compile */
         codegen_compile(ast, output_path);
+    }
+
+    /* Report any collected errors */
+    if (g_had_error) {
+        ast_free(ast);
+        free(source);
+        report_errors_and_exit();
     }
 
     /* Cleanup */
