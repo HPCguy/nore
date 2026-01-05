@@ -61,6 +61,8 @@ typedef enum {
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
     ERR_S002_UNDECLARED_VARIABLE   = ERR_GROUP_SEMANTIC + 2,
     ERR_S003_IMMUTABLE_ASSIGNMENT  = ERR_GROUP_SEMANTIC + 3,
+    ERR_S004_BREAK_OUTSIDE_LOOP    = ERR_GROUP_SEMANTIC + 4,
+    ERR_S005_CONTINUE_OUTSIDE_LOOP = ERR_GROUP_SEMANTIC + 5,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -186,6 +188,8 @@ typedef enum {
     TOKEN_IF,
     TOKEN_ELSE,
     TOKEN_WHILE,
+    TOKEN_BREAK,
+    TOKEN_CONTINUE,
     TOKEN_VOID,
     TOKEN_I32,
 
@@ -232,6 +236,8 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_IF:            return "IF";
         case TOKEN_ELSE:          return "ELSE";
         case TOKEN_WHILE:         return "WHILE";
+        case TOKEN_BREAK:         return "BREAK";
+        case TOKEN_CONTINUE:      return "CONTINUE";
         case TOKEN_VOID:          return "VOID";
         case TOKEN_I32:           return "I32";
         case TOKEN_PLUS:          return "PLUS";
@@ -350,10 +356,14 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             break;
         case 5:
             if (memcmp(start, "while", 5) == 0) return TOKEN_WHILE;
+            if (memcmp(start, "break", 5) == 0) return TOKEN_BREAK;
             break;
         case 6:
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
             if (memcmp(start, "assert", 6) == 0) return TOKEN_ASSERT;
+            break;
+        case 8:
+            if (memcmp(start, "continue", 8) == 0) return TOKEN_CONTINUE;
             break;
     }
     return TOKEN_IDENTIFIER;
@@ -466,6 +476,8 @@ typedef enum {
     AST_ASSERT,
     AST_IF,
     AST_WHILE,
+    AST_BREAK,
+    AST_CONTINUE,
     AST_BLOCK,
     AST_PROGRAM
 } AstKind;
@@ -699,6 +711,26 @@ static Ast *ast_make_while(Ast *condition, Ast *body, SourceLoc loc) {
     node->loc = loc;
     node->as.while_stmt.condition = condition;
     node->as.while_stmt.body = body;
+    return node;
+}
+
+static Ast *ast_make_break(SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_BREAK;
+    node->loc = loc;
+    return node;
+}
+
+static Ast *ast_make_continue(SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_CONTINUE;
+    node->loc = loc;
     return node;
 }
 
@@ -1144,6 +1176,18 @@ static Ast *parser_parse_while(Parser *parser) {
     return ast_make_while(condition, body, loc);
 }
 
+static Ast *parser_parse_break(Parser *parser) {
+    /* TOKEN_BREAK already consumed - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
+    return ast_make_break(loc);
+}
+
+static Ast *parser_parse_continue(Parser *parser) {
+    /* TOKEN_CONTINUE already consumed - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
+    return ast_make_continue(loc);
+}
+
 static Ast *parser_parse_statement(Parser *parser) {
     /* Block statement */
     if (parser_match(parser, TOKEN_LBRACE)) {
@@ -1172,6 +1216,14 @@ static Ast *parser_parse_statement(Parser *parser) {
 
     if (parser_match(parser, TOKEN_WHILE)) {
         return parser_parse_while(parser);
+    }
+
+    if (parser_match(parser, TOKEN_BREAK)) {
+        return parser_parse_break(parser);
+    }
+
+    if (parser_match(parser, TOKEN_CONTINUE)) {
+        return parser_parse_continue(parser);
     }
 
     /* Check for assignment: identifier followed by '=' */
@@ -1311,6 +1363,14 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.while_stmt.body, indent + 2);
             break;
 
+        case AST_BREAK:
+            printf("BREAK\n");
+            break;
+
+        case AST_CONTINUE:
+            printf("CONTINUE\n");
+            break;
+
         case AST_BLOCK:
             printf("BLOCK\n");
             for (size_t i = 0; i < node->as.block.count; i++) {
@@ -1346,6 +1406,7 @@ typedef struct Scope {
     size_t count;
     size_t capacity;
     struct Scope *parent;
+    int loop_depth;
 } Scope;
 
 static Scope *scope_create(Scope *parent) {
@@ -1361,6 +1422,7 @@ static Scope *scope_create(Scope *parent) {
     scope->count = 0;
     scope->capacity = 8;
     scope->parent = parent;
+    scope->loop_depth = parent ? parent->loop_depth : 0;
     return scope;
 }
 
@@ -1473,6 +1535,8 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_ASSERT:
         case AST_IF:
         case AST_WHILE:
+        case AST_BREAK:
+        case AST_CONTINUE:
         case AST_BLOCK:
         case AST_PROGRAM:
             /* These should never appear in expressions */
@@ -1604,8 +1668,9 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             codegen_emit_expression(out, node->as.while_stmt.condition);
             fprintf(out, ") {\n");
 
-            /* Enter scope for while body */
+            /* Enter scope for while body with incremented loop depth */
             *scope = scope_create(*scope);
+            (*scope)->loop_depth++;
             for (size_t i = 0; i < body->as.block.count; i++) {
                 codegen_emit_statement(out, body->as.block.statements[i], scope, indent + 1);
             }
@@ -1617,6 +1682,24 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, "}\n");
             break;
         }
+
+        case AST_BREAK:
+            if ((*scope)->loop_depth == 0) {
+                diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
+                           node->loc.column, "'break' outside of loop");
+            }
+            codegen_indent(out, indent);
+            fprintf(out, "break;\n");
+            break;
+
+        case AST_CONTINUE:
+            if ((*scope)->loop_depth == 0) {
+                diagnostic(ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
+                           node->loc.column, "'continue' outside of loop");
+            }
+            codegen_indent(out, indent);
+            fprintf(out, "continue;\n");
+            break;
 
         case AST_BLOCK: {
             /* Enter new scope */
