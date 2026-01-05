@@ -50,6 +50,9 @@ typedef enum {
     ERR_P005_EXPECTED_STATEMENT  = ERR_GROUP_PARSER + 5,
     ERR_P006_NUMBER_TOO_LARGE    = ERR_GROUP_PARSER + 6,
     ERR_P007_EXPECTED_RBRACE     = ERR_GROUP_PARSER + 7,
+    ERR_P008_EXPECTED_LPAREN_IF  = ERR_GROUP_PARSER + 8,
+    ERR_P009_EXPECTED_RPAREN_IF  = ERR_GROUP_PARSER + 9,
+    ERR_P010_EXPECTED_LBRACE_IF  = ERR_GROUP_PARSER + 10,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -177,6 +180,8 @@ typedef enum {
     TOKEN_MUT,
     TOKEN_RETURN,
     TOKEN_ASSERT,
+    TOKEN_IF,
+    TOKEN_ELSE,
     TOKEN_VOID,
     TOKEN_I32,
 
@@ -220,6 +225,8 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_MUT:           return "MUT";
         case TOKEN_RETURN:        return "RETURN";
         case TOKEN_ASSERT:        return "ASSERT";
+        case TOKEN_IF:            return "IF";
+        case TOKEN_ELSE:          return "ELSE";
         case TOKEN_VOID:          return "VOID";
         case TOKEN_I32:           return "I32";
         case TOKEN_PLUS:          return "PLUS";
@@ -323,6 +330,9 @@ static Token lexer_scan_number(Lexer *lexer) {
 
 static TokenKind lexer_identify_keyword(const char *start, size_t length) {
     switch (length) {
+        case 2:
+            if (memcmp(start, "if", 2) == 0) return TOKEN_IF;
+            break;
         case 3:
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
             if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
@@ -331,6 +341,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
         case 4:
             if (memcmp(start, "func", 4) == 0) return TOKEN_FUNC;
             if (memcmp(start, "void", 4) == 0) return TOKEN_VOID;
+            if (memcmp(start, "else", 4) == 0) return TOKEN_ELSE;
             break;
         case 6:
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
@@ -445,6 +456,7 @@ typedef enum {
     AST_RETURN,
     AST_ASSIGNMENT,
     AST_ASSERT,
+    AST_IF,
     AST_BLOCK,
     AST_PROGRAM
 } AstKind;
@@ -515,6 +527,12 @@ typedef struct Ast {
         struct {
             struct Ast *condition;
         } assert_stmt;
+
+        struct {
+            struct Ast *condition;
+            struct Ast *then_block;
+            struct Ast *else_block;  /* NULL if no else */
+        } if_stmt;
 
         struct {
             struct Ast **statements;
@@ -644,6 +662,20 @@ static Ast *ast_make_assert(Ast *condition, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_if(Ast *condition, Ast *then_block, Ast *else_block,
+                        SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_IF;
+    node->loc = loc;
+    node->as.if_stmt.condition = condition;
+    node->as.if_stmt.then_block = then_block;
+    node->as.if_stmt.else_block = else_block;
+    return node;
+}
+
 static Ast *ast_make_block(SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
@@ -741,6 +773,11 @@ static void ast_free(Ast *node) {
     }
     if (node->kind == AST_ASSERT) {
         ast_free(node->as.assert_stmt.condition);
+    }
+    if (node->kind == AST_IF) {
+        ast_free(node->as.if_stmt.condition);
+        ast_free(node->as.if_stmt.then_block);
+        ast_free(node->as.if_stmt.else_block);
     }
     if (node->kind == AST_BLOCK) {
         for (size_t i = 0; i < node->as.block.count; i++) {
@@ -1027,6 +1064,37 @@ static Ast *parser_parse_block(Parser *parser) {
     return block;
 }
 
+static Ast *parser_parse_if(Parser *parser) {
+    /* TOKEN_IF already consumed - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    /* Expect '(' */
+    parser_consume(parser, TOKEN_LPAREN, ERR_P008_EXPECTED_LPAREN_IF,
+                   "Expected '(' after 'if'");
+
+    /* Parse condition */
+    Ast *condition = parser_parse_expression(parser);
+
+    /* Expect ')' */
+    parser_consume(parser, TOKEN_RPAREN, ERR_P009_EXPECTED_RPAREN_IF,
+                   "Expected ')' after condition");
+
+    /* Expect '{' and parse block */
+    parser_consume(parser, TOKEN_LBRACE, ERR_P010_EXPECTED_LBRACE_IF,
+                   "Expected '{' for if body");
+    Ast *then_block = parser_parse_block(parser);
+
+    /* Optional else */
+    Ast *else_block = NULL;
+    if (parser_match(parser, TOKEN_ELSE)) {
+        parser_consume(parser, TOKEN_LBRACE, ERR_P010_EXPECTED_LBRACE_IF,
+                       "Expected '{' for else body");
+        else_block = parser_parse_block(parser);
+    }
+
+    return ast_make_if(condition, then_block, else_block, loc);
+}
+
 static Ast *parser_parse_statement(Parser *parser) {
     /* Block statement */
     if (parser_match(parser, TOKEN_LBRACE)) {
@@ -1047,6 +1115,10 @@ static Ast *parser_parse_statement(Parser *parser) {
 
     if (parser_match(parser, TOKEN_ASSERT)) {
         return parser_parse_assert(parser);
+    }
+
+    if (parser_match(parser, TOKEN_IF)) {
+        return parser_parse_if(parser);
     }
 
     /* Check for assignment: identifier followed by '=' */
@@ -1159,6 +1231,21 @@ static void parser_print_ast_step(Ast *node, int indent) {
         case AST_ASSERT:
             printf("ASSERT\n");
             parser_print_ast_step(node->as.assert_stmt.condition, indent + 1);
+            break;
+
+        case AST_IF:
+            printf("IF\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("COND:\n");
+            parser_print_ast_step(node->as.if_stmt.condition, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("THEN:\n");
+            parser_print_ast_step(node->as.if_stmt.then_block, indent + 2);
+            if (node->as.if_stmt.else_block) {
+                for (int i = 0; i < indent + 1; i++) printf("  ");
+                printf("ELSE:\n");
+                parser_print_ast_step(node->as.if_stmt.else_block, indent + 2);
+            }
             break;
 
         case AST_BLOCK:
@@ -1321,6 +1408,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_RETURN:
         case AST_ASSIGNMENT:
         case AST_ASSERT:
+        case AST_IF:
         case AST_BLOCK:
         case AST_PROGRAM:
             /* These should never appear in expressions */
@@ -1403,6 +1491,46 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             codegen_indent(out, indent);
             fprintf(out, "}\n");
             break;
+
+        case AST_IF: {
+            Ast *then_block = node->as.if_stmt.then_block;
+            Ast *else_block = node->as.if_stmt.else_block;
+
+            codegen_indent(out, indent);
+            fprintf(out, "if (");
+            codegen_emit_expression(out, node->as.if_stmt.condition);
+            fprintf(out, ") {\n");
+
+            /* Enter scope for then block */
+            *scope = scope_create(*scope);
+            for (size_t i = 0; i < then_block->as.block.count; i++) {
+                codegen_emit_statement(out, then_block->as.block.statements[i], scope, indent + 1);
+            }
+            Scope *old = *scope;
+            *scope = old->parent;
+            scope_destroy(old);
+
+            codegen_indent(out, indent);
+            fprintf(out, "}");
+
+            if (else_block) {
+                fprintf(out, " else {\n");
+
+                /* Enter scope for else block */
+                *scope = scope_create(*scope);
+                for (size_t i = 0; i < else_block->as.block.count; i++) {
+                    codegen_emit_statement(out, else_block->as.block.statements[i], scope, indent + 1);
+                }
+                old = *scope;
+                *scope = old->parent;
+                scope_destroy(old);
+
+                codegen_indent(out, indent);
+                fprintf(out, "}");
+            }
+            fprintf(out, "\n");
+            break;
+        }
 
         case AST_BLOCK: {
             /* Enter new scope */
