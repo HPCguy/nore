@@ -56,6 +56,8 @@ typedef enum {
     ERR_P011_EXPECTED_LPAREN_WHILE = ERR_GROUP_PARSER + 11,
     ERR_P012_EXPECTED_RPAREN_WHILE = ERR_GROUP_PARSER + 12,
     ERR_P013_EXPECTED_LBRACE_WHILE = ERR_GROUP_PARSER + 13,
+    ERR_P014_EXPECTED_COLON        = ERR_GROUP_PARSER + 14,
+    ERR_P015_EXPECTED_TYPE         = ERR_GROUP_PARSER + 15,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -63,6 +65,8 @@ typedef enum {
     ERR_S003_IMMUTABLE_ASSIGNMENT  = ERR_GROUP_SEMANTIC + 3,
     ERR_S004_BREAK_OUTSIDE_LOOP    = ERR_GROUP_SEMANTIC + 4,
     ERR_S005_CONTINUE_OUTSIDE_LOOP = ERR_GROUP_SEMANTIC + 5,
+    ERR_S006_TYPE_MISMATCH         = ERR_GROUP_SEMANTIC + 6,
+    ERR_S007_CONDITION_NOT_BOOL    = ERR_GROUP_SEMANTIC + 7,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -169,6 +173,21 @@ static bool too_many_errors(void) {
     return g_error_count >= MAX_ERRORS;
 }
 
+/* ================================== Types ================================== */
+
+typedef enum {
+    TYPE_I64,
+    TYPE_BOOL,
+} Type;
+
+static const char *type_name(Type type) {
+    switch (type) {
+        case TYPE_I64:  return "i64";
+        case TYPE_BOOL: return "bool";
+    }
+    return "unknown";
+}
+
 /* ================================== Files ================================= */
 
 char *read_file(const char *path, size_t *out_length) {
@@ -231,7 +250,10 @@ typedef enum {
     TOKEN_BREAK,
     TOKEN_CONTINUE,
     TOKEN_VOID,
-    TOKEN_I32,
+    TOKEN_I64,
+    TOKEN_BOOL,
+    TOKEN_TRUE,
+    TOKEN_FALSE,
 
     TOKEN_PLUS,
     TOKEN_MINUS,
@@ -282,7 +304,10 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_BREAK:         return "BREAK";
         case TOKEN_CONTINUE:      return "CONTINUE";
         case TOKEN_VOID:          return "VOID";
-        case TOKEN_I32:           return "I32";
+        case TOKEN_I64:           return "I64";
+        case TOKEN_BOOL:          return "BOOL";
+        case TOKEN_TRUE:          return "TRUE";
+        case TOKEN_FALSE:         return "FALSE";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
@@ -390,16 +415,19 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
         case 3:
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
             if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
-            if (memcmp(start, "i32", 3) == 0) return TOKEN_I32;
+            if (memcmp(start, "i64", 3) == 0) return TOKEN_I64;
             break;
         case 4:
             if (memcmp(start, "func", 4) == 0) return TOKEN_FUNC;
             if (memcmp(start, "void", 4) == 0) return TOKEN_VOID;
             if (memcmp(start, "else", 4) == 0) return TOKEN_ELSE;
+            if (memcmp(start, "bool", 4) == 0) return TOKEN_BOOL;
+            if (memcmp(start, "true", 4) == 0) return TOKEN_TRUE;
             break;
         case 5:
             if (memcmp(start, "while", 5) == 0) return TOKEN_WHILE;
             if (memcmp(start, "break", 5) == 0) return TOKEN_BREAK;
+            if (memcmp(start, "false", 5) == 0) return TOKEN_FALSE;
             break;
         case 6:
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
@@ -521,6 +549,7 @@ static SourceLoc token_loc(Token *token) {
 
 typedef enum {
     AST_NUMBER,
+    AST_BOOLEAN,
     AST_IDENTIFIER,
     AST_BINARY,
     AST_UNARY,
@@ -560,10 +589,15 @@ typedef enum {
 typedef struct Ast {
     AstKind kind;
     SourceLoc loc;
+    Type expr_type;  /* Filled during type checking */
     union {
         struct {
             long value;
         } number;
+
+        struct {
+            bool value;
+        } boolean;
 
         struct {
             const char *start;
@@ -584,12 +618,14 @@ typedef struct Ast {
         struct {
             const char *name_start;
             size_t name_length;
+            Type type;
             struct Ast *initializer;
         } val_decl;
 
         struct {
             const char *name_start;
             size_t name_length;
+            Type type;
             struct Ast *initializer;
         } mut_decl;
 
@@ -645,6 +681,17 @@ static Ast *ast_make_number(long value, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_boolean(bool value, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_BOOLEAN;
+    node->loc = loc;
+    node->as.boolean.value = value;
+    return node;
+}
+
 static Ast *ast_make_identifier(const char *start, size_t length, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
@@ -683,7 +730,7 @@ static Ast *ast_make_unary(UnaryOp op, Ast *operand, SourceLoc loc) {
 }
 
 static Ast *ast_make_val_decl(const char *name_start, size_t name_length,
-                              Ast *initializer, SourceLoc loc) {
+                              Type type, Ast *initializer, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -692,12 +739,13 @@ static Ast *ast_make_val_decl(const char *name_start, size_t name_length,
     node->loc = loc;
     node->as.val_decl.name_start = name_start;
     node->as.val_decl.name_length = name_length;
+    node->as.val_decl.type = type;
     node->as.val_decl.initializer = initializer;
     return node;
 }
 
 static Ast *ast_make_mut_decl(const char *name_start, size_t name_length,
-                              Ast *initializer, SourceLoc loc) {
+                              Type type, Ast *initializer, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -706,6 +754,7 @@ static Ast *ast_make_mut_decl(const char *name_start, size_t name_length,
     node->loc = loc;
     node->as.mut_decl.name_start = name_start;
     node->as.mut_decl.name_length = name_length;
+    node->as.mut_decl.type = type;
     node->as.mut_decl.initializer = initializer;
     return node;
 }
@@ -1059,6 +1108,16 @@ static Ast *parser_parse_primary(Parser *parser) {
         return ast_make_number(value, loc);
     }
 
+    if (parser_match(parser, TOKEN_TRUE)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        return ast_make_boolean(true, loc);
+    }
+
+    if (parser_match(parser, TOKEN_FALSE)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        return ast_make_boolean(false, loc);
+    }
+
     if (parser_match(parser, TOKEN_IDENTIFIER)) {
         SourceLoc loc = token_loc(&parser->previous);
         return ast_make_identifier(parser->previous.start, parser->previous.length, loc);
@@ -1123,6 +1182,27 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
 
+    /* Expect ':' for type annotation */
+    if (!parser_match(parser, TOKEN_COLON)) {
+        diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
+                   parser->current.column, "Expected ':' after identifier");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect type (i64 or bool) */
+    Type type;
+    if (parser_match(parser, TOKEN_I64)) {
+        type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_BOOL)) {
+        type = TYPE_BOOL;
+    } else {
+        diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+                   parser->current.column, "Expected type (i64 or bool)");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
     /* Expect '=' */
     if (!parser_match(parser, TOKEN_EQUALS)) {
         diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
@@ -1138,7 +1218,7 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
         return NULL;
     }
 
-    return ast_make_val_decl(name_start, name_length, initializer, loc);
+    return ast_make_val_decl(name_start, name_length, type, initializer, loc);
 }
 
 static Ast *parser_parse_mut_declaration(Parser *parser) {
@@ -1155,6 +1235,27 @@ static Ast *parser_parse_mut_declaration(Parser *parser) {
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
 
+    /* Expect ':' for type annotation */
+    if (!parser_match(parser, TOKEN_COLON)) {
+        diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
+                   parser->current.column, "Expected ':' after identifier");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect type (i64 or bool) */
+    Type type;
+    if (parser_match(parser, TOKEN_I64)) {
+        type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_BOOL)) {
+        type = TYPE_BOOL;
+    } else {
+        diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+                   parser->current.column, "Expected type (i64 or bool)");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
     /* Expect '=' */
     if (!parser_match(parser, TOKEN_EQUALS)) {
         diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
@@ -1170,7 +1271,7 @@ static Ast *parser_parse_mut_declaration(Parser *parser) {
         return NULL;
     }
 
-    return ast_make_mut_decl(name_start, name_length, initializer, loc);
+    return ast_make_mut_decl(name_start, name_length, type, initializer, loc);
 }
 
 static Ast *parser_parse_return(Parser *parser) {
@@ -1432,6 +1533,10 @@ static void parser_print_ast_step(Ast *node, int indent) {
             printf("NUMBER(%ld)\n", node->as.number.value);
             break;
 
+        case AST_BOOLEAN:
+            printf("BOOLEAN(%s)\n", node->as.boolean.value ? "true" : "false");
+            break;
+
         case AST_IDENTIFIER:
             printf("IDENTIFIER(%.*s)\n",
                    (int)node->as.identifier.length,
@@ -1563,6 +1668,7 @@ typedef struct {
     const char *name_start;
     size_t name_length;
     bool is_mutable;
+    Type type;
 } Variable;
 
 typedef struct Scope {
@@ -1621,7 +1727,8 @@ static Variable *scope_lookup(Scope *scope, const char *name_start,
 }
 
 static void scope_add(Scope *scope, const char *name_start,
-                      size_t name_length, bool is_mutable, SourceLoc loc) {
+                      size_t name_length, bool is_mutable, Type type,
+                      SourceLoc loc) {
     /* Check for duplicates in current scope only */
     if (scope_lookup_local(scope, name_start, name_length) != NULL) {
         diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
@@ -1643,7 +1750,299 @@ static void scope_add(Scope *scope, const char *name_start,
     scope->vars[scope->count].name_start = name_start;
     scope->vars[scope->count].name_length = name_length;
     scope->vars[scope->count].is_mutable = is_mutable;
+    scope->vars[scope->count].type = type;
     scope->count++;
+}
+
+/* ============================== Type Checking ============================== */
+
+static Type typecheck_expression(Ast *node, Scope *scope);
+static void typecheck_statement(Ast *node, Scope **scope);
+
+static Type typecheck_expression(Ast *node, Scope *scope) {
+    switch (node->kind) {
+        case AST_NUMBER:
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+
+        case AST_BOOLEAN:
+            node->expr_type = TYPE_BOOL;
+            return TYPE_BOOL;
+
+        case AST_IDENTIFIER: {
+            Variable *v = scope_lookup(scope, node->as.identifier.start,
+                                        node->as.identifier.length);
+            if (v == NULL) {
+                diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
+                           node->loc.column, "Undeclared variable '%.*s'",
+                           (int)node->as.identifier.length,
+                           node->as.identifier.start);
+                node->expr_type = TYPE_I64;  /* Default to prevent cascading */
+                return TYPE_I64;
+            }
+            node->expr_type = v->type;
+            return v->type;
+        }
+
+        case AST_BINARY: {
+            Type left_type = typecheck_expression(node->as.binary.left, scope);
+            Type right_type = typecheck_expression(node->as.binary.right, scope);
+
+            switch (node->as.binary.op) {
+                /* Arithmetic: i64 x i64 -> i64 */
+                case OP_ADD:
+                case OP_SUB:
+                case OP_MUL:
+                case OP_DIV:
+                    if (left_type != TYPE_I64) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
+                                   node->as.binary.left->loc.column,
+                                   "Expected i64, got %s", type_name(left_type));
+                    }
+                    if (right_type != TYPE_I64) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
+                                   node->as.binary.right->loc.column,
+                                   "Expected i64, got %s", type_name(right_type));
+                    }
+                    node->expr_type = TYPE_I64;
+                    return TYPE_I64;
+
+                /* Comparison: i64 x i64 -> bool */
+                case OP_EQ:
+                case OP_NEQ:
+                case OP_LT:
+                case OP_GT:
+                case OP_LE:
+                case OP_GE:
+                    if (left_type != TYPE_I64) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
+                                   node->as.binary.left->loc.column,
+                                   "Expected i64, got %s", type_name(left_type));
+                    }
+                    if (right_type != TYPE_I64) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
+                                   node->as.binary.right->loc.column,
+                                   "Expected i64, got %s", type_name(right_type));
+                    }
+                    node->expr_type = TYPE_BOOL;
+                    return TYPE_BOOL;
+
+                /* Logical: bool x bool -> bool */
+                case OP_AND:
+                case OP_OR:
+                    if (left_type != TYPE_BOOL) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
+                                   node->as.binary.left->loc.column,
+                                   "Expected bool, got %s", type_name(left_type));
+                    }
+                    if (right_type != TYPE_BOOL) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
+                                   node->as.binary.right->loc.column,
+                                   "Expected bool, got %s", type_name(right_type));
+                    }
+                    node->expr_type = TYPE_BOOL;
+                    return TYPE_BOOL;
+            }
+            break;
+        }
+
+        case AST_UNARY: {
+            Type operand_type = typecheck_expression(node->as.unary.operand, scope);
+
+            switch (node->as.unary.op) {
+                /* Negation: i64 -> i64 */
+                case OP_NEG:
+                    if (operand_type != TYPE_I64) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                                   node->as.unary.operand->loc.column,
+                                   "Expected i64 for negation, got %s",
+                                   type_name(operand_type));
+                    }
+                    node->expr_type = TYPE_I64;
+                    return TYPE_I64;
+
+                /* NOT: bool -> bool */
+                case OP_NOT:
+                    if (operand_type != TYPE_BOOL) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                                   node->as.unary.operand->loc.column,
+                                   "Expected bool for logical NOT, got %s",
+                                   type_name(operand_type));
+                    }
+                    node->expr_type = TYPE_BOOL;
+                    return TYPE_BOOL;
+            }
+            break;
+        }
+
+        default:
+            break;
+    }
+
+    node->expr_type = TYPE_I64;  /* Default */
+    return TYPE_I64;
+}
+
+static void typecheck_statement(Ast *node, Scope **scope) {
+    switch (node->kind) {
+        case AST_VAL_DECL: {
+            Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope);
+            Type declared = node->as.val_decl.type;
+
+            if (init_type != declared) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.val_decl.initializer->loc.line,
+                           node->as.val_decl.initializer->loc.column,
+                           "Cannot assign %s to variable of type %s",
+                           type_name(init_type), type_name(declared));
+            }
+
+            scope_add(*scope, node->as.val_decl.name_start,
+                      node->as.val_decl.name_length, false, declared, node->loc);
+            break;
+        }
+
+        case AST_MUT_DECL: {
+            Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope);
+            Type declared = node->as.mut_decl.type;
+
+            if (init_type != declared) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.mut_decl.initializer->loc.line,
+                           node->as.mut_decl.initializer->loc.column,
+                           "Cannot assign %s to variable of type %s",
+                           type_name(init_type), type_name(declared));
+            }
+
+            scope_add(*scope, node->as.mut_decl.name_start,
+                      node->as.mut_decl.name_length, true, declared, node->loc);
+            break;
+        }
+
+        case AST_ASSIGNMENT: {
+            Variable *v = scope_lookup(*scope, node->as.assignment.name_start,
+                                        node->as.assignment.name_length);
+            if (v == NULL) {
+                diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
+                           node->loc.column, "Undeclared variable '%.*s'",
+                           (int)node->as.assignment.name_length,
+                           node->as.assignment.name_start);
+                break;
+            }
+            if (!v->is_mutable) {
+                diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
+                           node->loc.column,
+                           "Cannot assign to immutable variable '%.*s'",
+                           (int)node->as.assignment.name_length,
+                           node->as.assignment.name_start);
+            }
+
+            Type value_type = typecheck_expression(node->as.assignment.value, *scope);
+            if (value_type != v->type) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.assignment.value->loc.line,
+                           node->as.assignment.value->loc.column,
+                           "Cannot assign %s to variable of type %s",
+                           type_name(value_type), type_name(v->type));
+            }
+            break;
+        }
+
+        case AST_RETURN:
+            typecheck_expression(node->as.return_stmt.value, *scope);
+            break;
+
+        case AST_ASSERT: {
+            Type cond_type = typecheck_expression(node->as.assert_stmt.condition, *scope);
+            if (cond_type != TYPE_BOOL) {
+                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
+                           node->loc.column,
+                           "Assert condition must be bool, got %s",
+                           type_name(cond_type));
+            }
+            break;
+        }
+
+        case AST_IF: {
+            Type cond_type = typecheck_expression(node->as.if_stmt.condition, *scope);
+            if (cond_type != TYPE_BOOL) {
+                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
+                           node->loc.column,
+                           "If condition must be bool, got %s",
+                           type_name(cond_type));
+            }
+
+            /* Typecheck then block */
+            Ast *then_block = node->as.if_stmt.then_block;
+            Scope *then_scope = scope_create(*scope);
+            for (size_t i = 0; i < then_block->as.block.count; i++) {
+                typecheck_statement(then_block->as.block.statements[i], &then_scope);
+            }
+            scope_destroy(then_scope);
+
+            /* Typecheck else block if present */
+            if (node->as.if_stmt.else_block) {
+                Ast *else_block = node->as.if_stmt.else_block;
+                Scope *else_scope = scope_create(*scope);
+                for (size_t i = 0; i < else_block->as.block.count; i++) {
+                    typecheck_statement(else_block->as.block.statements[i], &else_scope);
+                }
+                scope_destroy(else_scope);
+            }
+            break;
+        }
+
+        case AST_WHILE: {
+            Type cond_type = typecheck_expression(node->as.while_stmt.condition, *scope);
+            if (cond_type != TYPE_BOOL) {
+                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
+                           node->loc.column,
+                           "While condition must be bool, got %s",
+                           type_name(cond_type));
+            }
+
+            /* Typecheck body */
+            Ast *body = node->as.while_stmt.body;
+            Scope *body_scope = scope_create(*scope);
+            body_scope->loop_depth = (*scope)->loop_depth + 1;
+            for (size_t i = 0; i < body->as.block.count; i++) {
+                typecheck_statement(body->as.block.statements[i], &body_scope);
+            }
+            scope_destroy(body_scope);
+            break;
+        }
+
+        case AST_BREAK:
+            if ((*scope)->loop_depth == 0) {
+                diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
+                           node->loc.column, "'break' outside of loop");
+            }
+            break;
+
+        case AST_CONTINUE:
+            if ((*scope)->loop_depth == 0) {
+                diagnostic(ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
+                           node->loc.column, "'continue' outside of loop");
+            }
+            break;
+
+        case AST_BLOCK: {
+            Scope *block_scope = scope_create(*scope);
+            for (size_t i = 0; i < node->as.block.count; i++) {
+                typecheck_statement(node->as.block.statements[i], &block_scope);
+            }
+            scope_destroy(block_scope);
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+static void typecheck_program(Ast *program) {
+    Scope *scope = scope_create(NULL);
+    for (size_t i = 0; i < program->as.program.count; i++) {
+        typecheck_statement(program->as.program.statements[i], &scope);
+    }
+    scope_destroy(scope);
 }
 
 /* ============================ Code Generation ============================= */
@@ -1654,6 +2053,10 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
         case AST_NUMBER:
             fprintf(out, "%ldL", node->as.number.value);
+            break;
+
+        case AST_BOOLEAN:
+            fprintf(out, "%d", node->as.boolean.value ? 1 : 0);
             break;
 
         case AST_IDENTIFIER:
@@ -1719,13 +2122,23 @@ static void codegen_indent(FILE *out, int indent) {
     }
 }
 
+static const char *codegen_type_to_c(Type type) {
+    switch (type) {
+        case TYPE_I64:  return "long";
+        case TYPE_BOOL: return "int";
+    }
+    return "long";
+}
+
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent) {
     switch (node->kind) {
         case AST_VAL_DECL:
             scope_add(*scope, node->as.val_decl.name_start,
-                      node->as.val_decl.name_length, false, node->loc);
+                      node->as.val_decl.name_length, false,
+                      node->as.val_decl.type, node->loc);
             codegen_indent(out, indent);
-            fprintf(out, "const long %.*s = ",
+            fprintf(out, "const %s %.*s = ",
+                    codegen_type_to_c(node->as.val_decl.type),
                     (int)node->as.val_decl.name_length,
                     node->as.val_decl.name_start);
             codegen_emit_expression(out, node->as.val_decl.initializer);
@@ -1734,9 +2147,11 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_MUT_DECL:
             scope_add(*scope, node->as.mut_decl.name_start,
-                      node->as.mut_decl.name_length, true, node->loc);
+                      node->as.mut_decl.name_length, true,
+                      node->as.mut_decl.type, node->loc);
             codegen_indent(out, indent);
-            fprintf(out, "long %.*s = ",
+            fprintf(out, "%s %.*s = ",
+                    codegen_type_to_c(node->as.mut_decl.type),
                     (int)node->as.mut_decl.name_length,
                     node->as.mut_decl.name_start);
             codegen_emit_expression(out, node->as.mut_decl.initializer);
@@ -2069,6 +2484,9 @@ int main(int argc, char **argv) {
     if (flags.print_ast) {
         parser_print_ast(ast);
     }
+
+    /* Type checking */
+    typecheck_program(ast);
 
     /* --codegen: Print intermediate C code (also runs semantic checks) */
     if (flags.print_ir) {

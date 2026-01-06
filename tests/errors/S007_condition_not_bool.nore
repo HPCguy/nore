@@ -1,0 +1,5 @@
+val x: i64 = 42
+if (x) {
+    val y: i64 = 1
+}
+return 0

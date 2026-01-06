@@ -1,1 +1,1 @@
-val x =
+val x: i64 =
