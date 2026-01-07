@@ -1,0 +1,8 @@
+func foo(): void = {
+}
+
+func foo(): void = {
+}
+
+func main(): void = {
+}

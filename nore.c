@@ -43,21 +43,29 @@ typedef enum {
     ERR_L001_INVALID_CHAR = ERR_GROUP_LEXER + 1,
 
     /* Parser errors: P001-P099 */
-    ERR_P001_EXPECTED_EXPRESSION = ERR_GROUP_PARSER + 1,
-    ERR_P002_EXPECTED_RPAREN     = ERR_GROUP_PARSER + 2,
-    ERR_P003_EXPECTED_IDENTIFIER = ERR_GROUP_PARSER + 3,
-    ERR_P004_EXPECTED_EQUALS     = ERR_GROUP_PARSER + 4,
-    ERR_P005_EXPECTED_STATEMENT  = ERR_GROUP_PARSER + 5,
-    ERR_P006_NUMBER_TOO_LARGE    = ERR_GROUP_PARSER + 6,
-    ERR_P007_EXPECTED_RBRACE     = ERR_GROUP_PARSER + 7,
-    ERR_P008_EXPECTED_LPAREN_IF  = ERR_GROUP_PARSER + 8,
-    ERR_P009_EXPECTED_RPAREN_IF  = ERR_GROUP_PARSER + 9,
+    ERR_P001_EXPECTED_EXPRESSION   = ERR_GROUP_PARSER + 1,
+    ERR_P002_EXPECTED_RPAREN       = ERR_GROUP_PARSER + 2,
+    ERR_P003_EXPECTED_IDENTIFIER   = ERR_GROUP_PARSER + 3,
+    ERR_P004_EXPECTED_EQUALS       = ERR_GROUP_PARSER + 4,
+    ERR_P005_EXPECTED_STATEMENT    = ERR_GROUP_PARSER + 5,
+    ERR_P006_NUMBER_TOO_LARGE      = ERR_GROUP_PARSER + 6,
+    ERR_P007_EXPECTED_RBRACE       = ERR_GROUP_PARSER + 7,
+    ERR_P008_EXPECTED_LPAREN_IF    = ERR_GROUP_PARSER + 8,
+    ERR_P009_EXPECTED_RPAREN_IF    = ERR_GROUP_PARSER + 9,
     ERR_P010_EXPECTED_LBRACE_IF    = ERR_GROUP_PARSER + 10,
     ERR_P011_EXPECTED_LPAREN_WHILE = ERR_GROUP_PARSER + 11,
     ERR_P012_EXPECTED_RPAREN_WHILE = ERR_GROUP_PARSER + 12,
     ERR_P013_EXPECTED_LBRACE_WHILE = ERR_GROUP_PARSER + 13,
     ERR_P014_EXPECTED_COLON        = ERR_GROUP_PARSER + 14,
     ERR_P015_EXPECTED_TYPE         = ERR_GROUP_PARSER + 15,
+    ERR_P016_EXPECTED_FUNC         = ERR_GROUP_PARSER + 16,
+    ERR_P017_EXPECTED_FUNC_NAME    = ERR_GROUP_PARSER + 17,
+    ERR_P018_EXPECTED_LPAREN_FUNC  = ERR_GROUP_PARSER + 18,
+    ERR_P019_EXPECTED_RPAREN_FUNC  = ERR_GROUP_PARSER + 19,
+    ERR_P020_EXPECTED_COLON_FUNC   = ERR_GROUP_PARSER + 20,
+    ERR_P021_EXPECTED_RETURN_TYPE  = ERR_GROUP_PARSER + 21,
+    ERR_P022_EXPECTED_EQUALS_FUNC  = ERR_GROUP_PARSER + 22,
+    ERR_P023_EXPECTED_LBRACE_FUNC  = ERR_GROUP_PARSER + 23,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -67,6 +75,11 @@ typedef enum {
     ERR_S005_CONTINUE_OUTSIDE_LOOP = ERR_GROUP_SEMANTIC + 5,
     ERR_S006_TYPE_MISMATCH         = ERR_GROUP_SEMANTIC + 6,
     ERR_S007_CONDITION_NOT_BOOL    = ERR_GROUP_SEMANTIC + 7,
+    ERR_S008_DUPLICATE_FUNCTION    = ERR_GROUP_SEMANTIC + 8,
+    ERR_S009_MISSING_MAIN          = ERR_GROUP_SEMANTIC + 9,
+    ERR_S010_INVALID_MAIN_SIG      = ERR_GROUP_SEMANTIC + 10,
+    ERR_S011_DUPLICATE_PARAM       = ERR_GROUP_SEMANTIC + 11,
+    ERR_S012_VOID_PARAM            = ERR_GROUP_SEMANTIC + 12,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -171,21 +184,6 @@ static void report_errors_and_exit(void) {
 /* Check if we should stop (too many errors) */
 static bool too_many_errors(void) {
     return g_error_count >= MAX_ERRORS;
-}
-
-/* ================================== Types ================================== */
-
-typedef enum {
-    TYPE_I64,
-    TYPE_BOOL,
-} Type;
-
-static const char *type_name(Type type) {
-    switch (type) {
-        case TYPE_I64:  return "i64";
-        case TYPE_BOOL: return "bool";
-    }
-    return "unknown";
 }
 
 /* ================================== Files ================================= */
@@ -545,6 +543,31 @@ static SourceLoc token_loc(Token *token) {
     return (SourceLoc){ .line = token->line, .column = token->column };
 }
 
+/* ================================= Types ================================== */
+
+typedef enum {
+    TYPE_I64,
+    TYPE_BOOL,
+    TYPE_VOID,
+} Type;
+
+static const char *type_name(Type type) {
+    switch (type) {
+        case TYPE_I64:  return "i64";
+        case TYPE_BOOL: return "bool";
+        case TYPE_VOID: return "void";
+    }
+    return "unknown";
+}
+
+/* ================================== Params ================================ */
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    Type type;
+} Parameter;
+
 /* ================================== AST =================================== */
 
 typedef enum {
@@ -563,6 +586,7 @@ typedef enum {
     AST_BREAK,
     AST_CONTINUE,
     AST_BLOCK,
+    AST_FUNC_DECL,
     AST_PROGRAM
 } AstKind;
 
@@ -659,6 +683,15 @@ typedef struct Ast {
             size_t count;
             size_t capacity;
         } block;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            Parameter *params;
+            size_t param_count;
+            Type return_type;
+            struct Ast *body;
+        } func_decl;
 
         struct {
             struct Ast **statements;
@@ -915,6 +948,24 @@ static void ast_program_add_statement(Ast *program, Ast *statement) {
     program->as.program.statements[program->as.program.count++] = statement;
 }
 
+static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
+                               Parameter *params, size_t param_count,
+                               Type return_type, Ast *body, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_FUNC_DECL;
+    node->loc = loc;
+    node->as.func_decl.name_start = name_start;
+    node->as.func_decl.name_length = name_length;
+    node->as.func_decl.params = params;
+    node->as.func_decl.param_count = param_count;
+    node->as.func_decl.return_type = return_type;
+    node->as.func_decl.body = body;
+    return node;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
     if (node->kind == AST_BINARY) {
@@ -949,6 +1000,12 @@ static void ast_free(Ast *node) {
             ast_free(node->as.block.statements[i]);
         }
         free(node->as.block.statements);
+    }
+    if (node->kind == AST_FUNC_DECL) {
+        if (node->as.func_decl.params) {
+            free(node->as.func_decl.params);
+        }
+        ast_free(node->as.func_decl.body);
     }
     if (node->kind == AST_PROGRAM) {
         for (size_t i = 0; i < node->as.program.count; i++) {
@@ -1010,6 +1067,7 @@ static TokenKind parser_peek_next(Parser *parser) {
 static void parser_synchronize(Parser *parser) {
     while (!parser_check(parser, TOKEN_EOF)) {
         switch (parser->current.kind) {
+            case TOKEN_FUNC:
             case TOKEN_VAL:
             case TOKEN_MUT:
             case TOKEN_RETURN:
@@ -1449,6 +1507,165 @@ static Ast *parser_parse_continue(Parser *parser) {
     return ast_make_continue(loc);
 }
 
+/* Parse a single parameter: name: type */
+static bool parser_parse_parameter(Parser *parser, Parameter *param) {
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                   parser->current.column, "Expected parameter name");
+        return false;
+    }
+    param->name_start = parser->previous.start;
+    param->name_length = parser->previous.length;
+
+    if (!parser_match(parser, TOKEN_COLON)) {
+        diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
+                   parser->current.column, "Expected ':' after parameter name");
+        return false;
+    }
+
+    if (parser_match(parser, TOKEN_I64)) {
+        param->type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_BOOL)) {
+        param->type = TYPE_BOOL;
+    } else if (parser_match(parser, TOKEN_VOID)) {
+        diagnostic(ERR_S012_VOID_PARAM, parser->previous.line,
+                   parser->previous.column, "void is not valid as parameter type");
+        return false;
+    } else {
+        diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+                   parser->current.column, "Expected type (i64 or bool)");
+        return false;
+    }
+
+    return true;
+}
+
+/* Parse parameter list (without parens): name: type, name: type, ... */
+static Parameter *parser_parse_param_list(Parser *parser, size_t *count) {
+    *count = 0;
+
+    /* Empty parameter list */
+    if (parser_check(parser, TOKEN_RPAREN)) {
+        return NULL;
+    }
+
+    size_t capacity = 4;
+    Parameter *params = malloc(capacity * sizeof(Parameter));
+    if (!params) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating parameters");
+    }
+
+    /* Parse first parameter */
+    if (!parser_parse_parameter(parser, &params[*count])) {
+        free(params);
+        return NULL;
+    }
+    (*count)++;
+
+    /* Parse remaining parameters */
+    while (parser_match(parser, TOKEN_COMMA)) {
+        if (*count >= capacity) {
+            capacity *= 2;
+            params = realloc(params, capacity * sizeof(Parameter));
+            if (!params) {
+                panic(ERR_I001_OUT_OF_MEMORY, "growing parameters");
+            }
+        }
+
+        if (!parser_parse_parameter(parser, &params[*count])) {
+            free(params);
+            return NULL;
+        }
+        (*count)++;
+    }
+
+    return params;
+}
+
+/* Parse function declaration: func name(params): returnType = { body } */
+static Ast *parser_parse_function(Parser *parser) {
+    /* TOKEN_FUNC already consumed */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    /* Expect function name */
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        diagnostic(ERR_P017_EXPECTED_FUNC_NAME, parser->current.line,
+                   parser->current.column, "Expected function name after 'func'");
+        parser_synchronize(parser);
+        return NULL;
+    }
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Expect '(' */
+    if (!parser_match(parser, TOKEN_LPAREN)) {
+        diagnostic(ERR_P018_EXPECTED_LPAREN_FUNC, parser->current.line,
+                   parser->current.column, "Expected '(' after function name");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse parameter list */
+    size_t param_count = 0;
+    Parameter *params = parser_parse_param_list(parser, &param_count);
+
+    /* Expect ')' */
+    if (!parser_match(parser, TOKEN_RPAREN)) {
+        diagnostic(ERR_P019_EXPECTED_RPAREN_FUNC, parser->current.line,
+                   parser->current.column, "Expected ')' after parameters");
+        if (params) free(params);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect ':' */
+    if (!parser_match(parser, TOKEN_COLON)) {
+        diagnostic(ERR_P020_EXPECTED_COLON_FUNC, parser->current.line,
+                   parser->current.column, "Expected ':' before return type");
+        if (params) free(params);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect return type */
+    Type return_type;
+    if (parser_match(parser, TOKEN_I64)) {
+        return_type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_BOOL)) {
+        return_type = TYPE_BOOL;
+    } else if (parser_match(parser, TOKEN_VOID)) {
+        return_type = TYPE_VOID;
+    } else {
+        diagnostic(ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
+                   parser->current.column, "Expected return type (i64, bool, or void)");
+        if (params) free(params);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect '=' */
+    if (!parser_match(parser, TOKEN_EQUALS)) {
+        diagnostic(ERR_P022_EXPECTED_EQUALS_FUNC, parser->current.line,
+                   parser->current.column, "Expected '=' before function body");
+        if (params) free(params);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect '{' and parse block */
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P023_EXPECTED_LBRACE_FUNC, parser->current.line,
+                   parser->current.column, "Expected '{' for function body");
+        if (params) free(params);
+        parser_synchronize(parser);
+        return NULL;
+    }
+    Ast *body = parser_parse_block(parser);
+
+    return ast_make_func_decl(name_start, name_length, params, param_count,
+                              return_type, body, loc);
+}
+
 static Ast *parser_parse_statement(Parser *parser) {
     if (too_many_errors()) return NULL;
 
@@ -1510,9 +1727,21 @@ static Ast *parser_parse_program(Parser *parser) {
     Ast *program = ast_make_program();
 
     while (!parser_check(parser, TOKEN_EOF) && !too_many_errors()) {
-        Ast *statement = parser_parse_statement(parser);
-        if (statement) {
-            ast_program_add_statement(program, statement);
+        /* Top-level must be function declarations */
+        if (parser_match(parser, TOKEN_FUNC)) {
+            Ast *func = parser_parse_function(parser);
+            if (func) {
+                ast_program_add_statement(program, func);
+            }
+        } else {
+            diagnostic(ERR_P016_EXPECTED_FUNC, parser->current.line,
+                       parser->current.column,
+                       "Expected function declaration at top level");
+            /* Skip tokens until we find 'func' or EOF */
+            while (!parser_check(parser, TOKEN_FUNC) &&
+                   !parser_check(parser, TOKEN_EOF)) {
+                parser_advance(parser);
+            }
         }
     }
 
@@ -1645,6 +1874,23 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (size_t i = 0; i < node->as.block.count; i++) {
                 parser_print_ast_step(node->as.block.statements[i], indent + 1);
             }
+            break;
+
+        case AST_FUNC_DECL:
+            printf("FUNC_DECL(%.*s) -> %s\n",
+                   (int)node->as.func_decl.name_length,
+                   node->as.func_decl.name_start,
+                   type_name(node->as.func_decl.return_type));
+            for (size_t i = 0; i < node->as.func_decl.param_count; i++) {
+                for (int j = 0; j < indent + 1; j++) printf("  ");
+                Parameter *p = &node->as.func_decl.params[i];
+                printf("PARAM(%.*s: %s)\n",
+                       (int)p->name_length, p->name_start,
+                       type_name(p->type));
+            }
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("BODY:\n");
+            parser_print_ast_step(node->as.func_decl.body, indent + 2);
             break;
 
         case AST_PROGRAM:
@@ -2037,12 +2283,148 @@ static void typecheck_statement(Ast *node, Scope **scope) {
     }
 }
 
-static void typecheck_program(Ast *program) {
-    Scope *scope = scope_create(NULL);
-    for (size_t i = 0; i < program->as.program.count; i++) {
-        typecheck_statement(program->as.program.statements[i], &scope);
+/* ========================== Function Table ========================== */
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    Type return_type;
+    SourceLoc loc;
+} FunctionEntry;
+
+typedef struct {
+    FunctionEntry *functions;
+    size_t count;
+    size_t capacity;
+} FunctionTable;
+
+static FunctionTable *func_table_create(void) {
+    FunctionTable *table = malloc(sizeof(FunctionTable));
+    if (!table) panic(ERR_I001_OUT_OF_MEMORY, "allocating function table");
+    table->functions = malloc(8 * sizeof(FunctionEntry));
+    if (!table->functions) {
+        free(table);
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating function entries");
     }
+    table->count = 0;
+    table->capacity = 8;
+    return table;
+}
+
+static void func_table_destroy(FunctionTable *table) {
+    free(table->functions);
+    free(table);
+}
+
+static FunctionEntry *func_table_lookup(FunctionTable *table,
+                                        const char *name_start, size_t name_length) {
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->functions[i].name_length == name_length &&
+            memcmp(table->functions[i].name_start, name_start, name_length) == 0) {
+            return &table->functions[i];
+        }
+    }
+    return NULL;
+}
+
+static void func_table_add(FunctionTable *table, Ast *func_decl) {
+    const char *name_start = func_decl->as.func_decl.name_start;
+    size_t name_length = func_decl->as.func_decl.name_length;
+
+    /* Check for duplicates */
+    if (func_table_lookup(table, name_start, name_length) != NULL) {
+        diagnostic(ERR_S008_DUPLICATE_FUNCTION, func_decl->loc.line,
+                   func_decl->loc.column, "Duplicate function '%.*s'",
+                   (int)name_length, name_start);
+        return;
+    }
+
+    /* Grow if needed */
+    if (table->count >= table->capacity) {
+        table->capacity *= 2;
+        table->functions = realloc(table->functions,
+                                   table->capacity * sizeof(FunctionEntry));
+        if (!table->functions) panic(ERR_I001_OUT_OF_MEMORY, "growing function table");
+    }
+
+    FunctionEntry *entry = &table->functions[table->count++];
+    entry->name_start = name_start;
+    entry->name_length = name_length;
+    entry->return_type = func_decl->as.func_decl.return_type;
+    entry->loc = func_decl->loc;
+}
+
+/* Type check a function declaration */
+static void typecheck_function(Ast *func_decl) {
+    /* Create scope with parameters */
+    Scope *scope = scope_create(NULL);
+
+    /* Add parameters to scope, check for duplicates */
+    for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
+        Parameter *param = &func_decl->as.func_decl.params[i];
+
+        /* Check for duplicate parameter names */
+        if (scope_lookup_local(scope, param->name_start, param->name_length)) {
+            diagnostic(ERR_S011_DUPLICATE_PARAM, func_decl->loc.line,
+                       func_decl->loc.column, "Duplicate parameter '%.*s'",
+                       (int)param->name_length, param->name_start);
+        } else {
+            scope_add(scope, param->name_start, param->name_length,
+                      false, param->type, func_decl->loc);  /* Parameters are immutable */
+        }
+    }
+
+    /* Type check body statements */
+    Ast *body = func_decl->as.func_decl.body;
+    for (size_t i = 0; i < body->as.block.count; i++) {
+        typecheck_statement(body->as.block.statements[i], &scope);
+    }
+
     scope_destroy(scope);
+}
+
+static void typecheck_program(Ast *program) {
+    FunctionTable *func_table = func_table_create();
+    bool has_main = false;
+
+    /* First pass: register all functions */
+    for (size_t i = 0; i < program->as.program.count; i++) {
+        Ast *node = program->as.program.statements[i];
+        if (node->kind == AST_FUNC_DECL) {
+            func_table_add(func_table, node);
+
+            /* Check if this is main */
+            if (node->as.func_decl.name_length == 4 &&
+                memcmp(node->as.func_decl.name_start, "main", 4) == 0) {
+                has_main = true;
+
+                /* Verify main signature: no parameters, void return */
+                if (node->as.func_decl.param_count != 0) {
+                    diagnostic(ERR_S010_INVALID_MAIN_SIG, node->loc.line,
+                               node->loc.column, "main must have no parameters");
+                }
+                if (node->as.func_decl.return_type != TYPE_VOID) {
+                    diagnostic(ERR_S010_INVALID_MAIN_SIG, node->loc.line,
+                               node->loc.column, "main must return void");
+                }
+            }
+        }
+    }
+
+    /* Check for main function */
+    if (!has_main) {
+        diagnostic(ERR_S009_MISSING_MAIN, 1, 1, "No 'main' function defined");
+    }
+
+    /* Second pass: type check each function */
+    for (size_t i = 0; i < program->as.program.count; i++) {
+        Ast *node = program->as.program.statements[i];
+        if (node->kind == AST_FUNC_DECL) {
+            typecheck_function(node);
+        }
+    }
+
+    func_table_destroy(func_table);
 }
 
 /* ============================ Code Generation ============================= */
@@ -2109,6 +2491,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_BREAK:
         case AST_CONTINUE:
         case AST_BLOCK:
+        case AST_FUNC_DECL:
         case AST_PROGRAM:
             /* These should never appear in expressions */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
@@ -2126,6 +2509,7 @@ static const char *codegen_type_to_c(Type type) {
     switch (type) {
         case TYPE_I64:  return "long";
         case TYPE_BOOL: return "int";
+        case TYPE_VOID: return "void";
     }
     return "long";
 }
@@ -2312,24 +2696,69 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
     }
 }
 
+static void codegen_emit_function(FILE *out, Ast *func_decl) {
+    const char *name_start = func_decl->as.func_decl.name_start;
+    size_t name_length = func_decl->as.func_decl.name_length;
+    Type return_type = func_decl->as.func_decl.return_type;
+
+    /* Special case: main function generates int main(void) */
+    bool is_main = (name_length == 4 && memcmp(name_start, "main", 4) == 0);
+
+    if (is_main) {
+        fprintf(out, "int main(");
+    } else {
+        fprintf(out, "%s %.*s(", codegen_type_to_c(return_type),
+                (int)name_length, name_start);
+    }
+
+    /* Emit parameters */
+    if (func_decl->as.func_decl.param_count == 0) {
+        fprintf(out, "void");
+    } else {
+        for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
+            Parameter *param = &func_decl->as.func_decl.params[i];
+            if (i > 0) fprintf(out, ", ");
+            fprintf(out, "%s %.*s", codegen_type_to_c(param->type),
+                    (int)param->name_length, param->name_start);
+        }
+    }
+
+    fprintf(out, ") {\n");
+
+    /* Create scope with parameters */
+    Scope *scope = scope_create(NULL);
+    for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
+        Parameter *param = &func_decl->as.func_decl.params[i];
+        scope_add(scope, param->name_start, param->name_length,
+                  false, param->type, func_decl->loc);
+    }
+
+    /* Emit body */
+    Ast *body = func_decl->as.func_decl.body;
+    for (size_t i = 0; i < body->as.block.count; i++) {
+        codegen_emit_statement(out, body->as.block.statements[i], &scope, 1);
+    }
+
+    scope_destroy(scope);
+
+    fprintf(out, "}\n\n");
+}
+
 static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
-    fprintf(out, "#include <stdlib.h>\n");
-    fprintf(out, "int main() {\n");
+    fprintf(out, "#include <stdlib.h>\n\n");
 
     if (ast->kind != AST_PROGRAM) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
     }
 
-    Scope *scope = scope_create(NULL);
-
+    /* Emit all functions */
     for (size_t i = 0; i < ast->as.program.count; i++) {
-        codegen_emit_statement(out, ast->as.program.statements[i], &scope, 1);
+        Ast *node = ast->as.program.statements[i];
+        if (node->kind == AST_FUNC_DECL) {
+            codegen_emit_function(out, node);
+        }
     }
-
-    scope_destroy(scope);
-
-    fprintf(out, "}\n");
 }
 
 static void codegen_print_ir(Ast *ast) {

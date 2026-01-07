@@ -2,125 +2,182 @@
 
 ## Overview
 
-Nore is a systems programming language with a focus on simplicity and clarity. This document defines the minimal syntax currently supported by the lexer.
+Nore is a systems programming language with a focus on simplicity and clarity. This document defines the syntax currently supported by the compiler.
 
 ## Language Features
+
+### Types
+
+**Currently supported**:
+- `i64` - 64-bit signed integer
+- `bool` - Boolean type (`true` or `false`)
+- `void` - No return value (functions only)
 
 ### Variables
 
 **Immutable Variables** (default):
 ```nore
-val x = 42
-val name = someFunction()
+val x: i64 = 42
+val flag: bool = true
 ```
 - Keyword: `val`
-- Type inference: Type is inferred from the initializer
+- Explicit type required: Must specify type with `:` annotation
 - Cannot be reassigned after initialization
 
 **Mutable Variables**:
 ```nore
-mut counter : i32 = 0
+mut counter: i64 = 0
 counter = counter + 1
 ```
 - Keyword: `mut`
 - Explicit type required: Must specify type with `:` annotation
 - Can be reassigned after initialization
-- Rationale: Explicit typing for mutable variables ensures consistency when values change
 
 ### Functions
 
 ```nore
-func name(param1, param2) : returnType = {
+func name(param1: type1, param2: type2): returnType = {
     body
 }
 ```
 
 **Syntax**:
 - Keyword: `func`
-- Parameters: Comma-separated in parentheses
+- Parameters: Comma-separated with type annotations
 - Return type: Required, specified after `:`
-- Equals sign: `=` precedes the function body
+- Equals sign: `=` precedes the function body (functions are values)
 - Body: Enclosed in braces `{}`
 
-**Example**:
+**Examples**:
 ```nore
-func add(a, b) : i32 = {
-    val sum = a + b
-    return sum
+func add(a: i64, b: i64): i64 = {
+    return a + b
+}
+
+func greet(): void = {
+    // no return needed
 }
 ```
 
-### Return Statements
+### Control Flow
 
+**Conditional Statements**:
 ```nore
-return expression
+if (condition) {
+    // then branch
+}
+
+if (condition) {
+    // then branch
+} else {
+    // else branch
+}
 ```
-- Keyword: `return`
-- Explicit returns only (no implicit returns from last expression)
+- Condition must be `bool` type
+- Braces required
 
-### Types
+**While Loops**:
+```nore
+while (condition) {
+    // loop body
+}
+```
+- Condition must be `bool` type
+- `break` exits the loop
+- `continue` skips to next iteration
 
-**Currently supported**:
-- `void` - No return value
-- `i32` - 32-bit signed integer
+**Blocks**:
+```nore
+{
+    val x: i64 = 10
+    // x is scoped to this block
+}
+```
+- Create new scope
+- Allow variable shadowing
 
 ### Operators
 
-**Arithmetic**:
+**Arithmetic** (i64 operands, i64 result):
 - `+` Addition
-- `-` Subtraction
+- `-` Subtraction (binary and unary negation)
 - `*` Multiplication
 - `/` Division
 
+**Comparison** (i64 operands, bool result):
+- `==` Equal
+- `!=` Not equal
+- `<` Less than
+- `<=` Less than or equal
+- `>` Greater than
+- `>=` Greater than or equal
+
+**Logical** (bool operands, bool result):
+- `&&` Logical AND
+- `||` Logical OR
+- `!` Logical NOT (unary)
+
 **Assignment**:
-- `=` Assignment operator
+- `=` Assignment operator (mutable variables only)
 
-### Statement Termination
+### Statements
 
-**Newline-based** (no semicolons):
-```nore
-val x = 5
-val y = 10
-return x + y
-```
-
-Statements are terminated by newlines. No semicolons required.
+- `val name: type = expr` - Immutable variable declaration
+- `mut name: type = expr` - Mutable variable declaration
+- `name = expr` - Assignment (mutable only)
+- `return expr` - Return from function
+- `assert expr` - Runtime assertion (bool expr, exits with code 2 on failure)
+- `break` - Exit innermost loop
+- `continue` - Skip to next loop iteration
 
 ## Complete Example
 
 ```nore
-func counter() : i32 = {
-    mut count : i32 = 0
-    count = count + 1
-    return count
+func factorial(n: i64): i64 = {
+    mut result: i64 = 1
+    mut i: i64 = 1
+    while (i <= n) {
+        result = result * i
+        i = i + 1
+    }
+    return result
 }
 
-func main() : void = {
-    val result = counter()
-    return result
+func main(): void = {
+    val n: i64 = 5
+    val result: i64 = factorial(n)
+    assert result == 120
 }
 ```
 
 ## Token Reference
 
-### Keywords (6)
+### Keywords
 - `func` - Function declaration
 - `val` - Immutable variable
 - `mut` - Mutable variable
 - `return` - Return statement
+- `assert` - Runtime assertion
+- `if` - Conditional
+- `else` - Else branch
+- `while` - Loop
+- `break` - Exit loop
+- `continue` - Next iteration
+- `true` - Boolean true
+- `false` - Boolean false
+- `i64` - 64-bit integer type
+- `bool` - Boolean type
 - `void` - Void type
-- `i32` - 32-bit integer type
 
-### Operators (5)
-- `+` - Addition
-- `-` - Subtraction
-- `*` - Multiplication
-- `/` - Division
+### Operators
+- `+` `-` `*` `/` - Arithmetic
+- `==` `!=` `<` `<=` `>` `>=` - Comparison
+- `&&` `||` `!` - Logical
 - `=` - Assignment
 
-### Punctuation (6)
-- `(` `)` - Parentheses (parameters, grouping)
-- `{` `}` - Braces (blocks)
+### Punctuation
+- `(` `)` - Parentheses (parameters, grouping, conditions)
+- `{` `}` - Braces (blocks, function bodies)
 - `:` - Type annotation separator
 - `,` - Parameter separator
 
@@ -136,32 +193,25 @@ func main() : void = {
 - `mut` makes mutability explicit and visible
 - Similar to Kotlin/Scala conventions
 
-### Why explicit types for `mut` variables?
-- Ensures consistency when reassigning values
-- Makes type changes visible
-- Prevents subtle bugs from implicit type conversions
+### Why explicit types for all variables?
+- Clear, predictable code
+- No type inference surprises
+- Easier to read and maintain
 
 ### Why `=` before function body?
 - Functions are values (Scala/Kotlin style)
 - Consistent with variable assignment syntax
-- Enables potential function expressions later
-
-### Why newline-based termination?
-- Cleaner, less visual noise
-- Modern language trend
-- Reduces boilerplate
+- Enables function expressions later (if/while expressions will follow same pattern)
 
 ## Future Extensions
 
 **Not yet implemented**:
-- Comparison operators (`==`, `<`, `>`, etc.)
-- Boolean type and logical operators
-- Conditionals (`if`, `else`)
-- Loops (`while`, `for`)
+- Function calls
 - String and character literals
 - Comments (`//`, `/* */`)
-- Additional types (`i64`, `u32`, `bool`, `f32`)
+- Additional types (`i32`, `u32`, `f64`)
 - Arrays and structs
 - Module system
+- If/while as expressions (will use `= { }` syntax)
 
-These features will be added incrementally as the parser and compiler evolve.
+These features will be added incrementally as the compiler evolves.

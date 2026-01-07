@@ -1,1 +1,3 @@
-val x: i64 = true
+func main(): void = {
+    val x: i64 = true
+}

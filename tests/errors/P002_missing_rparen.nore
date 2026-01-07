@@ -1,1 +1,3 @@
-val x: i64 = (1 + 2
+func main(): void = {
+    val x: i64 = (1 + 2
+}

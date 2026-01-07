@@ -1,2 +1,4 @@
-val x: i64 = 5
-x = 10
+func main(): void = {
+    val x: i64 = 5
+    x = 10
+}

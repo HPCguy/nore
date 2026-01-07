@@ -1,3 +1,5 @@
+func 123(): void = {
+}
+
 func main(): void = {
-    val x i64 = 1
 }

@@ -1,1 +1,3 @@
-42
+func main(): void = {
+    42
+}
