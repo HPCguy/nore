@@ -1,0 +1,6 @@
+func get_value(): i64 = {
+    return
+}
+
+func main(): void = {
+}

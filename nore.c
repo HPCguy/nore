@@ -80,6 +80,9 @@ typedef enum {
     ERR_S010_INVALID_MAIN_SIG      = ERR_GROUP_SEMANTIC + 10,
     ERR_S011_DUPLICATE_PARAM       = ERR_GROUP_SEMANTIC + 11,
     ERR_S012_VOID_PARAM            = ERR_GROUP_SEMANTIC + 12,
+    ERR_S013_RETURN_TYPE_MISMATCH  = ERR_GROUP_SEMANTIC + 13,
+    ERR_S014_VOID_RETURN_VALUE     = ERR_GROUP_SEMANTIC + 14,
+    ERR_S015_MISSING_RETURN_VALUE  = ERR_GROUP_SEMANTIC + 15,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -1336,6 +1339,20 @@ static Ast *parser_parse_return(Parser *parser) {
     /* Already consumed TOKEN_RETURN - capture its location */
     SourceLoc loc = token_loc(&parser->previous);
 
+    /* Check for bare return (no expression) */
+    if (parser_check(parser, TOKEN_RBRACE) ||
+        parser_check(parser, TOKEN_VAL) ||
+        parser_check(parser, TOKEN_MUT) ||
+        parser_check(parser, TOKEN_RETURN) ||
+        parser_check(parser, TOKEN_ASSERT) ||
+        parser_check(parser, TOKEN_IF) ||
+        parser_check(parser, TOKEN_WHILE) ||
+        parser_check(parser, TOKEN_BREAK) ||
+        parser_check(parser, TOKEN_CONTINUE)) {
+        /* Bare return for void functions */
+        return ast_make_return(NULL, loc);
+    }
+
     /* Parse return value expression */
     Ast *value = parser_parse_expression(parser);
     if (!value) {
@@ -1821,7 +1838,9 @@ static void parser_print_ast_step(Ast *node, int indent) {
 
         case AST_RETURN:
             printf("RETURN\n");
-            parser_print_ast_step(node->as.return_stmt.value, indent + 1);
+            if (node->as.return_stmt.value) {
+                parser_print_ast_step(node->as.return_stmt.value, indent + 1);
+            }
             break;
 
         case AST_ASSIGNMENT:
@@ -2003,7 +2022,7 @@ static void scope_add(Scope *scope, const char *name_start,
 /* ============================== Type Checking ============================== */
 
 static Type typecheck_expression(Ast *node, Scope *scope);
-static void typecheck_statement(Ast *node, Scope **scope);
+static void typecheck_statement(Ast *node, Scope **scope, Type return_type);
 
 static Type typecheck_expression(Ast *node, Scope *scope) {
     switch (node->kind) {
@@ -2129,7 +2148,7 @@ static Type typecheck_expression(Ast *node, Scope *scope) {
     return TYPE_I64;
 }
 
-static void typecheck_statement(Ast *node, Scope **scope) {
+static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
     switch (node->kind) {
         case AST_VAL_DECL: {
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope);
@@ -2191,9 +2210,35 @@ static void typecheck_statement(Ast *node, Scope **scope) {
             break;
         }
 
-        case AST_RETURN:
-            typecheck_expression(node->as.return_stmt.value, *scope);
+        case AST_RETURN: {
+            Ast *value = node->as.return_stmt.value;
+
+            if (return_type == TYPE_VOID) {
+                /* Void function should not return a value */
+                if (value != NULL) {
+                    diagnostic(ERR_S014_VOID_RETURN_VALUE, node->loc.line,
+                               node->loc.column,
+                               "Void function cannot return a value");
+                }
+            } else {
+                /* Non-void function must return a value */
+                if (value == NULL) {
+                    diagnostic(ERR_S015_MISSING_RETURN_VALUE, node->loc.line,
+                               node->loc.column,
+                               "Function must return a value of type %s",
+                               type_name(return_type));
+                } else {
+                    Type value_type = typecheck_expression(value, *scope);
+                    if (value_type != return_type) {
+                        diagnostic(ERR_S013_RETURN_TYPE_MISMATCH, node->loc.line,
+                                   node->loc.column,
+                                   "Return type mismatch: expected %s, got %s",
+                                   type_name(return_type), type_name(value_type));
+                    }
+                }
+            }
             break;
+        }
 
         case AST_ASSERT: {
             Type cond_type = typecheck_expression(node->as.assert_stmt.condition, *scope);
@@ -2219,7 +2264,7 @@ static void typecheck_statement(Ast *node, Scope **scope) {
             Ast *then_block = node->as.if_stmt.then_block;
             Scope *then_scope = scope_create(*scope);
             for (size_t i = 0; i < then_block->as.block.count; i++) {
-                typecheck_statement(then_block->as.block.statements[i], &then_scope);
+                typecheck_statement(then_block->as.block.statements[i], &then_scope, return_type);
             }
             scope_destroy(then_scope);
 
@@ -2228,7 +2273,7 @@ static void typecheck_statement(Ast *node, Scope **scope) {
                 Ast *else_block = node->as.if_stmt.else_block;
                 Scope *else_scope = scope_create(*scope);
                 for (size_t i = 0; i < else_block->as.block.count; i++) {
-                    typecheck_statement(else_block->as.block.statements[i], &else_scope);
+                    typecheck_statement(else_block->as.block.statements[i], &else_scope, return_type);
                 }
                 scope_destroy(else_scope);
             }
@@ -2249,7 +2294,7 @@ static void typecheck_statement(Ast *node, Scope **scope) {
             Scope *body_scope = scope_create(*scope);
             body_scope->loop_depth = (*scope)->loop_depth + 1;
             for (size_t i = 0; i < body->as.block.count; i++) {
-                typecheck_statement(body->as.block.statements[i], &body_scope);
+                typecheck_statement(body->as.block.statements[i], &body_scope, return_type);
             }
             scope_destroy(body_scope);
             break;
@@ -2272,7 +2317,7 @@ static void typecheck_statement(Ast *node, Scope **scope) {
         case AST_BLOCK: {
             Scope *block_scope = scope_create(*scope);
             for (size_t i = 0; i < node->as.block.count; i++) {
-                typecheck_statement(node->as.block.statements[i], &block_scope);
+                typecheck_statement(node->as.block.statements[i], &block_scope, return_type);
             }
             scope_destroy(block_scope);
             break;
@@ -2374,10 +2419,11 @@ static void typecheck_function(Ast *func_decl) {
         }
     }
 
-    /* Type check body statements */
+    /* Type check body statements with the function's return type */
+    Type return_type = func_decl->as.func_decl.return_type;
     Ast *body = func_decl->as.func_decl.body;
     for (size_t i = 0; i < body->as.block.count; i++) {
-        typecheck_statement(body->as.block.statements[i], &scope);
+        typecheck_statement(body->as.block.statements[i], &scope, return_type);
     }
 
     scope_destroy(scope);
@@ -2544,9 +2590,13 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_RETURN:
             codegen_indent(out, indent);
-            fprintf(out, "return ");
-            codegen_emit_expression(out, node->as.return_stmt.value);
-            fprintf(out, ";\n");
+            if (node->as.return_stmt.value) {
+                fprintf(out, "return ");
+                codegen_emit_expression(out, node->as.return_stmt.value);
+                fprintf(out, ";\n");
+            } else {
+                fprintf(out, "return;\n");
+            }
             break;
 
         case AST_ASSIGNMENT: {
