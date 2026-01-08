@@ -83,6 +83,9 @@ typedef enum {
     ERR_S013_RETURN_TYPE_MISMATCH  = ERR_GROUP_SEMANTIC + 13,
     ERR_S014_VOID_RETURN_VALUE     = ERR_GROUP_SEMANTIC + 14,
     ERR_S015_MISSING_RETURN_VALUE  = ERR_GROUP_SEMANTIC + 15,
+    ERR_S016_UNDEFINED_FUNCTION    = ERR_GROUP_SEMANTIC + 16,
+    ERR_S017_WRONG_ARG_COUNT       = ERR_GROUP_SEMANTIC + 17,
+    ERR_S018_ARG_TYPE_MISMATCH     = ERR_GROUP_SEMANTIC + 18,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -579,6 +582,7 @@ typedef enum {
     AST_IDENTIFIER,
     AST_BINARY,
     AST_UNARY,
+    AST_FUNC_CALL,
     AST_VAL_DECL,
     AST_MUT_DECL,
     AST_RETURN,
@@ -641,6 +645,13 @@ typedef struct Ast {
             UnaryOp op;
             struct Ast *operand;
         } unary;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            struct Ast **arguments;
+            size_t arg_count;
+        } func_call;
 
         struct {
             const char *name_start;
@@ -762,6 +773,21 @@ static Ast *ast_make_unary(UnaryOp op, Ast *operand, SourceLoc loc) {
     node->loc = loc;
     node->as.unary.op = op;
     node->as.unary.operand = operand;
+    return node;
+}
+
+static Ast *ast_make_func_call(const char *name_start, size_t name_length,
+                               Ast **arguments, size_t arg_count, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_FUNC_CALL;
+    node->loc = loc;
+    node->as.func_call.name_start = name_start;
+    node->as.func_call.name_length = name_length;
+    node->as.func_call.arguments = arguments;
+    node->as.func_call.arg_count = arg_count;
     return node;
 }
 
@@ -978,6 +1004,12 @@ static void ast_free(Ast *node) {
     if (node->kind == AST_UNARY) {
         ast_free(node->as.unary.operand);
     }
+    if (node->kind == AST_FUNC_CALL) {
+        for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
+            ast_free(node->as.func_call.arguments[i]);
+        }
+        free(node->as.func_call.arguments);
+    }
     if (node->kind == AST_VAL_DECL) {
         ast_free(node->as.val_decl.initializer);
     }
@@ -1136,6 +1168,7 @@ static BinaryOp parser_token_to_binary_op(TokenKind kind) {
 /* ============================= Expression Parsing ========================= */
 
 static Ast *parser_parse_expression(Parser *parser);
+static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error);
 
 static Ast *parser_parse_primary(Parser *parser) {
     /* Handle unary minus */
@@ -1181,7 +1214,32 @@ static Ast *parser_parse_primary(Parser *parser) {
 
     if (parser_match(parser, TOKEN_IDENTIFIER)) {
         SourceLoc loc = token_loc(&parser->previous);
-        return ast_make_identifier(parser->previous.start, parser->previous.length, loc);
+        const char *name_start = parser->previous.start;
+        size_t name_length = parser->previous.length;
+
+        /* Check for function call: identifier followed by '(' */
+        if (parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+
+            size_t arg_count = 0;
+            bool parse_error = false;
+            Ast **arguments = parser_parse_arg_list(parser, &arg_count, &parse_error);
+
+            if (parse_error) {
+                return NULL;
+            }
+
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after arguments");
+                free(arguments);
+                return NULL;
+            }
+
+            return ast_make_func_call(name_start, name_length, arguments, arg_count, loc);
+        }
+
+        return ast_make_identifier(name_start, name_length, loc);
     }
 
     if (parser_match(parser, TOKEN_LPAREN)) {
@@ -1557,6 +1615,41 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
     return true;
 }
 
+/* Parse argument list (without parens): expr, expr, ...
+ * Sets *count to number of args. Sets *error to true on parse failure.
+ * Returns NULL on empty list (not an error). Caller must free the returned array. */
+static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error) {
+    *count = 0;
+    *error = false;
+
+    /* Empty argument list */
+    if (parser_check(parser, TOKEN_RPAREN)) {
+        return NULL;
+    }
+
+    size_t capacity = 4;
+    Ast **args = malloc(capacity * sizeof(Ast *));
+    if (!args) panic(ERR_I001_OUT_OF_MEMORY, "allocating argument list");
+
+    do {
+        Ast *arg = parser_parse_expression(parser);
+        if (!arg) {
+            free(args);
+            *count = 0;
+            *error = true;
+            return NULL;
+        }
+        if (*count >= capacity) {
+            capacity *= 2;
+            args = realloc(args, capacity * sizeof(Ast *));
+            if (!args) panic(ERR_I001_OUT_OF_MEMORY, "growing argument list");
+        }
+        args[(*count)++] = arg;
+    } while (parser_match(parser, TOKEN_COMMA));
+
+    return args;
+}
+
 /* Parse parameter list (without parens): name: type, name: type, ... */
 static Parameter *parser_parse_param_list(Parser *parser, size_t *count) {
     *count = 0;
@@ -1822,6 +1915,15 @@ static void parser_print_ast_step(Ast *node, int indent) {
             break;
         }
 
+        case AST_FUNC_CALL:
+            printf("FUNC_CALL(%.*s)\n",
+                   (int)node->as.func_call.name_length,
+                   node->as.func_call.name_start);
+            for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
+                parser_print_ast_step(node->as.func_call.arguments[i], indent + 1);
+            }
+            break;
+
         case AST_VAL_DECL:
             printf("VAL_DECL(%.*s)\n",
                    (int)node->as.val_decl.name_length,
@@ -2019,12 +2121,101 @@ static void scope_add(Scope *scope, const char *name_start,
     scope->count++;
 }
 
+/* ========================== Function Table ========================== */
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    Type return_type;
+    Type *param_types;
+    size_t param_count;
+    SourceLoc loc;
+} FunctionEntry;
+
+typedef struct {
+    FunctionEntry *functions;
+    size_t count;
+    size_t capacity;
+} FunctionTable;
+
+static FunctionTable *func_table_create(void) {
+    FunctionTable *table = malloc(sizeof(FunctionTable));
+    if (!table) panic(ERR_I001_OUT_OF_MEMORY, "allocating function table");
+    table->functions = malloc(8 * sizeof(FunctionEntry));
+    if (!table->functions) {
+        free(table);
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating function entries");
+    }
+    table->count = 0;
+    table->capacity = 8;
+    return table;
+}
+
+static void func_table_destroy(FunctionTable *table) {
+    for (size_t i = 0; i < table->count; i++) {
+        free(table->functions[i].param_types);
+    }
+    free(table->functions);
+    free(table);
+}
+
+static FunctionEntry *func_table_lookup(FunctionTable *table,
+                                        const char *name_start, size_t name_length) {
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->functions[i].name_length == name_length &&
+            memcmp(table->functions[i].name_start, name_start, name_length) == 0) {
+            return &table->functions[i];
+        }
+    }
+    return NULL;
+}
+
+static void func_table_add(FunctionTable *table, Ast *func_decl) {
+    const char *name_start = func_decl->as.func_decl.name_start;
+    size_t name_length = func_decl->as.func_decl.name_length;
+
+    /* Check for duplicates */
+    if (func_table_lookup(table, name_start, name_length) != NULL) {
+        diagnostic(ERR_S008_DUPLICATE_FUNCTION, func_decl->loc.line,
+                   func_decl->loc.column, "Duplicate function '%.*s'",
+                   (int)name_length, name_start);
+        return;
+    }
+
+    /* Grow if needed */
+    if (table->count >= table->capacity) {
+        table->capacity *= 2;
+        table->functions = realloc(table->functions,
+                                   table->capacity * sizeof(FunctionEntry));
+        if (!table->functions) panic(ERR_I001_OUT_OF_MEMORY, "growing function table");
+    }
+
+    FunctionEntry *entry = &table->functions[table->count++];
+    entry->name_start = name_start;
+    entry->name_length = name_length;
+    entry->return_type = func_decl->as.func_decl.return_type;
+    entry->loc = func_decl->loc;
+
+    /* Store parameter types */
+    size_t param_count = func_decl->as.func_decl.param_count;
+    entry->param_count = param_count;
+    if (param_count > 0) {
+        entry->param_types = malloc(param_count * sizeof(Type));
+        if (!entry->param_types) panic(ERR_I001_OUT_OF_MEMORY, "allocating param types");
+        for (size_t i = 0; i < param_count; i++) {
+            entry->param_types[i] = func_decl->as.func_decl.params[i].type;
+        }
+    } else {
+        entry->param_types = NULL;
+    }
+}
+
 /* ============================== Type Checking ============================== */
 
-static Type typecheck_expression(Ast *node, Scope *scope);
-static void typecheck_statement(Ast *node, Scope **scope, Type return_type);
+static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
+static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
 
-static Type typecheck_expression(Ast *node, Scope *scope) {
+static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_NUMBER:
             node->expr_type = TYPE_I64;
@@ -2050,8 +2241,8 @@ static Type typecheck_expression(Ast *node, Scope *scope) {
         }
 
         case AST_BINARY: {
-            Type left_type = typecheck_expression(node->as.binary.left, scope);
-            Type right_type = typecheck_expression(node->as.binary.right, scope);
+            Type left_type = typecheck_expression(node->as.binary.left, scope, func_table);
+            Type right_type = typecheck_expression(node->as.binary.right, scope, func_table);
 
             switch (node->as.binary.op) {
                 /* Arithmetic: i64 x i64 -> i64 */
@@ -2112,7 +2303,7 @@ static Type typecheck_expression(Ast *node, Scope *scope) {
         }
 
         case AST_UNARY: {
-            Type operand_type = typecheck_expression(node->as.unary.operand, scope);
+            Type operand_type = typecheck_expression(node->as.unary.operand, scope, func_table);
 
             switch (node->as.unary.op) {
                 /* Negation: i64 -> i64 */
@@ -2140,6 +2331,54 @@ static Type typecheck_expression(Ast *node, Scope *scope) {
             break;
         }
 
+        case AST_FUNC_CALL: {
+            const char *name_start = node->as.func_call.name_start;
+            size_t name_length = node->as.func_call.name_length;
+
+            /* Look up function in table */
+            FunctionEntry *entry = func_table_lookup(func_table, name_start, name_length);
+            if (entry == NULL) {
+                diagnostic(ERR_S016_UNDEFINED_FUNCTION, node->loc.line,
+                           node->loc.column, "Undefined function '%.*s'",
+                           (int)name_length, name_start);
+                node->expr_type = TYPE_I64;  /* Default to prevent cascading */
+                return TYPE_I64;
+            }
+
+            /* Check argument count */
+            if (node->as.func_call.arg_count != entry->param_count) {
+                diagnostic(ERR_S017_WRONG_ARG_COUNT, node->loc.line,
+                           node->loc.column,
+                           "Function '%.*s' expects %zu arguments, got %zu",
+                           (int)name_length, name_start,
+                           entry->param_count, node->as.func_call.arg_count);
+            }
+
+            /* Type check each argument */
+            size_t check_count = node->as.func_call.arg_count < entry->param_count
+                                 ? node->as.func_call.arg_count : entry->param_count;
+            for (size_t i = 0; i < check_count; i++) {
+                Type arg_type = typecheck_expression(node->as.func_call.arguments[i],
+                                                     scope, func_table);
+                if (arg_type != entry->param_types[i]) {
+                    diagnostic(ERR_S018_ARG_TYPE_MISMATCH,
+                               node->as.func_call.arguments[i]->loc.line,
+                               node->as.func_call.arguments[i]->loc.column,
+                               "Argument %zu: expected %s, got %s",
+                               i + 1, type_name(entry->param_types[i]),
+                               type_name(arg_type));
+                }
+            }
+
+            /* Also type-check remaining arguments (even if wrong count) */
+            for (size_t i = check_count; i < node->as.func_call.arg_count; i++) {
+                typecheck_expression(node->as.func_call.arguments[i], scope, func_table);
+            }
+
+            node->expr_type = entry->return_type;
+            return entry->return_type;
+        }
+
         default:
             break;
     }
@@ -2148,10 +2387,10 @@ static Type typecheck_expression(Ast *node, Scope *scope) {
     return TYPE_I64;
 }
 
-static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
+static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_VAL_DECL: {
-            Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope);
+            Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
             Type declared = node->as.val_decl.type;
 
             if (init_type != declared) {
@@ -2167,7 +2406,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
         }
 
         case AST_MUT_DECL: {
-            Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope);
+            Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope, func_table);
             Type declared = node->as.mut_decl.type;
 
             if (init_type != declared) {
@@ -2200,7 +2439,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
                            node->as.assignment.name_start);
             }
 
-            Type value_type = typecheck_expression(node->as.assignment.value, *scope);
+            Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
             if (value_type != v->type) {
                 diagnostic(ERR_S006_TYPE_MISMATCH, node->as.assignment.value->loc.line,
                            node->as.assignment.value->loc.column,
@@ -2228,7 +2467,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
                                "Function must return a value of type %s",
                                type_name(return_type));
                 } else {
-                    Type value_type = typecheck_expression(value, *scope);
+                    Type value_type = typecheck_expression(value, *scope, func_table);
                     if (value_type != return_type) {
                         diagnostic(ERR_S013_RETURN_TYPE_MISMATCH, node->loc.line,
                                    node->loc.column,
@@ -2241,7 +2480,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
         }
 
         case AST_ASSERT: {
-            Type cond_type = typecheck_expression(node->as.assert_stmt.condition, *scope);
+            Type cond_type = typecheck_expression(node->as.assert_stmt.condition, *scope, func_table);
             if (cond_type != TYPE_BOOL) {
                 diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
                            node->loc.column,
@@ -2252,7 +2491,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
         }
 
         case AST_IF: {
-            Type cond_type = typecheck_expression(node->as.if_stmt.condition, *scope);
+            Type cond_type = typecheck_expression(node->as.if_stmt.condition, *scope, func_table);
             if (cond_type != TYPE_BOOL) {
                 diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
                            node->loc.column,
@@ -2264,7 +2503,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
             Ast *then_block = node->as.if_stmt.then_block;
             Scope *then_scope = scope_create(*scope);
             for (size_t i = 0; i < then_block->as.block.count; i++) {
-                typecheck_statement(then_block->as.block.statements[i], &then_scope, return_type);
+                typecheck_statement(then_block->as.block.statements[i], &then_scope, return_type, func_table);
             }
             scope_destroy(then_scope);
 
@@ -2273,7 +2512,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
                 Ast *else_block = node->as.if_stmt.else_block;
                 Scope *else_scope = scope_create(*scope);
                 for (size_t i = 0; i < else_block->as.block.count; i++) {
-                    typecheck_statement(else_block->as.block.statements[i], &else_scope, return_type);
+                    typecheck_statement(else_block->as.block.statements[i], &else_scope, return_type, func_table);
                 }
                 scope_destroy(else_scope);
             }
@@ -2281,7 +2520,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
         }
 
         case AST_WHILE: {
-            Type cond_type = typecheck_expression(node->as.while_stmt.condition, *scope);
+            Type cond_type = typecheck_expression(node->as.while_stmt.condition, *scope, func_table);
             if (cond_type != TYPE_BOOL) {
                 diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
                            node->loc.column,
@@ -2294,7 +2533,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
             Scope *body_scope = scope_create(*scope);
             body_scope->loop_depth = (*scope)->loop_depth + 1;
             for (size_t i = 0; i < body->as.block.count; i++) {
-                typecheck_statement(body->as.block.statements[i], &body_scope, return_type);
+                typecheck_statement(body->as.block.statements[i], &body_scope, return_type, func_table);
             }
             scope_destroy(body_scope);
             break;
@@ -2317,7 +2556,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
         case AST_BLOCK: {
             Scope *block_scope = scope_create(*scope);
             for (size_t i = 0; i < node->as.block.count; i++) {
-                typecheck_statement(node->as.block.statements[i], &block_scope, return_type);
+                typecheck_statement(node->as.block.statements[i], &block_scope, return_type, func_table);
             }
             scope_destroy(block_scope);
             break;
@@ -2328,79 +2567,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type) {
     }
 }
 
-/* ========================== Function Table ========================== */
-
-typedef struct {
-    const char *name_start;
-    size_t name_length;
-    Type return_type;
-    SourceLoc loc;
-} FunctionEntry;
-
-typedef struct {
-    FunctionEntry *functions;
-    size_t count;
-    size_t capacity;
-} FunctionTable;
-
-static FunctionTable *func_table_create(void) {
-    FunctionTable *table = malloc(sizeof(FunctionTable));
-    if (!table) panic(ERR_I001_OUT_OF_MEMORY, "allocating function table");
-    table->functions = malloc(8 * sizeof(FunctionEntry));
-    if (!table->functions) {
-        free(table);
-        panic(ERR_I001_OUT_OF_MEMORY, "allocating function entries");
-    }
-    table->count = 0;
-    table->capacity = 8;
-    return table;
-}
-
-static void func_table_destroy(FunctionTable *table) {
-    free(table->functions);
-    free(table);
-}
-
-static FunctionEntry *func_table_lookup(FunctionTable *table,
-                                        const char *name_start, size_t name_length) {
-    for (size_t i = 0; i < table->count; i++) {
-        if (table->functions[i].name_length == name_length &&
-            memcmp(table->functions[i].name_start, name_start, name_length) == 0) {
-            return &table->functions[i];
-        }
-    }
-    return NULL;
-}
-
-static void func_table_add(FunctionTable *table, Ast *func_decl) {
-    const char *name_start = func_decl->as.func_decl.name_start;
-    size_t name_length = func_decl->as.func_decl.name_length;
-
-    /* Check for duplicates */
-    if (func_table_lookup(table, name_start, name_length) != NULL) {
-        diagnostic(ERR_S008_DUPLICATE_FUNCTION, func_decl->loc.line,
-                   func_decl->loc.column, "Duplicate function '%.*s'",
-                   (int)name_length, name_start);
-        return;
-    }
-
-    /* Grow if needed */
-    if (table->count >= table->capacity) {
-        table->capacity *= 2;
-        table->functions = realloc(table->functions,
-                                   table->capacity * sizeof(FunctionEntry));
-        if (!table->functions) panic(ERR_I001_OUT_OF_MEMORY, "growing function table");
-    }
-
-    FunctionEntry *entry = &table->functions[table->count++];
-    entry->name_start = name_start;
-    entry->name_length = name_length;
-    entry->return_type = func_decl->as.func_decl.return_type;
-    entry->loc = func_decl->loc;
-}
-
 /* Type check a function declaration */
-static void typecheck_function(Ast *func_decl) {
+static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
     /* Create scope with parameters */
     Scope *scope = scope_create(NULL);
 
@@ -2423,7 +2591,7 @@ static void typecheck_function(Ast *func_decl) {
     Type return_type = func_decl->as.func_decl.return_type;
     Ast *body = func_decl->as.func_decl.body;
     for (size_t i = 0; i < body->as.block.count; i++) {
-        typecheck_statement(body->as.block.statements[i], &scope, return_type);
+        typecheck_statement(body->as.block.statements[i], &scope, return_type, func_table);
     }
 
     scope_destroy(scope);
@@ -2466,7 +2634,7 @@ static void typecheck_program(Ast *program) {
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
         if (node->kind == AST_FUNC_DECL) {
-            typecheck_function(node);
+            typecheck_function(node, func_table);
         }
     }
 
@@ -2526,6 +2694,16 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
         }
+
+        case AST_FUNC_CALL:
+            fprintf(out, "%.*s(", (int)node->as.func_call.name_length,
+                    node->as.func_call.name_start);
+            for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                codegen_emit_expression(out, node->as.func_call.arguments[i]);
+            }
+            fprintf(out, ")");
+            break;
 
         case AST_VAL_DECL:
         case AST_MUT_DECL:

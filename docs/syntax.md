@@ -59,6 +59,26 @@ func greet(): void = {
 }
 ```
 
+### Function Calls
+
+```nore
+name(arg1, arg2, ...)
+```
+
+**Syntax**:
+- Function name followed by parentheses
+- Arguments: Comma-separated expressions
+- Zero arguments: Use empty parentheses `()`
+- Can be used as expressions
+
+**Examples**:
+```nore
+val sum: i64 = add(10, 20)
+val nested: i64 = add(mul(2, 3), 4)
+val result: i64 = 1 + add(2, 3) * 2
+val value: i64 = get_value()
+```
+
 ### Control Flow
 
 **Conditional Statements**:
@@ -206,7 +226,6 @@ func main(): void = {
 ## Future Extensions
 
 **Not yet implemented**:
-- Function calls
 - String and character literals
 - Comments (`//`, `/* */`)
 - Additional types (`i32`, `u32`, `f64`)
