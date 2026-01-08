@@ -10,8 +10,68 @@ Nore is a systems programming language with a focus on simplicity and clarity. T
 
 **Currently supported**:
 - `i64` - 64-bit signed integer
+- `f64` - 64-bit floating-point number
 - `bool` - Boolean type (`true` or `false`)
 - `void` - No return value (functions only)
+
+**Compile-time types** (internal):
+- `comptime_int` - Integer literal (coerces to i64 or f64)
+- `comptime_float` - Float literal (coerces to f64 only)
+
+### Literals
+
+**Integer literals**:
+```nore
+42      // comptime_int, coerces to i64 or f64
+-17     // negative integer
+```
+
+**Float literals**:
+```nore
+3.14    // comptime_float, coerces to f64 only
+0.5     // decimal required before and after dot
+```
+
+**Boolean literals**:
+```nore
+true
+false
+```
+
+### Type Coercion
+
+Literals are compile-time types that coerce to concrete types:
+
+```nore
+val x: i64 = 42      // comptime_int → i64
+val y: f64 = 42      // comptime_int → f64
+val z: f64 = 3.14    // comptime_float → f64
+val w: i64 = 3.14    // ERROR: comptime_float cannot coerce to i64
+```
+
+**Coercion rules**:
+- `comptime_int` coerces to `i64` or `f64`
+- `comptime_float` coerces to `f64` only
+- No implicit coercion between concrete types (`i64` ↔ `f64`)
+
+**In expressions**:
+```nore
+val x: i64 = 10
+val y: i64 = x + 5     // OK: comptime_int coerces to i64
+val z: f64 = x + 5     // ERROR: result is i64, cannot assign to f64
+val w: f64 = x + 5.0   // ERROR: cannot mix i64 and f64
+```
+
+### Constant Folding
+
+Expressions involving only literals are evaluated at compile time:
+
+```nore
+val x: i64 = 3 + 5 * 2      // folded to 13 at compile time
+val y: f64 = 3.0 + 5        // folded to 8.0 at compile time
+val z: bool = 10 > 5        // folded to true at compile time
+val w: i64 = 5 / 0          // ERROR: division by zero at compile time
+```
 
 ### Variables
 
@@ -118,19 +178,23 @@ while (condition) {
 
 ### Operators
 
-**Arithmetic** (i64 operands, i64 result):
+**Arithmetic** (numeric operands, same type result):
 - `+` Addition
 - `-` Subtraction (binary and unary negation)
 - `*` Multiplication
 - `/` Division
 
-**Comparison** (i64 operands, bool result):
+Works with i64, f64, and comptime types. Both operands must be compatible (see Type Coercion).
+
+**Comparison** (numeric operands, bool result):
 - `==` Equal
 - `!=` Not equal
 - `<` Less than
 - `<=` Less than or equal
 - `>` Greater than
 - `>=` Greater than or equal
+
+Both operands must be the same concrete type (after coercion).
 
 **Logical** (bool operands, bool result):
 - `&&` Logical AND
@@ -186,6 +250,7 @@ func main(): void = {
 - `true` - Boolean true
 - `false` - Boolean false
 - `i64` - 64-bit integer type
+- `f64` - 64-bit floating-point type
 - `bool` - Boolean type
 - `void` - Void type
 
@@ -228,7 +293,7 @@ func main(): void = {
 **Not yet implemented**:
 - String and character literals
 - Comments (`//`, `/* */`)
-- Additional types (`i32`, `u32`, `f64`)
+- Additional types (`i32`, `u32`, `f32`)
 - Arrays and structs
 - Module system
 - If/while as expressions (will use `= { }` syntax)

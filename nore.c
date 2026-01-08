@@ -86,6 +86,7 @@ typedef enum {
     ERR_S016_UNDEFINED_FUNCTION    = ERR_GROUP_SEMANTIC + 16,
     ERR_S017_WRONG_ARG_COUNT       = ERR_GROUP_SEMANTIC + 17,
     ERR_S018_ARG_TYPE_MISMATCH     = ERR_GROUP_SEMANTIC + 18,
+    ERR_S019_DIVISION_BY_ZERO      = ERR_GROUP_SEMANTIC + 19,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -241,6 +242,7 @@ static int is_alnum(char c) {
 
 typedef enum {
     TOKEN_NUMBER,
+    TOKEN_FLOAT,
     TOKEN_IDENTIFIER,
 
     TOKEN_FUNC,
@@ -255,6 +257,7 @@ typedef enum {
     TOKEN_CONTINUE,
     TOKEN_VOID,
     TOKEN_I64,
+    TOKEN_F64,
     TOKEN_BOOL,
     TOKEN_TRUE,
     TOKEN_FALSE,
@@ -296,6 +299,7 @@ typedef struct {
 static const char *token_kind_name(TokenKind kind) {
     switch (kind) {
         case TOKEN_NUMBER:        return "NUMBER";
+        case TOKEN_FLOAT:         return "FLOAT";
         case TOKEN_IDENTIFIER:    return "IDENTIFIER";
         case TOKEN_FUNC:          return "FUNC";
         case TOKEN_VAL:           return "VAL";
@@ -309,6 +313,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_CONTINUE:      return "CONTINUE";
         case TOKEN_VOID:          return "VOID";
         case TOKEN_I64:           return "I64";
+        case TOKEN_F64:           return "F64";
         case TOKEN_BOOL:          return "BOOL";
         case TOKEN_TRUE:          return "TRUE";
         case TOKEN_FALSE:         return "FALSE";
@@ -408,6 +413,14 @@ static Token lexer_scan_number(Lexer *lexer) {
     while (is_digit(lexer_peek(lexer))) {
         lexer_advance(lexer);
     }
+    /* Check for decimal point followed by digit */
+    if (lexer_peek(lexer) == '.' && is_digit(lexer->current[1])) {
+        lexer_advance(lexer);  /* consume '.' */
+        while (is_digit(lexer_peek(lexer))) {
+            lexer_advance(lexer);
+        }
+        return lexer_make_token(lexer, TOKEN_FLOAT);
+    }
     return lexer_make_token(lexer, TOKEN_NUMBER);
 }
 
@@ -420,6 +433,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
             if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
             if (memcmp(start, "i64", 3) == 0) return TOKEN_I64;
+            if (memcmp(start, "f64", 3) == 0) return TOKEN_F64;
             break;
         case 4:
             if (memcmp(start, "func", 4) == 0) return TOKEN_FUNC;
@@ -532,7 +546,8 @@ static void lexer_print_tokens(Lexer *lexer, const char *source) {
     do {
         token = lexer_next_token(lexer);
         printf("%-20s", token_kind_name(token.kind));
-        if (token.kind == TOKEN_NUMBER || token.kind == TOKEN_IDENTIFIER) {
+        if (token.kind == TOKEN_NUMBER || token.kind == TOKEN_FLOAT ||
+            token.kind == TOKEN_IDENTIFIER) {
             printf(" '%.*s'", (int)token.length, token.start);
         }
         printf("\n");
@@ -552,18 +567,81 @@ static SourceLoc token_loc(Token *token) {
 /* ================================= Types ================================== */
 
 typedef enum {
+    /* Concrete types */
     TYPE_I64,
+    TYPE_F64,
     TYPE_BOOL,
     TYPE_VOID,
+    /* Comptime types (literals only) */
+    TYPE_COMPTIME_INT,
+    TYPE_COMPTIME_FLOAT,
 } Type;
 
 static const char *type_name(Type type) {
     switch (type) {
-        case TYPE_I64:  return "i64";
-        case TYPE_BOOL: return "bool";
-        case TYPE_VOID: return "void";
+        case TYPE_I64:           return "i64";
+        case TYPE_F64:           return "f64";
+        case TYPE_BOOL:          return "bool";
+        case TYPE_VOID:          return "void";
+        case TYPE_COMPTIME_INT:  return "comptime_int";
+        case TYPE_COMPTIME_FLOAT: return "comptime_float";
     }
     return "unknown";
+}
+
+static bool type_is_comptime(Type type) {
+    return type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
+}
+
+static bool type_is_numeric(Type type) {
+    return type == TYPE_I64 || type == TYPE_F64 ||
+           type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
+}
+
+/* Check if 'from' can coerce to 'to' */
+static bool type_can_coerce(Type from, Type to) {
+    if (from == to) return true;
+    if (from == TYPE_COMPTIME_INT && (to == TYPE_I64 || to == TYPE_F64)) return true;
+    if (from == TYPE_COMPTIME_FLOAT && to == TYPE_F64) return true;
+    return false;
+}
+
+/* Resolve result type for numeric binary operation.
+ * Returns TYPE_VOID on error (incompatible types). */
+static Type resolve_numeric_binary_type(Type left, Type right) {
+    /* Both comptime_int */
+    if (left == TYPE_COMPTIME_INT && right == TYPE_COMPTIME_INT) {
+        return TYPE_COMPTIME_INT;
+    }
+    /* Both comptime, at least one float */
+    if (type_is_comptime(left) && type_is_comptime(right)) {
+        return TYPE_COMPTIME_FLOAT;  /* int promotes to float */
+    }
+    /* comptime_int + concrete → concrete */
+    if (left == TYPE_COMPTIME_INT && (right == TYPE_I64 || right == TYPE_F64)) {
+        return right;
+    }
+    if (right == TYPE_COMPTIME_INT && (left == TYPE_I64 || left == TYPE_F64)) {
+        return left;
+    }
+    /* comptime_float + f64 → f64 */
+    if (left == TYPE_COMPTIME_FLOAT && right == TYPE_F64) {
+        return TYPE_F64;
+    }
+    if (right == TYPE_COMPTIME_FLOAT && left == TYPE_F64) {
+        return TYPE_F64;
+    }
+    /* comptime_float + i64 → error */
+    if ((left == TYPE_COMPTIME_FLOAT && right == TYPE_I64) ||
+        (right == TYPE_COMPTIME_FLOAT && left == TYPE_I64)) {
+        return TYPE_VOID;  /* error */
+    }
+    /* Both same concrete type */
+    if (left == right && (left == TYPE_I64 || left == TYPE_F64)) {
+        return left;
+    }
+    /* Mixed concrete (i64 + f64) → error */
+    return TYPE_VOID;
 }
 
 /* ================================== Params ================================ */
@@ -578,6 +656,7 @@ typedef struct {
 
 typedef enum {
     AST_NUMBER,
+    AST_FLOAT,
     AST_BOOLEAN,
     AST_IDENTIFIER,
     AST_BINARY,
@@ -625,6 +704,10 @@ typedef struct Ast {
         struct {
             long value;
         } number;
+
+        struct {
+            double value;
+        } float_lit;
 
         struct {
             bool value;
@@ -725,6 +808,17 @@ static Ast *ast_make_number(long value, SourceLoc loc) {
     node->kind = AST_NUMBER;
     node->loc = loc;
     node->as.number.value = value;
+    return node;
+}
+
+static Ast *ast_make_float(double value, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_FLOAT;
+    node->loc = loc;
+    node->as.float_lit.value = value;
     return node;
 }
 
@@ -1051,6 +1145,173 @@ static void ast_free(Ast *node) {
     free(node);
 }
 
+/* ============================= Constant Folding ============================ */
+
+/* Returns true if node is a compile-time constant (literal) */
+static bool is_comptime_constant(Ast *node) {
+    return node->kind == AST_NUMBER || node->kind == AST_FLOAT ||
+           node->kind == AST_BOOLEAN;
+}
+
+/* Get integer value from comptime node */
+static long get_comptime_int(Ast *node) {
+    if (node->kind == AST_NUMBER) return node->as.number.value;
+    if (node->kind == AST_FLOAT) return (long)node->as.float_lit.value;
+    return 0;
+}
+
+/* Get float value from comptime node */
+static double get_comptime_float(Ast *node) {
+    if (node->kind == AST_FLOAT) return node->as.float_lit.value;
+    if (node->kind == AST_NUMBER) return (double)node->as.number.value;
+    return 0.0;
+}
+
+/* Try to fold a binary arithmetic operation. Returns folded node or NULL.
+ * Sets *div_by_zero to true if division by zero detected. */
+static Ast *try_fold_binary(Ast *node, bool *div_by_zero) {
+    *div_by_zero = false;
+
+    Ast *left = node->as.binary.left;
+    Ast *right = node->as.binary.right;
+
+    if (!is_comptime_constant(left) || !is_comptime_constant(right)) {
+        return NULL;
+    }
+
+    BinaryOp op = node->as.binary.op;
+
+    /* Only fold arithmetic operations */
+    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV) {
+        return NULL;
+    }
+
+    /* Check for division by zero */
+    if (op == OP_DIV) {
+        if (right->kind == AST_NUMBER && right->as.number.value == 0) {
+            *div_by_zero = true;
+            return NULL;
+        }
+        if (right->kind == AST_FLOAT && right->as.float_lit.value == 0.0) {
+            *div_by_zero = true;
+            return NULL;
+        }
+    }
+
+    /* Determine if result is int or float */
+    bool result_is_float = (left->kind == AST_FLOAT || right->kind == AST_FLOAT);
+
+    if (result_is_float) {
+        double l = get_comptime_float(left);
+        double r = get_comptime_float(right);
+        double result;
+
+        switch (op) {
+            case OP_ADD: result = l + r; break;
+            case OP_SUB: result = l - r; break;
+            case OP_MUL: result = l * r; break;
+            case OP_DIV: result = l / r; break;
+            default: return NULL;
+        }
+
+        Ast *folded = ast_make_float(result, node->loc);
+        folded->expr_type = TYPE_COMPTIME_FLOAT;
+        return folded;
+    } else {
+        long l = get_comptime_int(left);
+        long r = get_comptime_int(right);
+        long result;
+
+        switch (op) {
+            case OP_ADD: result = l + r; break;
+            case OP_SUB: result = l - r; break;
+            case OP_MUL: result = l * r; break;
+            case OP_DIV: result = l / r; break;
+            default: return NULL;
+        }
+
+        Ast *folded = ast_make_number(result, node->loc);
+        folded->expr_type = TYPE_COMPTIME_INT;
+        return folded;
+    }
+}
+
+/* Try to fold a comparison operation. Returns folded bool node or NULL. */
+static Ast *try_fold_comparison(Ast *node) {
+    Ast *left = node->as.binary.left;
+    Ast *right = node->as.binary.right;
+
+    if (!is_comptime_constant(left) || !is_comptime_constant(right)) {
+        return NULL;
+    }
+
+    BinaryOp op = node->as.binary.op;
+    if (op < OP_EQ || op > OP_GE) {
+        return NULL;
+    }
+
+    bool result_is_float = (left->kind == AST_FLOAT || right->kind == AST_FLOAT);
+    bool result;
+
+    if (result_is_float) {
+        double l = get_comptime_float(left);
+        double r = get_comptime_float(right);
+        switch (op) {
+            case OP_EQ:  result = l == r; break;
+            case OP_NEQ: result = l != r; break;
+            case OP_LT:  result = l < r; break;
+            case OP_GT:  result = l > r; break;
+            case OP_LE:  result = l <= r; break;
+            case OP_GE:  result = l >= r; break;
+            default: return NULL;
+        }
+    } else {
+        long l = get_comptime_int(left);
+        long r = get_comptime_int(right);
+        switch (op) {
+            case OP_EQ:  result = l == r; break;
+            case OP_NEQ: result = l != r; break;
+            case OP_LT:  result = l < r; break;
+            case OP_GT:  result = l > r; break;
+            case OP_LE:  result = l <= r; break;
+            case OP_GE:  result = l >= r; break;
+            default: return NULL;
+        }
+    }
+
+    Ast *folded = ast_make_boolean(result, node->loc);
+    folded->expr_type = TYPE_BOOL;
+    return folded;
+}
+
+/* Try to fold a unary operation. Returns folded node or NULL. */
+static Ast *try_fold_unary(Ast *node) {
+    Ast *operand = node->as.unary.operand;
+
+    if (!is_comptime_constant(operand)) return NULL;
+
+    if (node->as.unary.op == OP_NEG) {
+        if (operand->kind == AST_NUMBER) {
+            Ast *folded = ast_make_number(-operand->as.number.value, node->loc);
+            folded->expr_type = TYPE_COMPTIME_INT;
+            return folded;
+        }
+        if (operand->kind == AST_FLOAT) {
+            Ast *folded = ast_make_float(-operand->as.float_lit.value, node->loc);
+            folded->expr_type = TYPE_COMPTIME_FLOAT;
+            return folded;
+        }
+    }
+
+    if (node->as.unary.op == OP_NOT && operand->kind == AST_BOOLEAN) {
+        Ast *folded = ast_make_boolean(!operand->as.boolean.value, node->loc);
+        folded->expr_type = TYPE_BOOL;
+        return folded;
+    }
+
+    return NULL;
+}
+
 /* ================================= Parser ================================= */
 
 typedef struct {
@@ -1202,6 +1463,21 @@ static Ast *parser_parse_primary(Parser *parser) {
         return ast_make_number(value, loc);
     }
 
+    if (parser_match(parser, TOKEN_FLOAT)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        char buffer[64];
+        size_t len = parser->previous.length;
+        if (len >= sizeof(buffer)) {
+            diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+                       "Float literal too large");
+            return NULL;
+        }
+        memcpy(buffer, parser->previous.start, len);
+        buffer[len] = '\0';
+        double value = strtod(buffer, NULL);
+        return ast_make_float(value, loc);
+    }
+
     if (parser_match(parser, TOKEN_TRUE)) {
         SourceLoc loc = token_loc(&parser->previous);
         return ast_make_boolean(true, loc);
@@ -1309,15 +1585,17 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
         return NULL;
     }
 
-    /* Expect type (i64 or bool) */
+    /* Expect type (i64, f64, or bool) */
     Type type;
     if (parser_match(parser, TOKEN_I64)) {
         type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_F64)) {
+        type = TYPE_F64;
     } else if (parser_match(parser, TOKEN_BOOL)) {
         type = TYPE_BOOL;
     } else {
         diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                   parser->current.column, "Expected type (i64 or bool)");
+                   parser->current.column, "Expected type (i64, f64, or bool)");
         parser_synchronize(parser);
         return NULL;
     }
@@ -1362,15 +1640,17 @@ static Ast *parser_parse_mut_declaration(Parser *parser) {
         return NULL;
     }
 
-    /* Expect type (i64 or bool) */
+    /* Expect type (i64, f64, or bool) */
     Type type;
     if (parser_match(parser, TOKEN_I64)) {
         type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_F64)) {
+        type = TYPE_F64;
     } else if (parser_match(parser, TOKEN_BOOL)) {
         type = TYPE_BOOL;
     } else {
         diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                   parser->current.column, "Expected type (i64 or bool)");
+                   parser->current.column, "Expected type (i64, f64, or bool)");
         parser_synchronize(parser);
         return NULL;
     }
@@ -1600,6 +1880,8 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
 
     if (parser_match(parser, TOKEN_I64)) {
         param->type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_F64)) {
+        param->type = TYPE_F64;
     } else if (parser_match(parser, TOKEN_BOOL)) {
         param->type = TYPE_BOOL;
     } else if (parser_match(parser, TOKEN_VOID)) {
@@ -1608,7 +1890,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
         return false;
     } else {
         diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                   parser->current.column, "Expected type (i64 or bool)");
+                   parser->current.column, "Expected type (i64, f64, or bool)");
         return false;
     }
 
@@ -1741,13 +2023,15 @@ static Ast *parser_parse_function(Parser *parser) {
     Type return_type;
     if (parser_match(parser, TOKEN_I64)) {
         return_type = TYPE_I64;
+    } else if (parser_match(parser, TOKEN_F64)) {
+        return_type = TYPE_F64;
     } else if (parser_match(parser, TOKEN_BOOL)) {
         return_type = TYPE_BOOL;
     } else if (parser_match(parser, TOKEN_VOID)) {
         return_type = TYPE_VOID;
     } else {
         diagnostic(ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
-                   parser->current.column, "Expected return type (i64, bool, or void)");
+                   parser->current.column, "Expected return type (i64, f64, bool, or void)");
         if (params) free(params);
         parser_synchronize(parser);
         return NULL;
@@ -1870,6 +2154,10 @@ static void parser_print_ast_step(Ast *node, int indent) {
     switch (node->kind) {
         case AST_NUMBER:
             printf("NUMBER(%ld)\n", node->as.number.value);
+            break;
+
+        case AST_FLOAT:
+            printf("FLOAT(%g)\n", node->as.float_lit.value);
             break;
 
         case AST_BOOLEAN:
@@ -2218,8 +2506,12 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_NUMBER:
-            node->expr_type = TYPE_I64;
-            return TYPE_I64;
+            node->expr_type = TYPE_COMPTIME_INT;
+            return TYPE_COMPTIME_INT;
+
+        case AST_FLOAT:
+            node->expr_type = TYPE_COMPTIME_FLOAT;
+            return TYPE_COMPTIME_FLOAT;
 
         case AST_BOOLEAN:
             node->expr_type = TYPE_BOOL;
@@ -2245,43 +2537,69 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Type right_type = typecheck_expression(node->as.binary.right, scope, func_table);
 
             switch (node->as.binary.op) {
-                /* Arithmetic: i64 x i64 -> i64 */
+                /* Arithmetic: numeric x numeric -> numeric */
                 case OP_ADD:
                 case OP_SUB:
                 case OP_MUL:
-                case OP_DIV:
-                    if (left_type != TYPE_I64) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
-                                   node->as.binary.left->loc.column,
-                                   "Expected i64, got %s", type_name(left_type));
+                case OP_DIV: {
+                    Type result = resolve_numeric_binary_type(left_type, right_type);
+                    if (result == TYPE_VOID) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                                   "Cannot mix %s and %s in arithmetic operation",
+                                   type_name(left_type), type_name(right_type));
+                        node->expr_type = TYPE_I64;  /* default */
+                        return TYPE_I64;
                     }
-                    if (right_type != TYPE_I64) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
-                                   node->as.binary.right->loc.column,
-                                   "Expected i64, got %s", type_name(right_type));
-                    }
-                    node->expr_type = TYPE_I64;
-                    return TYPE_I64;
 
-                /* Comparison: i64 x i64 -> bool */
+                    /* Try constant folding */
+                    bool div_by_zero = false;
+                    Ast *folded = try_fold_binary(node, &div_by_zero);
+                    if (div_by_zero) {
+                        diagnostic(ERR_S019_DIVISION_BY_ZERO, node->loc.line, node->loc.column,
+                                   "Division by zero in constant expression");
+                        node->expr_type = result;
+                        return result;
+                    }
+                    if (folded) {
+                        /* Replace node with folded result */
+                        ast_free(node->as.binary.left);
+                        ast_free(node->as.binary.right);
+                        *node = *folded;
+                        free(folded);
+                        return node->expr_type;
+                    }
+
+                    node->expr_type = result;
+                    return result;
+                }
+
+                /* Comparison: numeric x numeric -> bool (same concrete type required) */
                 case OP_EQ:
                 case OP_NEQ:
                 case OP_LT:
                 case OP_GT:
                 case OP_LE:
-                case OP_GE:
-                    if (left_type != TYPE_I64) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
-                                   node->as.binary.left->loc.column,
-                                   "Expected i64, got %s", type_name(left_type));
+                case OP_GE: {
+                    Type result = resolve_numeric_binary_type(left_type, right_type);
+                    if (result == TYPE_VOID) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                                   "Cannot compare %s and %s",
+                                   type_name(left_type), type_name(right_type));
                     }
-                    if (right_type != TYPE_I64) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
-                                   node->as.binary.right->loc.column,
-                                   "Expected i64, got %s", type_name(right_type));
+
+                    /* Try constant folding */
+                    Ast *folded = try_fold_comparison(node);
+                    if (folded) {
+                        ast_free(node->as.binary.left);
+                        ast_free(node->as.binary.right);
+                        *node = *folded;
+                        free(folded);
+                        return TYPE_BOOL;
                     }
+
                     node->expr_type = TYPE_BOOL;
                     return TYPE_BOOL;
+                }
 
                 /* Logical: bool x bool -> bool */
                 case OP_AND:
@@ -2305,17 +2623,28 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_UNARY: {
             Type operand_type = typecheck_expression(node->as.unary.operand, scope, func_table);
 
+            /* Try constant folding first */
+            Ast *folded = try_fold_unary(node);
+            if (folded) {
+                ast_free(node->as.unary.operand);
+                *node = *folded;
+                free(folded);
+                return node->expr_type;
+            }
+
             switch (node->as.unary.op) {
-                /* Negation: i64 -> i64 */
+                /* Negation: numeric -> numeric (preserves type) */
                 case OP_NEG:
-                    if (operand_type != TYPE_I64) {
+                    if (!type_is_numeric(operand_type)) {
                         diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
-                                   "Expected i64 for negation, got %s",
+                                   "Expected numeric type for negation, got %s",
                                    type_name(operand_type));
+                        node->expr_type = TYPE_I64;
+                        return TYPE_I64;
                     }
-                    node->expr_type = TYPE_I64;
-                    return TYPE_I64;
+                    node->expr_type = operand_type;
+                    return operand_type;
 
                 /* NOT: bool -> bool */
                 case OP_NOT:
@@ -2360,7 +2689,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             for (size_t i = 0; i < check_count; i++) {
                 Type arg_type = typecheck_expression(node->as.func_call.arguments[i],
                                                      scope, func_table);
-                if (arg_type != entry->param_types[i]) {
+                if (!type_can_coerce(arg_type, entry->param_types[i])) {
                     diagnostic(ERR_S018_ARG_TYPE_MISMATCH,
                                node->as.func_call.arguments[i]->loc.line,
                                node->as.func_call.arguments[i]->loc.column,
@@ -2393,7 +2722,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
             Type declared = node->as.val_decl.type;
 
-            if (init_type != declared) {
+            if (!type_can_coerce(init_type, declared)) {
                 diagnostic(ERR_S006_TYPE_MISMATCH, node->as.val_decl.initializer->loc.line,
                            node->as.val_decl.initializer->loc.column,
                            "Cannot assign %s to variable of type %s",
@@ -2409,7 +2738,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope, func_table);
             Type declared = node->as.mut_decl.type;
 
-            if (init_type != declared) {
+            if (!type_can_coerce(init_type, declared)) {
                 diagnostic(ERR_S006_TYPE_MISMATCH, node->as.mut_decl.initializer->loc.line,
                            node->as.mut_decl.initializer->loc.column,
                            "Cannot assign %s to variable of type %s",
@@ -2440,7 +2769,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             }
 
             Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
-            if (value_type != v->type) {
+            if (!type_can_coerce(value_type, v->type)) {
                 diagnostic(ERR_S006_TYPE_MISMATCH, node->as.assignment.value->loc.line,
                            node->as.assignment.value->loc.column,
                            "Cannot assign %s to variable of type %s",
@@ -2468,7 +2797,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                                type_name(return_type));
                 } else {
                     Type value_type = typecheck_expression(value, *scope, func_table);
-                    if (value_type != return_type) {
+                    if (!type_can_coerce(value_type, return_type)) {
                         diagnostic(ERR_S013_RETURN_TYPE_MISMATCH, node->loc.line,
                                    node->loc.column,
                                    "Return type mismatch: expected %s, got %s",
@@ -2651,6 +2980,10 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, "%ldL", node->as.number.value);
             break;
 
+        case AST_FLOAT:
+            fprintf(out, "%g", node->as.float_lit.value);
+            break;
+
         case AST_BOOLEAN:
             fprintf(out, "%d", node->as.boolean.value ? 1 : 0);
             break;
@@ -2731,9 +3064,12 @@ static void codegen_indent(FILE *out, int indent) {
 
 static const char *codegen_type_to_c(Type type) {
     switch (type) {
-        case TYPE_I64:  return "long";
-        case TYPE_BOOL: return "int";
-        case TYPE_VOID: return "void";
+        case TYPE_I64:           return "long";
+        case TYPE_F64:           return "double";
+        case TYPE_BOOL:          return "int";
+        case TYPE_VOID:          return "void";
+        case TYPE_COMPTIME_INT:  return "long";   /* default */
+        case TYPE_COMPTIME_FLOAT: return "double"; /* default */
     }
     return "long";
 }
