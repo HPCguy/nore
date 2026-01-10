@@ -3193,6 +3193,24 @@ static const char *codegen_type_to_c(Type type) {
     return "long";
 }
 
+static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent);
+
+/* Emit block statements with scoped variable management.
+ * Creates a child scope, emits statements, then restores parent scope. */
+static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
+                                          int indent, bool is_loop) {
+    *scope = scope_create(*scope);
+    if (is_loop) (*scope)->loop_depth++;
+
+    for (size_t i = 0; i < block->as.block.count; i++) {
+        codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
+    }
+
+    Scope *old = *scope;
+    *scope = old->parent;
+    scope_destroy(old);
+}
+
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent) {
     switch (node->kind) {
         case AST_VAL_DECL:
@@ -3281,30 +3299,14 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             codegen_emit_expression(out, node->as.if_stmt.condition);
             fprintf(out, ") {\n");
 
-            /* Enter scope for then block */
-            *scope = scope_create(*scope);
-            for (size_t i = 0; i < then_block->as.block.count; i++) {
-                codegen_emit_statement(out, then_block->as.block.statements[i], scope, indent + 1);
-            }
-            Scope *old = *scope;
-            *scope = old->parent;
-            scope_destroy(old);
+            codegen_emit_block_statements(out, then_block, scope, indent + 1, false);
 
             codegen_indent(out, indent);
             fprintf(out, "}");
 
             if (else_block) {
                 fprintf(out, " else {\n");
-
-                /* Enter scope for else block */
-                *scope = scope_create(*scope);
-                for (size_t i = 0; i < else_block->as.block.count; i++) {
-                    codegen_emit_statement(out, else_block->as.block.statements[i], scope, indent + 1);
-                }
-                old = *scope;
-                *scope = old->parent;
-                scope_destroy(old);
-
+                codegen_emit_block_statements(out, else_block, scope, indent + 1, false);
                 codegen_indent(out, indent);
                 fprintf(out, "}");
             }
@@ -3320,15 +3322,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             codegen_emit_expression(out, node->as.while_stmt.condition);
             fprintf(out, ") {\n");
 
-            /* Enter scope for while body with incremented loop depth */
-            *scope = scope_create(*scope);
-            (*scope)->loop_depth++;
-            for (size_t i = 0; i < body->as.block.count; i++) {
-                codegen_emit_statement(out, body->as.block.statements[i], scope, indent + 1);
-            }
-            Scope *old = *scope;
-            *scope = old->parent;
-            scope_destroy(old);
+            codegen_emit_block_statements(out, body, scope, indent + 1, true);
 
             codegen_indent(out, indent);
             fprintf(out, "}\n");
@@ -3355,24 +3349,13 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, "continue;\n");
             break;
 
-        case AST_BLOCK: {
-            /* Enter new scope */
-            *scope = scope_create(*scope);
-
+        case AST_BLOCK:
             codegen_indent(out, indent);
             fprintf(out, "{\n");
-            for (size_t i = 0; i < node->as.block.count; i++) {
-                codegen_emit_statement(out, node->as.block.statements[i], scope, indent + 1);
-            }
+            codegen_emit_block_statements(out, node, scope, indent + 1, false);
             codegen_indent(out, indent);
             fprintf(out, "}\n");
-
-            /* Exit scope */
-            Scope *old = *scope;
-            *scope = old->parent;
-            scope_destroy(old);
             break;
-        }
 
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
