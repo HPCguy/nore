@@ -1,0 +1,4 @@
+func foo(): i64 = { return 42 }
+func main(): void = {
+    val x = foo()
+}

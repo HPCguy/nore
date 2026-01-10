@@ -64,24 +64,32 @@ val w: f64 = x + 5.0   // ERROR: cannot mix i64 and f64
 
 ### Constant Folding
 
-Expressions involving only literals are evaluated at compile time:
+Expressions involving only literals or comptime variables are evaluated at compile time:
 
 ```nore
 val x: i64 = 3 + 5 * 2      // folded to 13 at compile time
 val y: f64 = 3.0 + 5        // folded to 8.0 at compile time
 val z: bool = 10 > 5        // folded to true at compile time
 val w: i64 = 5 / 0          // ERROR: division by zero at compile time
+
+val a = 42                  // comptime_int
+val b = a + 1               // folded to 43 at compile time
+val c = a * 3.14            // folded to 131.88 at compile time
 ```
 
 ### Variables
 
 **Immutable Variables** (default):
 ```nore
-val x: i64 = 42
+val x: i64 = 42         // explicit type
+val y = 42              // comptime: type inferred as comptime_int
+val z = x + 1           // comptime: propagates through expressions
 val flag: bool = true
 ```
 - Keyword: `val`
-- Explicit type required: Must specify type with `:` annotation
+- Type annotation: Optional when initializer is compile-time constant
+- Without type: Variable becomes a comptime type (can be used in other comptime expressions)
+- With explicit type: Variable becomes that concrete type (not comptime)
 - Cannot be reassigned after initialization
 
 **Mutable Variables**:

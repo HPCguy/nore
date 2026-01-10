@@ -87,6 +87,7 @@ typedef enum {
     ERR_S017_WRONG_ARG_COUNT       = ERR_GROUP_SEMANTIC + 17,
     ERR_S018_ARG_TYPE_MISMATCH     = ERR_GROUP_SEMANTIC + 18,
     ERR_S019_DIVISION_BY_ZERO      = ERR_GROUP_SEMANTIC + 19,
+    ERR_S020_TYPE_REQUIRED         = ERR_GROUP_SEMANTIC + 20,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -567,6 +568,8 @@ static SourceLoc token_loc(Token *token) {
 /* ================================= Types ================================== */
 
 typedef enum {
+    /* Sentinel for unspecified type */
+    TYPE_UNKNOWN = -1,
     /* Concrete types */
     TYPE_I64,
     TYPE_F64,
@@ -579,6 +582,7 @@ typedef enum {
 
 static const char *type_name(Type type) {
     switch (type) {
+        case TYPE_UNKNOWN:       return "unknown";
         case TYPE_I64:           return "i64";
         case TYPE_F64:           return "f64";
         case TYPE_BOOL:          return "bool";
@@ -1145,173 +1149,6 @@ static void ast_free(Ast *node) {
     free(node);
 }
 
-/* ============================= Constant Folding ============================ */
-
-/* Returns true if node is a compile-time constant (literal) */
-static bool is_comptime_constant(Ast *node) {
-    return node->kind == AST_NUMBER || node->kind == AST_FLOAT ||
-           node->kind == AST_BOOLEAN;
-}
-
-/* Get integer value from comptime node */
-static long get_comptime_int(Ast *node) {
-    if (node->kind == AST_NUMBER) return node->as.number.value;
-    if (node->kind == AST_FLOAT) return (long)node->as.float_lit.value;
-    return 0;
-}
-
-/* Get float value from comptime node */
-static double get_comptime_float(Ast *node) {
-    if (node->kind == AST_FLOAT) return node->as.float_lit.value;
-    if (node->kind == AST_NUMBER) return (double)node->as.number.value;
-    return 0.0;
-}
-
-/* Try to fold a binary arithmetic operation. Returns folded node or NULL.
- * Sets *div_by_zero to true if division by zero detected. */
-static Ast *try_fold_binary(Ast *node, bool *div_by_zero) {
-    *div_by_zero = false;
-
-    Ast *left = node->as.binary.left;
-    Ast *right = node->as.binary.right;
-
-    if (!is_comptime_constant(left) || !is_comptime_constant(right)) {
-        return NULL;
-    }
-
-    BinaryOp op = node->as.binary.op;
-
-    /* Only fold arithmetic operations */
-    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV) {
-        return NULL;
-    }
-
-    /* Check for division by zero */
-    if (op == OP_DIV) {
-        if (right->kind == AST_NUMBER && right->as.number.value == 0) {
-            *div_by_zero = true;
-            return NULL;
-        }
-        if (right->kind == AST_FLOAT && right->as.float_lit.value == 0.0) {
-            *div_by_zero = true;
-            return NULL;
-        }
-    }
-
-    /* Determine if result is int or float */
-    bool result_is_float = (left->kind == AST_FLOAT || right->kind == AST_FLOAT);
-
-    if (result_is_float) {
-        double l = get_comptime_float(left);
-        double r = get_comptime_float(right);
-        double result;
-
-        switch (op) {
-            case OP_ADD: result = l + r; break;
-            case OP_SUB: result = l - r; break;
-            case OP_MUL: result = l * r; break;
-            case OP_DIV: result = l / r; break;
-            default: return NULL;
-        }
-
-        Ast *folded = ast_make_float(result, node->loc);
-        folded->expr_type = TYPE_COMPTIME_FLOAT;
-        return folded;
-    } else {
-        long l = get_comptime_int(left);
-        long r = get_comptime_int(right);
-        long result;
-
-        switch (op) {
-            case OP_ADD: result = l + r; break;
-            case OP_SUB: result = l - r; break;
-            case OP_MUL: result = l * r; break;
-            case OP_DIV: result = l / r; break;
-            default: return NULL;
-        }
-
-        Ast *folded = ast_make_number(result, node->loc);
-        folded->expr_type = TYPE_COMPTIME_INT;
-        return folded;
-    }
-}
-
-/* Try to fold a comparison operation. Returns folded bool node or NULL. */
-static Ast *try_fold_comparison(Ast *node) {
-    Ast *left = node->as.binary.left;
-    Ast *right = node->as.binary.right;
-
-    if (!is_comptime_constant(left) || !is_comptime_constant(right)) {
-        return NULL;
-    }
-
-    BinaryOp op = node->as.binary.op;
-    if (op < OP_EQ || op > OP_GE) {
-        return NULL;
-    }
-
-    bool result_is_float = (left->kind == AST_FLOAT || right->kind == AST_FLOAT);
-    bool result;
-
-    if (result_is_float) {
-        double l = get_comptime_float(left);
-        double r = get_comptime_float(right);
-        switch (op) {
-            case OP_EQ:  result = l == r; break;
-            case OP_NEQ: result = l != r; break;
-            case OP_LT:  result = l < r; break;
-            case OP_GT:  result = l > r; break;
-            case OP_LE:  result = l <= r; break;
-            case OP_GE:  result = l >= r; break;
-            default: return NULL;
-        }
-    } else {
-        long l = get_comptime_int(left);
-        long r = get_comptime_int(right);
-        switch (op) {
-            case OP_EQ:  result = l == r; break;
-            case OP_NEQ: result = l != r; break;
-            case OP_LT:  result = l < r; break;
-            case OP_GT:  result = l > r; break;
-            case OP_LE:  result = l <= r; break;
-            case OP_GE:  result = l >= r; break;
-            default: return NULL;
-        }
-    }
-
-    Ast *folded = ast_make_boolean(result, node->loc);
-    folded->expr_type = TYPE_BOOL;
-    return folded;
-}
-
-/* Try to fold a unary operation. Returns folded node or NULL. */
-static Ast *try_fold_unary(Ast *node) {
-    Ast *operand = node->as.unary.operand;
-
-    if (!is_comptime_constant(operand)) return NULL;
-
-    if (node->as.unary.op == OP_NEG) {
-        if (operand->kind == AST_NUMBER) {
-            Ast *folded = ast_make_number(-operand->as.number.value, node->loc);
-            folded->expr_type = TYPE_COMPTIME_INT;
-            return folded;
-        }
-        if (operand->kind == AST_FLOAT) {
-            Ast *folded = ast_make_float(-operand->as.float_lit.value, node->loc);
-            folded->expr_type = TYPE_COMPTIME_FLOAT;
-            return folded;
-        }
-    }
-
-    if (node->as.unary.op == OP_NOT && operand->kind == AST_BOOLEAN) {
-        Ast *folded = ast_make_boolean(!operand->as.boolean.value, node->loc);
-        folded->expr_type = TYPE_BOOL;
-        return folded;
-    }
-
-    return NULL;
-}
-
 /* ================================= Parser ================================= */
 
 typedef struct {
@@ -1577,27 +1414,22 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
 
-    /* Expect ':' for type annotation */
-    if (!parser_match(parser, TOKEN_COLON)) {
-        diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
-                   parser->current.column, "Expected ':' after identifier");
-        parser_synchronize(parser);
-        return NULL;
-    }
-
-    /* Expect type (i64, f64, or bool) */
-    Type type;
-    if (parser_match(parser, TOKEN_I64)) {
-        type = TYPE_I64;
-    } else if (parser_match(parser, TOKEN_F64)) {
-        type = TYPE_F64;
-    } else if (parser_match(parser, TOKEN_BOOL)) {
-        type = TYPE_BOOL;
-    } else {
-        diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                   parser->current.column, "Expected type (i64, f64, or bool)");
-        parser_synchronize(parser);
-        return NULL;
+    /* Optional ':' type annotation */
+    Type type = TYPE_UNKNOWN;  /* infer from comptime expr */
+    if (parser_match(parser, TOKEN_COLON)) {
+        /* Expect type (i64, f64, or bool) */
+        if (parser_match(parser, TOKEN_I64)) {
+            type = TYPE_I64;
+        } else if (parser_match(parser, TOKEN_F64)) {
+            type = TYPE_F64;
+        } else if (parser_match(parser, TOKEN_BOOL)) {
+            type = TYPE_BOOL;
+        } else {
+            diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+                       parser->current.column, "Expected type (i64, f64, or bool)");
+            parser_synchronize(parser);
+            return NULL;
+        }
     }
 
     /* Expect '=' */
@@ -2319,20 +2151,28 @@ static void parser_print_ast(Ast *ast) {
 
 /* ============================= Scope Management =========================== */
 
-typedef struct {
+/* Variable and Scope structs (defined here for use in folding) */
+struct Variable {
     const char *name_start;
     size_t name_length;
     bool is_mutable;
     Type type;
-} Variable;
+    bool is_comptime;
+    union {
+        long int_value;
+        double float_value;
+    } comptime_value;
+};
+typedef struct Variable Variable;
 
-typedef struct Scope {
+struct Scope {
     Variable *vars;
     size_t count;
     size_t capacity;
     struct Scope *parent;
     int loop_depth;
-} Scope;
+};
+typedef struct Scope Scope;
 
 static Scope *scope_create(Scope *parent) {
     Scope *scope = malloc(sizeof(Scope));
@@ -2381,15 +2221,15 @@ static Variable *scope_lookup(Scope *scope, const char *name_start,
     return NULL;
 }
 
-static void scope_add(Scope *scope, const char *name_start,
-                      size_t name_length, bool is_mutable, Type type,
-                      SourceLoc loc) {
+static Variable *scope_add(Scope *scope, const char *name_start,
+                           size_t name_length, bool is_mutable, Type type,
+                           SourceLoc loc) {
     /* Check for duplicates in current scope only */
     if (scope_lookup_local(scope, name_start, name_length) != NULL) {
         diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
                    "Variable '%.*s' already declared in this scope",
                    (int)name_length, name_start);
-        return;  /* Skip adding duplicate */
+        return NULL;
     }
 
     /* Grow if needed */
@@ -2402,11 +2242,36 @@ static void scope_add(Scope *scope, const char *name_start,
     }
 
     /* Add variable */
-    scope->vars[scope->count].name_start = name_start;
-    scope->vars[scope->count].name_length = name_length;
-    scope->vars[scope->count].is_mutable = is_mutable;
-    scope->vars[scope->count].type = type;
+    Variable *v = &scope->vars[scope->count];
+    v->name_start = name_start;
+    v->name_length = name_length;
+    v->is_mutable = is_mutable;
+    v->type = type;
+    v->is_comptime = false;
     scope->count++;
+    return v;
+}
+
+static void scope_add_comptime_int(Scope *scope, const char *name_start,
+                                   size_t name_length, long value,
+                                   SourceLoc loc) {
+    Variable *v = scope_add(scope, name_start, name_length, false,
+                            TYPE_COMPTIME_INT, loc);
+    if (v != NULL) {
+        v->is_comptime = true;
+        v->comptime_value.int_value = value;
+    }
+}
+
+static void scope_add_comptime_float(Scope *scope, const char *name_start,
+                                     size_t name_length, double value,
+                                     SourceLoc loc) {
+    Variable *v = scope_add(scope, name_start, name_length, false,
+                            TYPE_COMPTIME_FLOAT, loc);
+    if (v != NULL) {
+        v->is_comptime = true;
+        v->comptime_value.float_value = value;
+    }
 }
 
 /* ========================== Function Table ========================== */
@@ -2498,6 +2363,212 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
     }
 }
 
+/* ============================= Constant Folding ============================ */
+
+/* Returns true if node is a compile-time constant (literal or comptime variable) */
+static bool is_comptime_constant(Ast *node, Scope *scope) {
+    if (node->kind == AST_NUMBER || node->kind == AST_FLOAT ||
+        node->kind == AST_BOOLEAN) {
+        return true;
+    }
+    if (node->kind == AST_IDENTIFIER && scope != NULL) {
+        Variable *v = scope_lookup(scope, node->as.identifier.start,
+                                   node->as.identifier.length);
+        return v != NULL && v->is_comptime;
+    }
+    return false;
+}
+
+/* Get integer value from comptime node */
+static long get_comptime_int(Ast *node, Scope *scope) {
+    if (node->kind == AST_NUMBER) return node->as.number.value;
+    if (node->kind == AST_FLOAT) return (long)node->as.float_lit.value;
+    if (node->kind == AST_IDENTIFIER && scope != NULL) {
+        Variable *v = scope_lookup(scope, node->as.identifier.start,
+                                   node->as.identifier.length);
+        if (v != NULL && v->is_comptime) {
+            return v->comptime_value.int_value;
+        }
+    }
+    return 0;
+}
+
+/* Get float value from comptime node */
+static double get_comptime_float(Ast *node, Scope *scope) {
+    if (node->kind == AST_FLOAT) return node->as.float_lit.value;
+    if (node->kind == AST_NUMBER) return (double)node->as.number.value;
+    if (node->kind == AST_IDENTIFIER && scope != NULL) {
+        Variable *v = scope_lookup(scope, node->as.identifier.start,
+                                   node->as.identifier.length);
+        if (v != NULL && v->is_comptime) {
+            if (v->type == TYPE_COMPTIME_FLOAT) {
+                return v->comptime_value.float_value;
+            } else {
+                return (double)v->comptime_value.int_value;
+            }
+        }
+    }
+    return 0.0;
+}
+
+/* Check if node evaluates to int (for determining result type) */
+static bool is_comptime_int_type(Ast *node, Scope *scope) {
+    if (node->kind == AST_NUMBER) return true;
+    if (node->kind == AST_FLOAT) return false;
+    if (node->kind == AST_IDENTIFIER && scope != NULL) {
+        Variable *v = scope_lookup(scope, node->as.identifier.start,
+                                   node->as.identifier.length);
+        if (v != NULL && v->is_comptime) {
+            return v->type == TYPE_COMPTIME_INT;
+        }
+    }
+    return true;  /* default to int */
+}
+
+/* Try to fold a binary arithmetic operation. Returns folded node or NULL.
+ * Sets *div_by_zero to true if division by zero detected. */
+static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
+    *div_by_zero = false;
+
+    Ast *left = node->as.binary.left;
+    Ast *right = node->as.binary.right;
+
+    if (!is_comptime_constant(left, scope) || !is_comptime_constant(right, scope)) {
+        return NULL;
+    }
+
+    BinaryOp op = node->as.binary.op;
+
+    /* Only fold arithmetic operations */
+    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV) {
+        return NULL;
+    }
+
+    /* Check for division by zero */
+    if (op == OP_DIV) {
+        long r_int = get_comptime_int(right, scope);
+        double r_float = get_comptime_float(right, scope);
+        if (r_int == 0 && r_float == 0.0) {
+            *div_by_zero = true;
+            return NULL;
+        }
+    }
+
+    /* Determine if result is int or float */
+    bool result_is_float = !is_comptime_int_type(left, scope) ||
+                           !is_comptime_int_type(right, scope);
+
+    if (result_is_float) {
+        double l = get_comptime_float(left, scope);
+        double r = get_comptime_float(right, scope);
+        double result;
+
+        switch (op) {
+            case OP_ADD: result = l + r; break;
+            case OP_SUB: result = l - r; break;
+            case OP_MUL: result = l * r; break;
+            case OP_DIV: result = l / r; break;
+            default: return NULL;
+        }
+
+        Ast *folded = ast_make_float(result, node->loc);
+        folded->expr_type = TYPE_COMPTIME_FLOAT;
+        return folded;
+    } else {
+        long l = get_comptime_int(left, scope);
+        long r = get_comptime_int(right, scope);
+        long result;
+
+        switch (op) {
+            case OP_ADD: result = l + r; break;
+            case OP_SUB: result = l - r; break;
+            case OP_MUL: result = l * r; break;
+            case OP_DIV: result = l / r; break;
+            default: return NULL;
+        }
+
+        Ast *folded = ast_make_number(result, node->loc);
+        folded->expr_type = TYPE_COMPTIME_INT;
+        return folded;
+    }
+}
+
+/* Try to fold a comparison operation. Returns folded bool node or NULL. */
+static Ast *try_fold_comparison(Ast *node, Scope *scope) {
+    Ast *left = node->as.binary.left;
+    Ast *right = node->as.binary.right;
+
+    if (!is_comptime_constant(left, scope) || !is_comptime_constant(right, scope)) {
+        return NULL;
+    }
+
+    BinaryOp op = node->as.binary.op;
+    if (op < OP_EQ || op > OP_GE) {
+        return NULL;
+    }
+
+    bool result_is_float = !is_comptime_int_type(left, scope) ||
+                           !is_comptime_int_type(right, scope);
+    bool result;
+
+    if (result_is_float) {
+        double l = get_comptime_float(left, scope);
+        double r = get_comptime_float(right, scope);
+        switch (op) {
+            case OP_EQ:  result = l == r; break;
+            case OP_NEQ: result = l != r; break;
+            case OP_LT:  result = l < r; break;
+            case OP_GT:  result = l > r; break;
+            case OP_LE:  result = l <= r; break;
+            case OP_GE:  result = l >= r; break;
+            default: return NULL;
+        }
+    } else {
+        long l = get_comptime_int(left, scope);
+        long r = get_comptime_int(right, scope);
+        switch (op) {
+            case OP_EQ:  result = l == r; break;
+            case OP_NEQ: result = l != r; break;
+            case OP_LT:  result = l < r; break;
+            case OP_GT:  result = l > r; break;
+            case OP_LE:  result = l <= r; break;
+            case OP_GE:  result = l >= r; break;
+            default: return NULL;
+        }
+    }
+
+    Ast *folded = ast_make_boolean(result, node->loc);
+    folded->expr_type = TYPE_BOOL;
+    return folded;
+}
+
+/* Try to fold a unary operation. Returns folded node or NULL. */
+static Ast *try_fold_unary(Ast *node, Scope *scope) {
+    Ast *operand = node->as.unary.operand;
+
+    if (!is_comptime_constant(operand, scope)) return NULL;
+
+    if (node->as.unary.op == OP_NEG) {
+        if (is_comptime_int_type(operand, scope)) {
+            Ast *folded = ast_make_number(-get_comptime_int(operand, scope), node->loc);
+            folded->expr_type = TYPE_COMPTIME_INT;
+            return folded;
+        } else {
+            Ast *folded = ast_make_float(-get_comptime_float(operand, scope), node->loc);
+            folded->expr_type = TYPE_COMPTIME_FLOAT;
+            return folded;
+        }
+    }
+
+    if (node->as.unary.op == OP_NOT && operand->kind == AST_BOOLEAN) {
+        Ast *folded = ast_make_boolean(!operand->as.boolean.value, node->loc);
+        folded->expr_type = TYPE_BOOL;
+        return folded;
+    }
+
+    return NULL;
+}
+
 /* ============================== Type Checking ============================== */
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
@@ -2553,7 +2624,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
 
                     /* Try constant folding */
                     bool div_by_zero = false;
-                    Ast *folded = try_fold_binary(node, &div_by_zero);
+                    Ast *folded = try_fold_binary(node, scope, &div_by_zero);
                     if (div_by_zero) {
                         diagnostic(ERR_S019_DIVISION_BY_ZERO, node->loc.line, node->loc.column,
                                    "Division by zero in constant expression");
@@ -2588,7 +2659,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     }
 
                     /* Try constant folding */
-                    Ast *folded = try_fold_comparison(node);
+                    Ast *folded = try_fold_comparison(node, scope);
                     if (folded) {
                         ast_free(node->as.binary.left);
                         ast_free(node->as.binary.right);
@@ -2624,7 +2695,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Type operand_type = typecheck_expression(node->as.unary.operand, scope, func_table);
 
             /* Try constant folding first */
-            Ast *folded = try_fold_unary(node);
+            Ast *folded = try_fold_unary(node, scope);
             if (folded) {
                 ast_free(node->as.unary.operand);
                 *node = *folded;
@@ -2722,15 +2793,43 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
             Type declared = node->as.val_decl.type;
 
-            if (!type_can_coerce(init_type, declared)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.val_decl.initializer->loc.line,
-                           node->as.val_decl.initializer->loc.column,
-                           "Cannot assign %s to variable of type %s",
-                           type_name(init_type), type_name(declared));
+            if (declared == TYPE_UNKNOWN) {
+                /* No explicit type — must be comptime */
+                if (!type_is_comptime(init_type)) {
+                    diagnostic(ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
+                               "Type annotation required (expression is not compile-time constant)");
+                    declared = TYPE_I64;  /* fallback */
+                } else {
+                    declared = init_type;  /* inherit comptime type */
+                }
+                node->as.val_decl.type = declared;  /* update AST */
+            } else {
+                /* Explicit type — check coercion */
+                if (!type_can_coerce(init_type, declared)) {
+                    diagnostic(ERR_S006_TYPE_MISMATCH, node->as.val_decl.initializer->loc.line,
+                               node->as.val_decl.initializer->loc.column,
+                               "Cannot assign %s to variable of type %s",
+                               type_name(init_type), type_name(declared));
+                }
             }
 
-            scope_add(*scope, node->as.val_decl.name_start,
-                      node->as.val_decl.name_length, false, declared, node->loc);
+            /* Add to scope with comptime info if applicable */
+            if (type_is_comptime(declared) && is_comptime_constant(node->as.val_decl.initializer, *scope)) {
+                if (declared == TYPE_COMPTIME_INT) {
+                    scope_add_comptime_int(*scope, node->as.val_decl.name_start,
+                                           node->as.val_decl.name_length,
+                                           get_comptime_int(node->as.val_decl.initializer, *scope),
+                                           node->loc);
+                } else {
+                    scope_add_comptime_float(*scope, node->as.val_decl.name_start,
+                                             node->as.val_decl.name_length,
+                                             get_comptime_float(node->as.val_decl.initializer, *scope),
+                                             node->loc);
+                }
+            } else {
+                scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+            }
             break;
         }
 
@@ -3064,6 +3163,7 @@ static void codegen_indent(FILE *out, int indent) {
 
 static const char *codegen_type_to_c(Type type) {
     switch (type) {
+        case TYPE_UNKNOWN:       return "long";   /* should not happen */
         case TYPE_I64:           return "long";
         case TYPE_F64:           return "double";
         case TYPE_BOOL:          return "int";
