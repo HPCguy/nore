@@ -1220,6 +1220,16 @@ static int parser_match(Parser *parser, TokenKind kind) {
     return 1;
 }
 
+/* Parse a type token. Returns TYPE_UNKNOWN if no valid type found.
+ * If allow_void is true, void is accepted as valid type. */
+static Type parser_parse_type(Parser *parser, bool allow_void) {
+    if (parser_match(parser, TOKEN_I64)) return TYPE_I64;
+    if (parser_match(parser, TOKEN_F64)) return TYPE_F64;
+    if (parser_match(parser, TOKEN_BOOL)) return TYPE_BOOL;
+    if (allow_void && parser_match(parser, TOKEN_VOID)) return TYPE_VOID;
+    return TYPE_UNKNOWN;
+}
+
 static TokenKind parser_peek_next(Parser *parser) {
     /* Save lexer state */
     Lexer saved = *parser->lexer;
@@ -1450,14 +1460,8 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
     /* Optional ':' type annotation */
     Type type = TYPE_UNKNOWN;  /* infer from comptime expr */
     if (parser_match(parser, TOKEN_COLON)) {
-        /* Expect type (i64, f64, or bool) */
-        if (parser_match(parser, TOKEN_I64)) {
-            type = TYPE_I64;
-        } else if (parser_match(parser, TOKEN_F64)) {
-            type = TYPE_F64;
-        } else if (parser_match(parser, TOKEN_BOOL)) {
-            type = TYPE_BOOL;
-        } else {
+        type = parser_parse_type(parser, false);
+        if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
                        parser->current.column, "Expected type (i64, f64, or bool)");
             parser_synchronize(parser);
@@ -1506,14 +1510,8 @@ static Ast *parser_parse_mut_declaration(Parser *parser) {
     }
 
     /* Expect type (i64, f64, or bool) */
-    Type type;
-    if (parser_match(parser, TOKEN_I64)) {
-        type = TYPE_I64;
-    } else if (parser_match(parser, TOKEN_F64)) {
-        type = TYPE_F64;
-    } else if (parser_match(parser, TOKEN_BOOL)) {
-        type = TYPE_BOOL;
-    } else {
+    Type type = parser_parse_type(parser, false);
+    if (type == TYPE_UNKNOWN) {
         diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
                    parser->current.column, "Expected type (i64, f64, or bool)");
         parser_synchronize(parser);
@@ -1743,19 +1741,15 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
         return false;
     }
 
-    if (parser_match(parser, TOKEN_I64)) {
-        param->type = TYPE_I64;
-    } else if (parser_match(parser, TOKEN_F64)) {
-        param->type = TYPE_F64;
-    } else if (parser_match(parser, TOKEN_BOOL)) {
-        param->type = TYPE_BOOL;
-    } else if (parser_match(parser, TOKEN_VOID)) {
-        diagnostic(ERR_S012_VOID_PARAM, parser->previous.line,
-                   parser->previous.column, "void is not valid as parameter type");
-        return false;
-    } else {
-        diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                   parser->current.column, "Expected type (i64, f64, or bool)");
+    param->type = parser_parse_type(parser, false);
+    if (param->type == TYPE_UNKNOWN) {
+        if (parser_match(parser, TOKEN_VOID)) {
+            diagnostic(ERR_S012_VOID_PARAM, parser->previous.line,
+                       parser->previous.column, "void is not valid as parameter type");
+        } else {
+            diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+                       parser->current.column, "Expected type (i64, f64, or bool)");
+        }
         return false;
     }
 
@@ -1885,16 +1879,8 @@ static Ast *parser_parse_function(Parser *parser) {
     }
 
     /* Expect return type */
-    Type return_type;
-    if (parser_match(parser, TOKEN_I64)) {
-        return_type = TYPE_I64;
-    } else if (parser_match(parser, TOKEN_F64)) {
-        return_type = TYPE_F64;
-    } else if (parser_match(parser, TOKEN_BOOL)) {
-        return_type = TYPE_BOOL;
-    } else if (parser_match(parser, TOKEN_VOID)) {
-        return_type = TYPE_VOID;
-    } else {
+    Type return_type = parser_parse_type(parser, true);
+    if (return_type == TYPE_UNKNOWN) {
         diagnostic(ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
                    parser->current.column, "Expected return type (i64, f64, bool, or void)");
         if (params) free(params);
