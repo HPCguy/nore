@@ -3121,7 +3121,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
 
         case AST_IDENTIFIER:
-            fprintf(out, "%.*s", (int)node->as.identifier.length,
+            fprintf(out, "ni_%.*s", (int)node->as.identifier.length,
                     node->as.identifier.start);
             break;
 
@@ -3161,7 +3161,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         }
 
         case AST_FUNC_CALL:
-            fprintf(out, "%.*s(", (int)node->as.func_call.name_length,
+            fprintf(out, "ni_%.*s(", (int)node->as.func_call.name_length,
                     node->as.func_call.name_start);
             for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
                 if (i > 0) fprintf(out, ", ");
@@ -3214,7 +3214,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
                       node->as.val_decl.name_length, false,
                       node->as.val_decl.type, node->loc);
             codegen_indent(out, indent);
-            fprintf(out, "const %s %.*s = ",
+            fprintf(out, "const %s ni_%.*s = ",
                     codegen_type_to_c(node->as.val_decl.type),
                     (int)node->as.val_decl.name_length,
                     node->as.val_decl.name_start);
@@ -3227,7 +3227,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
                       node->as.mut_decl.name_length, true,
                       node->as.mut_decl.type, node->loc);
             codegen_indent(out, indent);
-            fprintf(out, "%s %.*s = ",
+            fprintf(out, "%s ni_%.*s = ",
                     codegen_type_to_c(node->as.mut_decl.type),
                     (int)node->as.mut_decl.name_length,
                     node->as.mut_decl.name_start);
@@ -3266,7 +3266,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             }
 
             codegen_indent(out, indent);
-            fprintf(out, "%.*s = ", (int)name_length, name_start);
+            fprintf(out, "ni_%.*s = ", (int)name_length, name_start);
             codegen_emit_expression(out, node->as.assignment.value);
             fprintf(out, ";\n");
             break;
@@ -3404,7 +3404,7 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     if (is_main) {
         fprintf(out, "int main(");
     } else {
-        fprintf(out, "%s %.*s(", codegen_type_to_c(return_type),
+        fprintf(out, "%s ni_%.*s(", codegen_type_to_c(return_type),
                 (int)name_length, name_start);
     }
 
@@ -3415,7 +3415,7 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
             Parameter *param = &func_decl->as.func_decl.params[i];
             if (i > 0) fprintf(out, ", ");
-            fprintf(out, "%s %.*s", codegen_type_to_c(param->type),
+            fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
                     (int)param->name_length, param->name_start);
         }
     }
