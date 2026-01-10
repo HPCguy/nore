@@ -1,0 +1,4 @@
+/* This comment is not terminated
+func main(): void = {
+    val x: i64 = 42
+}

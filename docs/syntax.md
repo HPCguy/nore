@@ -6,6 +6,25 @@ Nore is a systems programming language with a focus on simplicity and clarity. T
 
 ## Language Features
 
+### Comments
+
+**Single-line comments**:
+```nore
+// This is a single-line comment
+val x: i64 = 42  // inline comment
+```
+
+**Multi-line comments**:
+```nore
+/* This is a
+   multi-line comment */
+val y: i64 = 10
+```
+
+- Single-line: `//` to end of line
+- Multi-line: `/*` to `*/`
+- Comments are skipped by the lexer (no tokens produced)
+
 ### Types
 
 **Currently supported**:
@@ -300,7 +319,6 @@ func main(): void = {
 
 **Not yet implemented**:
 - String and character literals
-- Comments (`//`, `/* */`)
 - Additional types (`i32`, `u32`, `f32`)
 - Arrays and structs
 - Module system

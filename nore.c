@@ -40,7 +40,8 @@ typedef enum {
     ERR_D006_CLANG_FAILED       = ERR_GROUP_DRIVER + 6,
 
     /* Lexer errors: L001-L099 */
-    ERR_L001_INVALID_CHAR = ERR_GROUP_LEXER + 1,
+    ERR_L001_INVALID_CHAR        = ERR_GROUP_LEXER + 1,
+    ERR_L002_UNTERMINATED_COMMENT = ERR_GROUP_LEXER + 2,
 
     /* Parser errors: P001-P099 */
     ERR_P001_EXPECTED_EXPRESSION   = ERR_GROUP_PARSER + 1,
@@ -383,6 +384,11 @@ static char lexer_peek(Lexer *lexer) {
     return *lexer->current;
 }
 
+static char lexer_peek_next(Lexer *lexer) {
+    if (*lexer->current == '\0') return '\0';
+    return lexer->current[1];
+}
+
 static char lexer_advance(Lexer *lexer) {
     char c = *lexer->current++;
     if (c == '\n') {
@@ -394,7 +400,7 @@ static char lexer_advance(Lexer *lexer) {
     return c;
 }
 
-static void lexer_skip_whitespace(Lexer *lexer) {
+static void lexer_skip_whitespace_and_comments(Lexer *lexer) {
     for (;;) {
         char c = lexer_peek(lexer);
         switch (c) {
@@ -403,6 +409,33 @@ static void lexer_skip_whitespace(Lexer *lexer) {
             case '\r':
             case '\n':
                 lexer_advance(lexer);
+                break;
+            case '/':
+                if (lexer_peek_next(lexer) == '/') {
+                    /* Single-line comment: skip to end of line */
+                    while (lexer_peek(lexer) != '\n' && lexer_peek(lexer) != '\0') {
+                        lexer_advance(lexer);
+                    }
+                } else if (lexer_peek_next(lexer) == '*') {
+                    /* Multi-line comment: skip until */
+                    size_t start_line = lexer->line;
+                    size_t start_col = lexer->column;
+                    lexer_advance(lexer); /* consume / */
+                    lexer_advance(lexer); /* consume * */
+                    while (!(lexer_peek(lexer) == '*' && lexer_peek_next(lexer) == '/')) {
+                        if (lexer_peek(lexer) == '\0') {
+                            diagnostic(ERR_L002_UNTERMINATED_COMMENT,
+                                       start_line, start_col,
+                                       "Unterminated block comment");
+                            return;
+                        }
+                        lexer_advance(lexer);
+                    }
+                    lexer_advance(lexer); /* consume * */
+                    lexer_advance(lexer); /* consume / */
+                } else {
+                    return; /* Just a division operator */
+                }
                 break;
             default:
                 return;
@@ -471,7 +504,7 @@ static Token lexer_scan_identifier(Lexer *lexer) {
 }
 
 Token lexer_next_token(Lexer *lexer) {
-    lexer_skip_whitespace(lexer);
+    lexer_skip_whitespace_and_comments(lexer);
 
     lexer->start = lexer->current;
 
