@@ -1443,23 +1443,38 @@ static Ast *parser_parse_expression(Parser *parser) {
 
 /* ============================= Statement Parsing ========================== */
 
-static Ast *parser_parse_val_declaration(Parser *parser) {
-    /* Already consumed TOKEN_VAL - capture its location */
+static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
+    /* Already consumed TOKEN_VAL or TOKEN_MUT */
     SourceLoc loc = token_loc(&parser->previous);
+    const char *keyword = is_mutable ? "mut" : "val";
 
     /* Expect identifier */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
-                   parser->current.column, "Expected identifier after 'val'");
+                   parser->current.column, "Expected identifier after '%s'", keyword);
         parser_synchronize(parser);
         return NULL;
     }
     const char *name_start = parser->previous.start;
     size_t name_length = parser->previous.length;
 
-    /* Optional ':' type annotation */
-    Type type = TYPE_UNKNOWN;  /* infer from comptime expr */
-    if (parser_match(parser, TOKEN_COLON)) {
+    /* Parse type annotation (required for mut, optional for val) */
+    Type type = TYPE_UNKNOWN;
+    if (is_mutable) {
+        if (!parser_match(parser, TOKEN_COLON)) {
+            diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
+                       parser->current.column, "Expected ':' after identifier");
+            parser_synchronize(parser);
+            return NULL;
+        }
+        type = parser_parse_type(parser, false);
+        if (type == TYPE_UNKNOWN) {
+            diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+                       parser->current.column, "Expected type (i64, f64, or bool)");
+            parser_synchronize(parser);
+            return NULL;
+        }
+    } else if (parser_match(parser, TOKEN_COLON)) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
@@ -1472,7 +1487,7 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
     /* Expect '=' */
     if (!parser_match(parser, TOKEN_EQUALS)) {
         diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
-                   parser->current.column, "Expected '=' in val declaration");
+                   parser->current.column, "Expected '=' in %s declaration", keyword);
         parser_synchronize(parser);
         return NULL;
     }
@@ -1484,56 +1499,10 @@ static Ast *parser_parse_val_declaration(Parser *parser) {
         return NULL;
     }
 
+    if (is_mutable) {
+        return ast_make_mut_decl(name_start, name_length, type, initializer, loc);
+    }
     return ast_make_val_decl(name_start, name_length, type, initializer, loc);
-}
-
-static Ast *parser_parse_mut_declaration(Parser *parser) {
-    /* Already consumed TOKEN_MUT - capture its location */
-    SourceLoc loc = token_loc(&parser->previous);
-
-    /* Expect identifier */
-    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
-                   parser->current.column, "Expected identifier after 'mut'");
-        parser_synchronize(parser);
-        return NULL;
-    }
-    const char *name_start = parser->previous.start;
-    size_t name_length = parser->previous.length;
-
-    /* Expect ':' for type annotation */
-    if (!parser_match(parser, TOKEN_COLON)) {
-        diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
-                   parser->current.column, "Expected ':' after identifier");
-        parser_synchronize(parser);
-        return NULL;
-    }
-
-    /* Expect type (i64, f64, or bool) */
-    Type type = parser_parse_type(parser, false);
-    if (type == TYPE_UNKNOWN) {
-        diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                   parser->current.column, "Expected type (i64, f64, or bool)");
-        parser_synchronize(parser);
-        return NULL;
-    }
-
-    /* Expect '=' */
-    if (!parser_match(parser, TOKEN_EQUALS)) {
-        diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
-                   parser->current.column, "Expected '=' in mut declaration");
-        parser_synchronize(parser);
-        return NULL;
-    }
-
-    /* Parse initializer expression */
-    Ast *initializer = parser_parse_expression(parser);
-    if (!initializer) {
-        parser_synchronize(parser);
-        return NULL;
-    }
-
-    return ast_make_mut_decl(name_start, name_length, type, initializer, loc);
 }
 
 static Ast *parser_parse_return(Parser *parser) {
@@ -1920,11 +1889,11 @@ static Ast *parser_parse_statement(Parser *parser) {
     }
 
     if (parser_match(parser, TOKEN_VAL)) {
-        return parser_parse_val_declaration(parser);
+        return parser_parse_var_declaration(parser, false);
     }
 
     if (parser_match(parser, TOKEN_MUT)) {
-        return parser_parse_mut_declaration(parser);
+        return parser_parse_var_declaration(parser, true);
     }
 
     if (parser_match(parser, TOKEN_RETURN)) {
