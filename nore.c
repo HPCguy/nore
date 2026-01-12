@@ -1170,57 +1170,64 @@ static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
 
 static void ast_free(Ast *node) {
     if (!node) return;
-    if (node->kind == AST_BINARY) {
-        ast_free(node->as.binary.left);
-        ast_free(node->as.binary.right);
-    }
-    if (node->kind == AST_UNARY) {
-        ast_free(node->as.unary.operand);
-    }
-    if (node->kind == AST_FUNC_CALL) {
-        for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
-            ast_free(node->as.func_call.arguments[i]);
-        }
-        free(node->as.func_call.arguments);
-    }
-    if (node->kind == AST_VAL_DECL) {
-        ast_free(node->as.val_decl.initializer);
-    }
-    if (node->kind == AST_MUT_DECL) {
-        ast_free(node->as.mut_decl.initializer);
-    }
-    if (node->kind == AST_RETURN) {
-        ast_free(node->as.return_stmt.value);
-    }
-    if (node->kind == AST_ASSIGNMENT) {
-        ast_free(node->as.assignment.value);
-    }
-    if (node->kind == AST_ASSERT) {
-        ast_free(node->as.assert_stmt.condition);
-    }
-    if (node->kind == AST_IF) {
-        ast_free(node->as.if_stmt.condition);
-        ast_free(node->as.if_stmt.then_block);
-        ast_free(node->as.if_stmt.else_block);
-    }
-    if (node->kind == AST_BLOCK) {
-        for (size_t i = 0; i < node->as.block.count; i++) {
-            ast_free(node->as.block.statements[i]);
-        }
-        free(node->as.block.statements);
-        ast_free(node->as.block.value_expr);
-    }
-    if (node->kind == AST_FUNC_DECL) {
-        if (node->as.func_decl.params) {
+
+    switch (node->kind) {
+        case AST_BINARY:
+            ast_free(node->as.binary.left);
+            ast_free(node->as.binary.right);
+            break;
+        case AST_UNARY:
+            ast_free(node->as.unary.operand);
+            break;
+        case AST_FUNC_CALL:
+            for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
+                ast_free(node->as.func_call.arguments[i]);
+            }
+            free(node->as.func_call.arguments);
+            break;
+        case AST_VAL_DECL:
+            ast_free(node->as.val_decl.initializer);
+            break;
+        case AST_MUT_DECL:
+            ast_free(node->as.mut_decl.initializer);
+            break;
+        case AST_RETURN:
+            ast_free(node->as.return_stmt.value);
+            break;
+        case AST_ASSIGNMENT:
+            ast_free(node->as.assignment.value);
+            break;
+        case AST_ASSERT:
+            ast_free(node->as.assert_stmt.condition);
+            break;
+        case AST_IF:
+            ast_free(node->as.if_stmt.condition);
+            ast_free(node->as.if_stmt.then_block);
+            ast_free(node->as.if_stmt.else_block);
+            break;
+        case AST_WHILE:
+            ast_free(node->as.while_stmt.condition);
+            ast_free(node->as.while_stmt.body);
+            break;
+        case AST_BLOCK:
+            for (size_t i = 0; i < node->as.block.count; i++) {
+                ast_free(node->as.block.statements[i]);
+            }
+            free(node->as.block.statements);
+            ast_free(node->as.block.value_expr);
+            break;
+        case AST_FUNC_DECL:
             free(node->as.func_decl.params);
-        }
-        ast_free(node->as.func_decl.body);
-    }
-    if (node->kind == AST_PROGRAM) {
-        for (size_t i = 0; i < node->as.program.count; i++) {
-            ast_free(node->as.program.statements[i]);
-        }
-        free(node->as.program.statements);
+            ast_free(node->as.func_decl.body);
+            break;
+        case AST_PROGRAM:
+            for (size_t i = 0; i < node->as.program.count; i++) {
+                ast_free(node->as.program.statements[i]);
+            }
+            free(node->as.program.statements);
+            break;
+        default:
+            break;
     }
     free(node);
 }
@@ -3295,8 +3302,6 @@ static bool codegen_is_simple_if(Ast *node) {
            codegen_is_simple_block(node->as.if_stmt.else_block);
 }
 
-static void codegen_emit_expression(FILE *out, Ast *node);
-
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
         case AST_NUMBER:
@@ -3449,40 +3454,36 @@ static bool codegen_needs_hoisting(Ast *node) {
     return false;
 }
 
+/* Emit block contents and assign value_expr to temp variable if present */
+static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
+                                     Scope **scope, int indent) {
+    *scope = scope_create(*scope);
+    for (size_t i = 0; i < block->as.block.count; i++) {
+        codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
+    }
+    if (block->as.block.value_expr) {
+        codegen_indent(out, indent);
+        fprintf(out, "__expr_%d = ", temp_idx);
+        codegen_emit_expression(out, block->as.block.value_expr);
+        fprintf(out, ";\n");
+    }
+    Scope *old = *scope;
+    *scope = old->parent;
+    scope_destroy(old);
+}
+
 /* Emit a complex block expression to a temp variable.
  * Emits: TYPE __expr_N; { statements; __expr_N = value; }
  * Returns the temp index used. */
 static int codegen_emit_block_to_temp(FILE *out, Ast *block, Scope **scope, int indent) {
     int temp_idx = codegen_temp_counter++;
-    const char *type_str = codegen_type_to_c(block->expr_type);
 
-    /* Declare temp variable */
     codegen_indent(out, indent);
-    fprintf(out, "%s __expr_%d;\n", type_str, temp_idx);
+    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(block->expr_type), temp_idx);
 
-    /* Emit block in braces */
     codegen_indent(out, indent);
     fprintf(out, "{\n");
-
-    /* Create block scope and emit statements */
-    *scope = scope_create(*scope);
-    for (size_t i = 0; i < block->as.block.count; i++) {
-        codegen_emit_statement(out, block->as.block.statements[i], scope, indent + 1);
-    }
-
-    /* Assign value expression to temp */
-    if (block->as.block.value_expr) {
-        codegen_indent(out, indent + 1);
-        fprintf(out, "__expr_%d = ", temp_idx);
-        codegen_emit_expression(out, block->as.block.value_expr);
-        fprintf(out, ";\n");
-    }
-
-    /* Restore scope */
-    Scope *old = *scope;
-    *scope = old->parent;
-    scope_destroy(old);
-
+    codegen_emit_block_body(out, block, temp_idx, scope, indent + 1);
     codegen_indent(out, indent);
     fprintf(out, "}\n");
 
@@ -3492,55 +3493,21 @@ static int codegen_emit_block_to_temp(FILE *out, Ast *block, Scope **scope, int 
 /* Emit a complex if expression to a temp variable */
 static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int indent) {
     int temp_idx = codegen_temp_counter++;
-    const char *type_str = codegen_type_to_c(node->expr_type);
 
-    /* Declare temp variable */
     codegen_indent(out, indent);
-    fprintf(out, "%s __expr_%d;\n", type_str, temp_idx);
+    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(node->expr_type), temp_idx);
 
-    /* Emit if statement */
     codegen_indent(out, indent);
     fprintf(out, "if (");
     codegen_emit_expression(out, node->as.if_stmt.condition);
     fprintf(out, ") {\n");
-
-    /* Then branch */
-    Ast *then_block = node->as.if_stmt.then_block;
-    *scope = scope_create(*scope);
-    for (size_t i = 0; i < then_block->as.block.count; i++) {
-        codegen_emit_statement(out, then_block->as.block.statements[i], scope, indent + 1);
-    }
-    if (then_block->as.block.value_expr) {
-        codegen_indent(out, indent + 1);
-        fprintf(out, "__expr_%d = ", temp_idx);
-        codegen_emit_expression(out, then_block->as.block.value_expr);
-        fprintf(out, ";\n");
-    }
-    Scope *old = *scope;
-    *scope = old->parent;
-    scope_destroy(old);
-
+    codegen_emit_block_body(out, node->as.if_stmt.then_block, temp_idx, scope, indent + 1);
     codegen_indent(out, indent);
     fprintf(out, "}");
 
-    /* Else branch */
-    Ast *else_block = node->as.if_stmt.else_block;
-    if (else_block) {
+    if (node->as.if_stmt.else_block) {
         fprintf(out, " else {\n");
-        *scope = scope_create(*scope);
-        for (size_t i = 0; i < else_block->as.block.count; i++) {
-            codegen_emit_statement(out, else_block->as.block.statements[i], scope, indent + 1);
-        }
-        if (else_block->as.block.value_expr) {
-            codegen_indent(out, indent + 1);
-            fprintf(out, "__expr_%d = ", temp_idx);
-            codegen_emit_expression(out, else_block->as.block.value_expr);
-            fprintf(out, ";\n");
-        }
-        old = *scope;
-        *scope = old->parent;
-        scope_destroy(old);
-
+        codegen_emit_block_body(out, node->as.if_stmt.else_block, temp_idx, scope, indent + 1);
         codegen_indent(out, indent);
         fprintf(out, "}");
     }
@@ -3549,73 +3516,55 @@ static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int inde
     return temp_idx;
 }
 
+/* Emit a variable declaration (val or mut) */
+static void codegen_emit_var_decl(FILE *out, const char *name_start, size_t name_length,
+                                   Type type, Ast *init, bool is_const,
+                                   Scope **scope, int indent) {
+    const char *const_prefix = is_const ? "const " : "";
+    const char *type_str = codegen_type_to_c(type);
+
+    if (codegen_needs_hoisting(init)) {
+        int temp_idx;
+        if (init->kind == AST_BLOCK) {
+            temp_idx = codegen_emit_block_to_temp(out, init, scope, indent);
+        } else {
+            temp_idx = codegen_emit_if_to_temp(out, init, scope, indent);
+        }
+        codegen_indent(out, indent);
+        fprintf(out, "%s%s ni_%.*s = __expr_%d;\n",
+                const_prefix, type_str, (int)name_length, name_start, temp_idx);
+    } else {
+        codegen_indent(out, indent);
+        fprintf(out, "%s%s ni_%.*s = ",
+                const_prefix, type_str, (int)name_length, name_start);
+        codegen_emit_expression(out, init);
+        fprintf(out, ";\n");
+    }
+}
+
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent) {
     switch (node->kind) {
-        case AST_VAL_DECL: {
-            Ast *init = node->as.val_decl.initializer;
+        case AST_VAL_DECL:
             scope_add(*scope, node->as.val_decl.name_start,
                       node->as.val_decl.name_length, false,
                       node->as.val_decl.type, node->loc);
-
-            if (codegen_needs_hoisting(init)) {
-                /* Hoist complex expression to temp */
-                int temp_idx;
-                if (init->kind == AST_BLOCK) {
-                    temp_idx = codegen_emit_block_to_temp(out, init, scope, indent);
-                } else {
-                    temp_idx = codegen_emit_if_to_temp(out, init, scope, indent);
-                }
-                codegen_indent(out, indent);
-                fprintf(out, "const %s ni_%.*s = __expr_%d;\n",
-                        codegen_type_to_c(node->as.val_decl.type),
-                        (int)node->as.val_decl.name_length,
-                        node->as.val_decl.name_start,
-                        temp_idx);
-            } else {
-                /* Simple expression - emit inline */
-                codegen_indent(out, indent);
-                fprintf(out, "const %s ni_%.*s = ",
-                        codegen_type_to_c(node->as.val_decl.type),
-                        (int)node->as.val_decl.name_length,
-                        node->as.val_decl.name_start);
-                codegen_emit_expression(out, init);
-                fprintf(out, ";\n");
-            }
+            codegen_emit_var_decl(out, node->as.val_decl.name_start,
+                                  node->as.val_decl.name_length,
+                                  node->as.val_decl.type,
+                                  node->as.val_decl.initializer, true,
+                                  scope, indent);
             break;
-        }
 
-        case AST_MUT_DECL: {
-            Ast *init = node->as.mut_decl.initializer;
+        case AST_MUT_DECL:
             scope_add(*scope, node->as.mut_decl.name_start,
                       node->as.mut_decl.name_length, true,
                       node->as.mut_decl.type, node->loc);
-
-            if (codegen_needs_hoisting(init)) {
-                /* Hoist complex expression to temp */
-                int temp_idx;
-                if (init->kind == AST_BLOCK) {
-                    temp_idx = codegen_emit_block_to_temp(out, init, scope, indent);
-                } else {
-                    temp_idx = codegen_emit_if_to_temp(out, init, scope, indent);
-                }
-                codegen_indent(out, indent);
-                fprintf(out, "%s ni_%.*s = __expr_%d;\n",
-                        codegen_type_to_c(node->as.mut_decl.type),
-                        (int)node->as.mut_decl.name_length,
-                        node->as.mut_decl.name_start,
-                        temp_idx);
-            } else {
-                /* Simple expression - emit inline */
-                codegen_indent(out, indent);
-                fprintf(out, "%s ni_%.*s = ",
-                        codegen_type_to_c(node->as.mut_decl.type),
-                        (int)node->as.mut_decl.name_length,
-                        node->as.mut_decl.name_start);
-                codegen_emit_expression(out, init);
-                fprintf(out, ";\n");
-            }
+            codegen_emit_var_decl(out, node->as.mut_decl.name_start,
+                                  node->as.mut_decl.name_length,
+                                  node->as.mut_decl.type,
+                                  node->as.mut_decl.initializer, false,
+                                  scope, indent);
             break;
-        }
 
         case AST_RETURN:
             codegen_indent(out, indent);
