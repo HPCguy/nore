@@ -183,6 +183,22 @@ if (condition) {
 - Condition must be `bool` type
 - Braces required
 
+**If Expressions**:
+```nore
+val x: i64 = if (cond) { 1 } else { 2 }
+
+val y: i64 = if (flag) {
+    val a: i64 = 10
+    a + 5
+} else {
+    val b: i64 = 20
+    b - 5
+}
+```
+- Both branches must have compatible types
+- Each branch's value is its last expression
+- Comptime if conditions are folded at compile time
+
 **While Loops**:
 ```nore
 while (condition) {
@@ -202,6 +218,21 @@ while (condition) {
 ```
 - Create new scope
 - Allow variable shadowing
+
+**Expression Blocks**:
+```nore
+val x: i64 = { 42 }
+
+val y: i64 = {
+    val a: i64 = 10
+    val b: i64 = 20
+    a + b
+}
+```
+- Blocks can be used as expressions
+- The last expression (without trailing statement) is the block's value
+- Block ending with a statement has type `void`
+- Simple blocks (only value expression) are comptime if the value is comptime
 
 ### Operators
 
@@ -322,6 +353,7 @@ func main(): void = {
 - Additional types (`i32`, `u32`, `f32`)
 - Arrays and structs
 - Module system
-- If/while as expressions (will use `= { }` syntax)
+- While as expressions
+- Early exit from expression blocks (`yield` keyword)
 
 These features will be added incrementally as the compiler evolves.

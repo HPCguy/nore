@@ -1,0 +1,3 @@
+func main(): void = {
+    val x: i64 = if (true) { 1 } else { true }
+}
