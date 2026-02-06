@@ -813,6 +813,14 @@ static int value_table_find_field(ValueTypeEntry *entry,
     return -1;
 }
 
+/* Get value type entry from a Type, or NULL if not a valid value type */
+static ValueTypeEntry *value_table_get(Type type) {
+    if (!type_is_value(type) || !g_value_table) return NULL;
+    int idx = type_value_index(type);
+    if (idx < 0 || (size_t)idx >= g_value_table->count) return NULL;
+    return &g_value_table->types[idx];
+}
+
 static const char *type_name(Type type) {
     switch (type) {
         case TYPE_UNKNOWN:       return "unknown";
@@ -822,18 +830,18 @@ static const char *type_name(Type type) {
         case TYPE_VOID:          return "void";
         case TYPE_COMPTIME_INT:  return "comptime_int";
         case TYPE_COMPTIME_FLOAT: return "comptime_float";
-        default:
-            if (type_is_value(type) && g_value_table) {
-                int idx = type_value_index(type);
-                if (idx >= 0 && (size_t)idx < g_value_table->count) {
-                    ValueTypeEntry *vt = &g_value_table->types[idx];
-                    static char vt_name[64];
-                    snprintf(vt_name, sizeof(vt_name), "%.*s",
-                             (int)vt->name_length, vt->name_start);
-                    return vt_name;
-                }
+        default: {
+            ValueTypeEntry *vt = value_table_get(type);
+            if (vt) {
+                /* Rotating buffers: safe when called multiple times in one printf */
+                static char bufs[4][64];
+                static int buf_idx = 0;
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 64, "%.*s", (int)vt->name_length, vt->name_start);
+                return buf;
             }
             return "unknown";
+        }
     }
 }
 
@@ -1658,14 +1666,19 @@ static Ast *parser_parse_primary(Parser *parser) {
                 FieldInit *fields = malloc(capacity * sizeof(FieldInit));
                 if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating constructor fields");
 
-                if (!parser_check(parser, TOKEN_RBRACE)) {
-                    /* Parse first field: name: expr */
+                while (!parser_check(parser, TOKEN_RBRACE) &&
+                       !parser_check(parser, TOKEN_EOF)) {
+                    if (field_count >= capacity) {
+                        capacity *= 2;
+                        fields = realloc(fields, capacity * sizeof(FieldInit));
+                        if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing constructor fields");
+                    }
+
                     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
                         diagnostic(ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
                                    parser->current.column,
                                    "Expected field name in constructor");
-                        free(fields);
-                        return NULL;
+                        goto ctor_cleanup;
                     }
                     fields[field_count].name_start = parser->previous.start;
                     fields[field_count].name_length = parser->previous.length;
@@ -1674,65 +1687,31 @@ static Ast *parser_parse_primary(Parser *parser) {
                         diagnostic(ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
                                    parser->current.column,
                                    "Expected ':' after field name in constructor");
-                        free(fields);
-                        return NULL;
+                        goto ctor_cleanup;
                     }
 
-                    Ast *value = parser_parse_expression(parser);
-                    if (!value) { free(fields); return NULL; }
-                    fields[field_count].value = (struct Ast *)value;
+                    Ast *fval = parser_parse_expression(parser);
+                    if (!fval) goto ctor_cleanup;
+                    fields[field_count].value = fval;
                     field_count++;
 
-                    /* Parse remaining fields */
-                    while (parser_match(parser, TOKEN_COMMA)) {
-                        if (field_count >= capacity) {
-                            capacity *= 2;
-                            fields = realloc(fields, capacity * sizeof(FieldInit));
-                            if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing constructor fields");
-                        }
-
-                        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                            diagnostic(ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
-                                       parser->current.column,
-                                       "Expected field name in constructor");
-                            for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
-                            free(fields);
-                            return NULL;
-                        }
-                        fields[field_count].name_start = parser->previous.start;
-                        fields[field_count].name_length = parser->previous.length;
-
-                        if (!parser_match(parser, TOKEN_COLON)) {
-                            diagnostic(ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
-                                       parser->current.column,
-                                       "Expected ':' after field name in constructor");
-                            for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
-                            free(fields);
-                            return NULL;
-                        }
-
-                        Ast *fval = parser_parse_expression(parser);
-                        if (!fval) {
-                            for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
-                            free(fields);
-                            return NULL;
-                        }
-                        fields[field_count].value = (struct Ast *)fval;
-                        field_count++;
-                    }
+                    if (!parser_match(parser, TOKEN_COMMA)) break;
                 }
 
                 if (!parser_match(parser, TOKEN_RBRACE)) {
                     diagnostic(ERR_P030_EXPECTED_RBRACE_CTOR, parser->current.line,
                                parser->current.column,
                                "Expected '}' to close constructor");
-                    for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
-                    free(fields);
-                    return NULL;
+                    goto ctor_cleanup;
                 }
 
                 return ast_make_value_constructor(name_start, name_length,
                                                    fields, field_count, loc);
+
+                ctor_cleanup:
+                for (size_t i = 0; i < field_count; i++) ast_free(fields[i].value);
+                free(fields);
+                return NULL;
             }
         }
 
@@ -2174,12 +2153,14 @@ static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error) {
     return args;
 }
 
-/* Parse parameter list (without parens): name: type, name: type, ... */
-static Parameter *parser_parse_param_list(Parser *parser, size_t *count) {
+/* Parse parameter list: name: type, name: type, ...
+ * Stops before end_token. Returns NULL for empty list or on error (*count == 0). */
+static Parameter *parser_parse_param_list(Parser *parser, size_t *count,
+                                           TokenKind end_token) {
     *count = 0;
 
-    /* Empty parameter list */
-    if (parser_check(parser, TOKEN_RPAREN)) {
+    /* Empty list */
+    if (parser_check(parser, end_token)) {
         return NULL;
     }
 
@@ -2241,7 +2222,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Parse parameter list */
     size_t param_count = 0;
-    Parameter *params = parser_parse_param_list(parser, &param_count);
+    Parameter *params = parser_parse_param_list(parser, &param_count, TOKEN_RPAREN);
 
     /* Expect ')' */
     if (!parser_match(parser, TOKEN_RPAREN)) {
@@ -2375,34 +2356,12 @@ static Ast *parser_parse_value_decl(Parser *parser) {
     }
 
     /* Parse fields: name: Type, name: Type, ... */
-    size_t capacity = 4;
     size_t field_count = 0;
-    Parameter *fields = malloc(capacity * sizeof(Parameter));
-    if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating value type fields");
-
-    if (!parser_check(parser, TOKEN_RBRACE)) {
-        /* Parse first field */
-        if (!parser_parse_parameter(parser, &fields[field_count])) {
-            free(fields);
-            parser_synchronize(parser);
-            return NULL;
-        }
-        field_count++;
-
-        /* Parse remaining fields */
-        while (parser_match(parser, TOKEN_COMMA)) {
-            if (field_count >= capacity) {
-                capacity *= 2;
-                fields = realloc(fields, capacity * sizeof(Parameter));
-                if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing value type fields");
-            }
-            if (!parser_parse_parameter(parser, &fields[field_count])) {
-                free(fields);
-                parser_synchronize(parser);
-                return NULL;
-            }
-            field_count++;
-        }
+    Parameter *fields = parser_parse_param_list(parser, &field_count, TOKEN_RBRACE);
+    if (field_count == 0 && !parser_check(parser, TOKEN_RBRACE)) {
+        /* Parse error in field list */
+        parser_synchronize(parser);
+        return NULL;
     }
 
     /* Expect '}' */
@@ -2658,7 +2617,7 @@ static void parser_print_ast_step(Ast *node, int indent) {
                 FieldInit *fi = &node->as.value_constructor.fields[i];
                 printf("FIELD_INIT(%.*s):\n",
                        (int)fi->name_length, fi->name_start);
-                parser_print_ast_step((Ast *)fi->value, indent + 2);
+                parser_print_ast_step(fi->value, indent + 2);
             }
             break;
 
@@ -3484,15 +3443,15 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                "Unknown field '%.*s' in '%.*s' constructor",
                                (int)fi[i].name_length, fi[i].name_start,
                                (int)tlen, tname);
-                    typecheck_expression((Ast *)fi[i].value, scope, func_table);
+                    typecheck_expression(fi[i].value, scope, func_table);
                     continue;
                 }
                 Type field_type = vt->fields[fidx].type;
-                Type val_type = typecheck_expression((Ast *)fi[i].value, scope, func_table);
+                Type val_type = typecheck_expression(fi[i].value, scope, func_table);
                 if (!type_can_coerce(val_type, field_type)) {
                     diagnostic(ERR_S006_TYPE_MISMATCH,
-                               ((Ast *)fi[i].value)->loc.line,
-                               ((Ast *)fi[i].value)->loc.column,
+                               fi[i].value->loc.line,
+                               fi[i].value->loc.column,
                                "Field '%.*s': expected %s, got %s",
                                (int)fi[i].name_length, fi[i].name_start,
                                type_name(field_type), type_name(val_type));
@@ -4008,7 +3967,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 if (i > 0) fprintf(out, ", ");
                 FieldInit *fi = &node->as.value_constructor.fields[i];
                 fprintf(out, ".ni_%.*s = ", (int)fi->name_length, fi->name_start);
-                codegen_emit_expression(out, (Ast *)fi->value);
+                codegen_emit_expression(out, fi->value);
             }
             fprintf(out, "}");
             break;
@@ -4052,20 +4011,18 @@ static const char *codegen_type_to_c(Type type) {
         case TYPE_VOID:          return "void";
         case TYPE_COMPTIME_INT:  return "long";   /* default */
         case TYPE_COMPTIME_FLOAT: return "double"; /* default */
-        default:
-            if (type_is_value(type) && g_value_table) {
-                int idx = type_value_index(type);
-                if (idx >= 0 && (size_t)idx < g_value_table->count) {
-                    ValueTypeEntry *vt = &g_value_table->types[idx];
-                    static char bufs[4][80];
-                    static int buf_idx = 0;
-                    char *buf = bufs[buf_idx++ % 4];
-                    snprintf(buf, 80, "ni_%.*s",
-                             (int)vt->name_length, vt->name_start);
-                    return buf;
-                }
+        default: {
+            ValueTypeEntry *vt = value_table_get(type);
+            if (vt) {
+                static char bufs[4][80];
+                static int buf_idx = 0;
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 80, "ni_%.*s",
+                         (int)vt->name_length, vt->name_start);
+                return buf;
             }
             return "long";
+        }
     }
 }
 
