@@ -1,0 +1,4 @@
+value Bad { x: i64, x: i64 }
+
+func main(): void = {
+}

@@ -1,0 +1,6 @@
+value Vec2 { x: f64, y: f64 }
+
+func main(): void = {
+    val p: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+    val z: f64 = p.z
+}

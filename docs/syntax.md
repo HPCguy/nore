@@ -32,6 +32,7 @@ val y: i64 = 10
 - `f64` - 64-bit floating-point number
 - `bool` - Boolean type (`true` or `false`)
 - `void` - No return value (functions only)
+- User-defined `value` types (see Value Types)
 
 **Compile-time types** (internal):
 - `comptime_int` - Integer literal (coerces to i64 or f64)
@@ -102,7 +103,7 @@ val c = a * 3.14            // folded to 131.88 at compile time
 ```nore
 val x: i64 = 42         // explicit type
 val y = 42              // comptime: type inferred as comptime_int
-val z = x + 1           // comptime: propagates through expressions
+val z = y + 1           // comptime: propagates through expressions
 val flag: bool = true
 ```
 - Keyword: `val`
@@ -165,6 +166,57 @@ val nested: i64 = add(mul(2, 3), 4)
 val result: i64 = 1 + add(2, 3) * 2
 val value: i64 = get_value()
 ```
+
+### Value Types
+
+Value types are composite data with named fields, copy semantics, and no indirection.
+
+**Declaration** (top-level only):
+```nore
+value Vec2 { x: f64, y: f64 }
+value Color { r: i64, g: i64, b: i64 }
+```
+- Keyword: `value`
+- Must be declared before use (textual order)
+- Fields are comma-separated with type annotations (`name: Type`)
+- Field types can be any concrete type (`i64`, `f64`, `bool`) or other value types
+
+**Constructors**:
+```nore
+val p: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+val c: Color = Color { r: 255, g: 128, b: 0 }
+```
+- All fields must be provided (no defaults)
+- Fields can be in any order
+- No duplicate fields allowed
+
+**Field Access**:
+```nore
+val x: f64 = p.x
+val sum: f64 = p.x + p.y
+```
+- Dot notation: `expr.field`
+- Chains allowed: `a.b.c`
+
+**Field Assignment**:
+```nore
+mut p: Vec2 = Vec2 { x: 0.0, y: 0.0 }
+p.x = 1.0
+p.y = p.x + 2.0
+```
+- Only on `mut` variables (root variable must be mutable)
+- `val` variables and their fields are immutable
+
+**Value Semantics**:
+```nore
+val a: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+mut b: Vec2 = a       // copy, not reference
+b.x = 99.0            // does not affect a
+assert a.x == 1.0     // a is unchanged
+```
+- Assigned by copy (no shared references)
+- Passed to functions by copy
+- Returned from functions by copy
 
 ### Control Flow
 
@@ -267,6 +319,7 @@ Both operands must be the same concrete type (after coercion).
 - `val name: type = expr` - Immutable variable declaration
 - `mut name: type = expr` - Mutable variable declaration
 - `name = expr` - Assignment (mutable only)
+- `expr.field = expr` - Field assignment (root variable must be mutable)
 - `return expr` - Return from function
 - `assert expr` - Runtime assertion (bool expr, exits with code 2 on failure)
 - `break` - Exit innermost loop
@@ -296,6 +349,7 @@ func main(): void = {
 
 ### Keywords
 - `func` - Function declaration
+- `value` - Value type declaration
 - `val` - Immutable variable
 - `mut` - Mutable variable
 - `return` - Return statement
@@ -320,9 +374,10 @@ func main(): void = {
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)
-- `{` `}` - Braces (blocks, function bodies)
+- `{` `}` - Braces (blocks, function bodies, value type declarations, constructors)
 - `:` - Type annotation separator
-- `,` - Parameter separator
+- `,` - Parameter/field separator
+- `.` - Field access
 
 ## Design Decisions
 
@@ -351,7 +406,8 @@ func main(): void = {
 **Not yet implemented**:
 - String and character literals
 - Additional types (`i32`, `u32`, `f32`)
-- Arrays and structs
+- Fixed-size arrays
+- `struct` types (resource owners with ref semantics)
 - Module system
 - While as expressions
 - Early exit from expression blocks (`yield` keyword)

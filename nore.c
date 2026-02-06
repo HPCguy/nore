@@ -67,6 +67,13 @@ typedef enum {
     ERR_P021_EXPECTED_RETURN_TYPE  = ERR_GROUP_PARSER + 21,
     ERR_P022_EXPECTED_EQUALS_FUNC  = ERR_GROUP_PARSER + 22,
     ERR_P023_EXPECTED_LBRACE_FUNC  = ERR_GROUP_PARSER + 23,
+    ERR_P024_EXPECTED_VALUE_NAME   = ERR_GROUP_PARSER + 24,
+    ERR_P025_EXPECTED_LBRACE_VALUE = ERR_GROUP_PARSER + 25,
+    ERR_P026_EXPECTED_FIELD_NAME   = ERR_GROUP_PARSER + 26,
+    ERR_P027_EXPECTED_RBRACE_VALUE = ERR_GROUP_PARSER + 27,
+    ERR_P028_EXPECTED_FIELD_CTOR   = ERR_GROUP_PARSER + 28,
+    ERR_P029_EXPECTED_COLON_CTOR   = ERR_GROUP_PARSER + 29,
+    ERR_P030_EXPECTED_RBRACE_CTOR  = ERR_GROUP_PARSER + 30,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -90,6 +97,15 @@ typedef enum {
     ERR_S019_DIVISION_BY_ZERO      = ERR_GROUP_SEMANTIC + 19,
     ERR_S020_TYPE_REQUIRED         = ERR_GROUP_SEMANTIC + 20,
     ERR_S021_BRANCH_TYPE_MISMATCH  = ERR_GROUP_SEMANTIC + 21,
+    ERR_S022_DUPLICATE_FIELD       = ERR_GROUP_SEMANTIC + 22,
+    ERR_S023_UNKNOWN_FIELD_TYPE    = ERR_GROUP_SEMANTIC + 23,
+    ERR_S024_UNKNOWN_CTOR_FIELD    = ERR_GROUP_SEMANTIC + 24,
+    ERR_S025_MISSING_CTOR_FIELD    = ERR_GROUP_SEMANTIC + 25,
+    ERR_S026_DUPLICATE_CTOR_FIELD  = ERR_GROUP_SEMANTIC + 26,
+    ERR_S027_NOT_A_VALUE_TYPE      = ERR_GROUP_SEMANTIC + 27,
+    ERR_S028_FIELD_ON_NON_VALUE    = ERR_GROUP_SEMANTIC + 28,
+    ERR_S029_UNKNOWN_FIELD_ACCESS  = ERR_GROUP_SEMANTIC + 29,
+    ERR_S030_FIELD_IMMUTABLE       = ERR_GROUP_SEMANTIC + 30,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -264,6 +280,7 @@ typedef enum {
     TOKEN_BOOL,
     TOKEN_TRUE,
     TOKEN_FALSE,
+    TOKEN_VALUE,
 
     TOKEN_PLUS,
     TOKEN_MINUS,
@@ -286,6 +303,7 @@ typedef enum {
     TOKEN_RBRACE,
     TOKEN_COLON,
     TOKEN_COMMA,
+    TOKEN_DOT,
 
     TOKEN_EOF,
     TOKEN_ERROR
@@ -320,6 +338,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_BOOL:          return "BOOL";
         case TOKEN_TRUE:          return "TRUE";
         case TOKEN_FALSE:         return "FALSE";
+        case TOKEN_VALUE:         return "VALUE";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
@@ -331,12 +350,16 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_GREATER:       return "GREATER";
         case TOKEN_LESS_EQUAL:    return "LESS_EQUAL";
         case TOKEN_GREATER_EQUAL: return "GREATER_EQUAL";
+        case TOKEN_AND_AND:       return "AND_AND";
+        case TOKEN_OR_OR:         return "OR_OR";
+        case TOKEN_BANG:          return "BANG";
         case TOKEN_LPAREN:        return "LPAREN";
         case TOKEN_RPAREN:        return "RPAREN";
         case TOKEN_LBRACE:        return "LBRACE";
         case TOKEN_RBRACE:        return "RBRACE";
         case TOKEN_COLON:         return "COLON";
         case TOKEN_COMMA:         return "COMMA";
+        case TOKEN_DOT:           return "DOT";
         case TOKEN_EOF:           return "EOF";
         case TOKEN_ERROR:         return "ERROR";
         default:                  return "UNKNOWN";
@@ -481,6 +504,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "while", 5) == 0) return TOKEN_WHILE;
             if (memcmp(start, "break", 5) == 0) return TOKEN_BREAK;
             if (memcmp(start, "false", 5) == 0) return TOKEN_FALSE;
+            if (memcmp(start, "value", 5) == 0) return TOKEN_VALUE;
             break;
         case 6:
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
@@ -530,6 +554,7 @@ Token lexer_next_token(Lexer *lexer) {
         case '}': return lexer_make_token(lexer, TOKEN_RBRACE);
         case ':': return lexer_make_token(lexer, TOKEN_COLON);
         case ',': return lexer_make_token(lexer, TOKEN_COMMA);
+        case '.': return lexer_make_token(lexer, TOKEN_DOT);
         case '+': return lexer_make_token(lexer, TOKEN_PLUS);
         case '-': return lexer_make_token(lexer, TOKEN_MINUS);
         case '*': return lexer_make_token(lexer, TOKEN_STAR);
@@ -612,20 +637,12 @@ typedef enum {
     /* Comptime types (literals only) */
     TYPE_COMPTIME_INT,
     TYPE_COMPTIME_FLOAT,
+    /* User-defined value types start at this offset */
+    TYPE_VALUE_BASE = 16,
 } Type;
 
-static const char *type_name(Type type) {
-    switch (type) {
-        case TYPE_UNKNOWN:       return "unknown";
-        case TYPE_I64:           return "i64";
-        case TYPE_F64:           return "f64";
-        case TYPE_BOOL:          return "bool";
-        case TYPE_VOID:          return "void";
-        case TYPE_COMPTIME_INT:  return "comptime_int";
-        case TYPE_COMPTIME_FLOAT: return "comptime_float";
-    }
-    return "unknown";
-}
+/* Forward declaration - defined after ValueTypeTable */
+static const char *type_name(Type type);
 
 static bool type_is_comptime(Type type) {
     return type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
@@ -634,6 +651,14 @@ static bool type_is_comptime(Type type) {
 static bool type_is_numeric(Type type) {
     return type == TYPE_I64 || type == TYPE_F64 ||
            type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
+}
+
+static bool type_is_value(Type type) {
+    return type >= TYPE_VALUE_BASE;
+}
+
+static int type_value_index(Type type) {
+    return type - TYPE_VALUE_BASE;
 }
 
 /* Check if 'from' can coerce to 'to' */
@@ -729,6 +754,89 @@ typedef struct {
     Type type;
 } Parameter;
 
+/* ============================== Value Type Table =========================== */
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    Parameter *fields;
+    size_t field_count;
+    SourceLoc loc;
+} ValueTypeEntry;
+
+typedef struct {
+    ValueTypeEntry *types;
+    size_t count;
+    size_t capacity;
+} ValueTypeTable;
+
+static ValueTypeTable *g_value_table = NULL;
+
+static ValueTypeTable *value_table_create(void) {
+    ValueTypeTable *table = malloc(sizeof(ValueTypeTable));
+    if (!table) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate value type table");
+    table->capacity = 8;
+    table->count = 0;
+    table->types = malloc(table->capacity * sizeof(ValueTypeEntry));
+    if (!table->types) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate value type entries");
+    return table;
+}
+
+static void value_table_destroy(ValueTypeTable *table) {
+    if (!table) return;
+    for (size_t i = 0; i < table->count; i++) {
+        free(table->types[i].fields);
+    }
+    free(table->types);
+    free(table);
+}
+
+static ValueTypeEntry *value_table_lookup(ValueTypeTable *table,
+                                           const char *name, size_t length) {
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->types[i].name_length == length &&
+            memcmp(table->types[i].name_start, name, length) == 0) {
+            return &table->types[i];
+        }
+    }
+    return NULL;
+}
+
+static int value_table_find_field(ValueTypeEntry *entry,
+                                   const char *name, size_t length) {
+    for (size_t i = 0; i < entry->field_count; i++) {
+        if (entry->fields[i].name_length == length &&
+            memcmp(entry->fields[i].name_start, name, length) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static const char *type_name(Type type) {
+    switch (type) {
+        case TYPE_UNKNOWN:       return "unknown";
+        case TYPE_I64:           return "i64";
+        case TYPE_F64:           return "f64";
+        case TYPE_BOOL:          return "bool";
+        case TYPE_VOID:          return "void";
+        case TYPE_COMPTIME_INT:  return "comptime_int";
+        case TYPE_COMPTIME_FLOAT: return "comptime_float";
+        default:
+            if (type_is_value(type) && g_value_table) {
+                int idx = type_value_index(type);
+                if (idx >= 0 && (size_t)idx < g_value_table->count) {
+                    ValueTypeEntry *vt = &g_value_table->types[idx];
+                    static char vt_name[64];
+                    snprintf(vt_name, sizeof(vt_name), "%.*s",
+                             (int)vt->name_length, vt->name_start);
+                    return vt_name;
+                }
+            }
+            return "unknown";
+    }
+}
+
 /* ================================== AST =================================== */
 
 typedef enum {
@@ -750,6 +858,9 @@ typedef enum {
     AST_CONTINUE,
     AST_BLOCK,
     AST_FUNC_DECL,
+    AST_VALUE_DECL,
+    AST_VALUE_CONSTRUCTOR,
+    AST_FIELD_ACCESS,
     AST_PROGRAM
 } AstKind;
 
@@ -772,6 +883,12 @@ typedef enum {
     OP_NEG,
     OP_NOT
 } UnaryOp;
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    struct Ast *value;
+} FieldInit;
 
 typedef struct Ast {
     AstKind kind;
@@ -832,8 +949,7 @@ typedef struct Ast {
         } return_stmt;
 
         struct {
-            const char *name_start;
-            size_t name_length;
+            struct Ast *target;   /* AST_IDENTIFIER or AST_FIELD_ACCESS */
             struct Ast *value;
         } assignment;
 
@@ -867,6 +983,26 @@ typedef struct Ast {
             Type return_type;
             struct Ast *body;
         } func_decl;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            Parameter *fields;
+            size_t field_count;
+        } value_decl;
+
+        struct {
+            const char *type_name_start;
+            size_t type_name_length;
+            FieldInit *fields;
+            size_t field_count;
+        } value_constructor;
+
+        struct {
+            struct Ast *object;
+            const char *field_start;
+            size_t field_length;
+        } field_access;
 
         struct {
             struct Ast **statements;
@@ -1004,16 +1140,14 @@ static Ast *ast_make_return(Ast *value, SourceLoc loc) {
     return node;
 }
 
-static Ast *ast_make_assignment(const char *name_start, size_t name_length,
-                                Ast *value, SourceLoc loc) {
+static Ast *ast_make_assignment(Ast *target, Ast *value, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_ASSIGNMENT;
     node->loc = loc;
-    node->as.assignment.name_start = name_start;
-    node->as.assignment.name_length = name_length;
+    node->as.assignment.target = target;
     node->as.assignment.value = value;
     return node;
 }
@@ -1168,6 +1302,47 @@ static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
     return node;
 }
 
+static Ast *ast_make_value_decl(const char *name_start, size_t name_length,
+                                 Parameter *fields, size_t field_count,
+                                 SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_VALUE_DECL;
+    node->loc = loc;
+    node->as.value_decl.name_start = name_start;
+    node->as.value_decl.name_length = name_length;
+    node->as.value_decl.fields = fields;
+    node->as.value_decl.field_count = field_count;
+    return node;
+}
+
+static Ast *ast_make_value_constructor(const char *type_name_start,
+                                        size_t type_name_length,
+                                        FieldInit *fields, size_t field_count,
+                                        SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_VALUE_CONSTRUCTOR;
+    node->loc = loc;
+    node->as.value_constructor.type_name_start = type_name_start;
+    node->as.value_constructor.type_name_length = type_name_length;
+    node->as.value_constructor.fields = fields;
+    node->as.value_constructor.field_count = field_count;
+    return node;
+}
+
+static Ast *ast_make_field_access(Ast *object, const char *field_start,
+                                   size_t field_length, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_FIELD_ACCESS;
+    node->loc = loc;
+    node->as.field_access.object = object;
+    node->as.field_access.field_start = field_start;
+    node->as.field_access.field_length = field_length;
+    return node;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
 
@@ -1195,6 +1370,7 @@ static void ast_free(Ast *node) {
             ast_free(node->as.return_stmt.value);
             break;
         case AST_ASSIGNMENT:
+            ast_free(node->as.assignment.target);
             ast_free(node->as.assignment.value);
             break;
         case AST_ASSERT:
@@ -1219,6 +1395,18 @@ static void ast_free(Ast *node) {
         case AST_FUNC_DECL:
             free(node->as.func_decl.params);
             ast_free(node->as.func_decl.body);
+            break;
+        case AST_VALUE_DECL:
+            free(node->as.value_decl.fields);
+            break;
+        case AST_VALUE_CONSTRUCTOR:
+            for (size_t i = 0; i < node->as.value_constructor.field_count; i++) {
+                ast_free(node->as.value_constructor.fields[i].value);
+            }
+            free(node->as.value_constructor.fields);
+            break;
+        case AST_FIELD_ACCESS:
+            ast_free(node->as.field_access.object);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -1277,6 +1465,17 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
     if (parser_match(parser, TOKEN_F64)) return TYPE_F64;
     if (parser_match(parser, TOKEN_BOOL)) return TYPE_BOOL;
     if (allow_void && parser_match(parser, TOKEN_VOID)) return TYPE_VOID;
+    /* Check for user-defined value types */
+    if (parser_check(parser, TOKEN_IDENTIFIER)) {
+        ValueTypeEntry *vt = value_table_lookup(g_value_table,
+                                                 parser->current.start,
+                                                 parser->current.length);
+        if (vt) {
+            parser_advance(parser);
+            int idx = (int)(vt - g_value_table->types);
+            return (Type)(TYPE_VALUE_BASE + idx);
+        }
+    }
     return TYPE_UNKNOWN;
 }
 
@@ -1447,6 +1646,96 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_func_call(name_start, name_length, arguments, arg_count, loc);
         }
 
+        /* Check for value constructor: TypeName { ... } */
+        if (parser_check(parser, TOKEN_LBRACE)) {
+            ValueTypeEntry *vt = value_table_lookup(g_value_table,
+                                                     name_start, name_length);
+            if (vt) {
+                parser_advance(parser);  /* consume '{' */
+
+                size_t capacity = 4;
+                size_t field_count = 0;
+                FieldInit *fields = malloc(capacity * sizeof(FieldInit));
+                if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating constructor fields");
+
+                if (!parser_check(parser, TOKEN_RBRACE)) {
+                    /* Parse first field: name: expr */
+                    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                        diagnostic(ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
+                                   parser->current.column,
+                                   "Expected field name in constructor");
+                        free(fields);
+                        return NULL;
+                    }
+                    fields[field_count].name_start = parser->previous.start;
+                    fields[field_count].name_length = parser->previous.length;
+
+                    if (!parser_match(parser, TOKEN_COLON)) {
+                        diagnostic(ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
+                                   parser->current.column,
+                                   "Expected ':' after field name in constructor");
+                        free(fields);
+                        return NULL;
+                    }
+
+                    Ast *value = parser_parse_expression(parser);
+                    if (!value) { free(fields); return NULL; }
+                    fields[field_count].value = (struct Ast *)value;
+                    field_count++;
+
+                    /* Parse remaining fields */
+                    while (parser_match(parser, TOKEN_COMMA)) {
+                        if (field_count >= capacity) {
+                            capacity *= 2;
+                            fields = realloc(fields, capacity * sizeof(FieldInit));
+                            if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing constructor fields");
+                        }
+
+                        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                            diagnostic(ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
+                                       parser->current.column,
+                                       "Expected field name in constructor");
+                            for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
+                            free(fields);
+                            return NULL;
+                        }
+                        fields[field_count].name_start = parser->previous.start;
+                        fields[field_count].name_length = parser->previous.length;
+
+                        if (!parser_match(parser, TOKEN_COLON)) {
+                            diagnostic(ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
+                                       parser->current.column,
+                                       "Expected ':' after field name in constructor");
+                            for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
+                            free(fields);
+                            return NULL;
+                        }
+
+                        Ast *fval = parser_parse_expression(parser);
+                        if (!fval) {
+                            for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
+                            free(fields);
+                            return NULL;
+                        }
+                        fields[field_count].value = (struct Ast *)fval;
+                        field_count++;
+                    }
+                }
+
+                if (!parser_match(parser, TOKEN_RBRACE)) {
+                    diagnostic(ERR_P030_EXPECTED_RBRACE_CTOR, parser->current.line,
+                               parser->current.column,
+                               "Expected '}' to close constructor");
+                    for (size_t i = 0; i < field_count; i++) ast_free((Ast *)fields[i].value);
+                    free(fields);
+                    return NULL;
+                }
+
+                return ast_make_value_constructor(name_start, name_length,
+                                                   fields, field_count, loc);
+            }
+        }
+
         return ast_make_identifier(name_start, name_length, loc);
     }
 
@@ -1476,9 +1765,28 @@ static Ast *parser_parse_primary(Parser *parser) {
     return NULL;
 }
 
+static Ast *parser_parse_postfix(Parser *parser) {
+    Ast *expr = parser_parse_primary(parser);
+    if (!expr) return NULL;
+
+    /* Chain field access: expr.field.field... */
+    while (parser_match(parser, TOKEN_DOT)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+            diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                       parser->current.column, "Expected field name after '.'");
+            ast_free(expr);
+            return NULL;
+        }
+        expr = ast_make_field_access(expr, parser->previous.start,
+                                      parser->previous.length, loc);
+    }
+    return expr;
+}
+
 static Ast *parser_parse_precedence(Parser *parser, int min_precedence) {
     /* Parse left operand */
-    Ast *left = parser_parse_primary(parser);
+    Ast *left = parser_parse_postfix(parser);
     if (!left) return NULL;
 
     /* Consume operators while precedence is high enough */
@@ -1598,8 +1906,8 @@ static Ast *parser_parse_return(Parser *parser) {
 static Ast *parser_parse_assignment(Parser *parser) {
     /* Already consumed TOKEN_IDENTIFIER - capture location and name */
     SourceLoc loc = token_loc(&parser->previous);
-    const char *name_start = parser->previous.start;
-    size_t name_length = parser->previous.length;
+    Ast *target = ast_make_identifier(parser->previous.start,
+                                       parser->previous.length, loc);
 
     /* Consume '=' */
     parser_advance(parser);
@@ -1607,11 +1915,12 @@ static Ast *parser_parse_assignment(Parser *parser) {
     /* Parse value expression */
     Ast *value = parser_parse_expression(parser);
     if (!value) {
+        ast_free(target);
         parser_synchronize(parser);
         return NULL;
     }
 
-    return ast_make_assignment(name_start, name_length, value, loc);
+    return ast_make_assignment(target, value, loc);
 }
 
 static Ast *parser_parse_assert(Parser *parser) {
@@ -1661,13 +1970,22 @@ static Ast *parser_parse_block(Parser *parser) {
                 ast_block_add_statement(block, statement);
             }
         } else {
-            /* Try to parse as expression (potential block value) */
+            /* Try to parse as expression (potential block value or field assignment) */
             Ast *expr = parser_parse_expression(parser);
             if (expr) {
                 if (parser_check(parser, TOKEN_RBRACE)) {
                     /* This is the block's value expression */
                     block->as.block.value_expr = expr;
                     break;
+                } else if (parser_match(parser, TOKEN_EQUALS)) {
+                    /* Field assignment: expr = value */
+                    Ast *value = parser_parse_expression(parser);
+                    if (value) {
+                        Ast *assign = ast_make_assignment(expr, value, expr->loc);
+                        ast_block_add_statement(block, assign);
+                    } else {
+                        ast_free(expr);
+                    }
                 } else {
                     /* Expression not at end of block */
                     diagnostic(ERR_P005_EXPECTED_STATEMENT,
@@ -2033,22 +2351,114 @@ static Ast *parser_parse_statement(Parser *parser) {
     return NULL;
 }
 
+/* Parse value type declaration: value Name { field: Type, ... } */
+static Ast *parser_parse_value_decl(Parser *parser) {
+    /* TOKEN_VALUE already consumed */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    /* Expect type name */
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        diagnostic(ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
+                   parser->current.column, "Expected value type name after 'value'");
+        parser_synchronize(parser);
+        return NULL;
+    }
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Expect '{' */
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
+                   parser->current.column, "Expected '{' after value type name");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse fields: name: Type, name: Type, ... */
+    size_t capacity = 4;
+    size_t field_count = 0;
+    Parameter *fields = malloc(capacity * sizeof(Parameter));
+    if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating value type fields");
+
+    if (!parser_check(parser, TOKEN_RBRACE)) {
+        /* Parse first field */
+        if (!parser_parse_parameter(parser, &fields[field_count])) {
+            free(fields);
+            parser_synchronize(parser);
+            return NULL;
+        }
+        field_count++;
+
+        /* Parse remaining fields */
+        while (parser_match(parser, TOKEN_COMMA)) {
+            if (field_count >= capacity) {
+                capacity *= 2;
+                fields = realloc(fields, capacity * sizeof(Parameter));
+                if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing value type fields");
+            }
+            if (!parser_parse_parameter(parser, &fields[field_count])) {
+                free(fields);
+                parser_synchronize(parser);
+                return NULL;
+            }
+            field_count++;
+        }
+    }
+
+    /* Expect '}' */
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        diagnostic(ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
+                   parser->current.column, "Expected '}' to close value type");
+        free(fields);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Register type in global value table */
+    if (g_value_table->count >= g_value_table->capacity) {
+        g_value_table->capacity *= 2;
+        g_value_table->types = realloc(g_value_table->types,
+                                        g_value_table->capacity * sizeof(ValueTypeEntry));
+        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
+    }
+
+    /* Copy fields for the table entry (AST owns its own copy) */
+    Parameter *table_fields = malloc(field_count * sizeof(Parameter));
+    if (!table_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying value type fields");
+    memcpy(table_fields, fields, field_count * sizeof(Parameter));
+
+    ValueTypeEntry *entry = &g_value_table->types[g_value_table->count];
+    entry->name_start = name_start;
+    entry->name_length = name_length;
+    entry->fields = table_fields;
+    entry->field_count = field_count;
+    entry->loc = loc;
+    g_value_table->count++;
+
+    return ast_make_value_decl(name_start, name_length, fields, field_count, loc);
+}
+
 static Ast *parser_parse_program(Parser *parser) {
     Ast *program = ast_make_program();
 
     while (!parser_check(parser, TOKEN_EOF) && !too_many_errors()) {
-        /* Top-level must be function declarations */
         if (parser_match(parser, TOKEN_FUNC)) {
             Ast *func = parser_parse_function(parser);
             if (func) {
                 ast_program_add_statement(program, func);
             }
+        } else if (parser_match(parser, TOKEN_VALUE)) {
+            Ast *vdecl = parser_parse_value_decl(parser);
+            if (vdecl) {
+                ast_program_add_statement(program, vdecl);
+            }
         } else {
             diagnostic(ERR_P016_EXPECTED_FUNC, parser->current.line,
                        parser->current.column,
-                       "Expected function declaration at top level");
-            /* Skip tokens until we find 'func' or EOF */
+                       "Expected declaration at top level");
+            /* Skip tokens until we find a declaration or EOF */
             while (!parser_check(parser, TOKEN_FUNC) &&
+                   !parser_check(parser, TOKEN_VALUE) &&
                    !parser_check(parser, TOKEN_EOF)) {
                 parser_advance(parser);
             }
@@ -2150,10 +2560,13 @@ static void parser_print_ast_step(Ast *node, int indent) {
             break;
 
         case AST_ASSIGNMENT:
-            printf("ASSIGNMENT(%.*s)\n",
-                   (int)node->as.assignment.name_length,
-                   node->as.assignment.name_start);
-            parser_print_ast_step(node->as.assignment.value, indent + 1);
+            printf("ASSIGNMENT\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("TARGET:\n");
+            parser_print_ast_step(node->as.assignment.target, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("VALUE:\n");
+            parser_print_ast_step(node->as.assignment.value, indent + 2);
             break;
 
         case AST_ASSERT:
@@ -2221,6 +2634,39 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("BODY:\n");
             parser_print_ast_step(node->as.func_decl.body, indent + 2);
+            break;
+
+        case AST_VALUE_DECL:
+            printf("VALUE_DECL(%.*s)\n",
+                   (int)node->as.value_decl.name_length,
+                   node->as.value_decl.name_start);
+            for (size_t i = 0; i < node->as.value_decl.field_count; i++) {
+                for (int j = 0; j < indent + 1; j++) printf("  ");
+                Parameter *f = &node->as.value_decl.fields[i];
+                printf("FIELD(%.*s: %s)\n",
+                       (int)f->name_length, f->name_start,
+                       type_name(f->type));
+            }
+            break;
+
+        case AST_VALUE_CONSTRUCTOR:
+            printf("VALUE_CONSTRUCTOR(%.*s)\n",
+                   (int)node->as.value_constructor.type_name_length,
+                   node->as.value_constructor.type_name_start);
+            for (size_t i = 0; i < node->as.value_constructor.field_count; i++) {
+                for (int j = 0; j < indent + 1; j++) printf("  ");
+                FieldInit *fi = &node->as.value_constructor.fields[i];
+                printf("FIELD_INIT(%.*s):\n",
+                       (int)fi->name_length, fi->name_start);
+                parser_print_ast_step((Ast *)fi->value, indent + 2);
+            }
+            break;
+
+        case AST_FIELD_ACCESS:
+            printf("FIELD_ACCESS(.%.*s)\n",
+                   (int)node->as.field_access.field_length,
+                   node->as.field_access.field_start);
+            parser_print_ast_step(node->as.field_access.object, indent + 1);
             break;
 
         case AST_PROGRAM:
@@ -2996,6 +3442,119 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return result;
         }
 
+        case AST_VALUE_CONSTRUCTOR: {
+            const char *tname = node->as.value_constructor.type_name_start;
+            size_t tlen = node->as.value_constructor.type_name_length;
+            ValueTypeEntry *vt = value_table_lookup(g_value_table, tname, tlen);
+            if (!vt) {
+                diagnostic(ERR_S027_NOT_A_VALUE_TYPE, node->loc.line,
+                           node->loc.column, "'%.*s' is not a value type",
+                           (int)tlen, tname);
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+
+            int idx = (int)(vt - g_value_table->types);
+            Type vtype = (Type)(TYPE_VALUE_BASE + idx);
+
+            /* Check for duplicate fields in constructor */
+            FieldInit *fi = node->as.value_constructor.fields;
+            size_t fc = node->as.value_constructor.field_count;
+            for (size_t i = 0; i < fc; i++) {
+                for (size_t j = 0; j < i; j++) {
+                    if (fi[i].name_length == fi[j].name_length &&
+                        memcmp(fi[i].name_start, fi[j].name_start,
+                               fi[i].name_length) == 0) {
+                        diagnostic(ERR_S026_DUPLICATE_CTOR_FIELD, node->loc.line,
+                                   node->loc.column,
+                                   "Duplicate field '%.*s' in constructor",
+                                   (int)fi[i].name_length, fi[i].name_start);
+                        break;
+                    }
+                }
+            }
+
+            /* Check each constructor field exists and has correct type */
+            for (size_t i = 0; i < fc; i++) {
+                int fidx = value_table_find_field(vt, fi[i].name_start,
+                                                   fi[i].name_length);
+                if (fidx < 0) {
+                    diagnostic(ERR_S024_UNKNOWN_CTOR_FIELD, node->loc.line,
+                               node->loc.column,
+                               "Unknown field '%.*s' in '%.*s' constructor",
+                               (int)fi[i].name_length, fi[i].name_start,
+                               (int)tlen, tname);
+                    typecheck_expression((Ast *)fi[i].value, scope, func_table);
+                    continue;
+                }
+                Type field_type = vt->fields[fidx].type;
+                Type val_type = typecheck_expression((Ast *)fi[i].value, scope, func_table);
+                if (!type_can_coerce(val_type, field_type)) {
+                    diagnostic(ERR_S006_TYPE_MISMATCH,
+                               ((Ast *)fi[i].value)->loc.line,
+                               ((Ast *)fi[i].value)->loc.column,
+                               "Field '%.*s': expected %s, got %s",
+                               (int)fi[i].name_length, fi[i].name_start,
+                               type_name(field_type), type_name(val_type));
+                }
+            }
+
+            /* Check all fields are present */
+            for (size_t i = 0; i < vt->field_count; i++) {
+                bool found = false;
+                for (size_t j = 0; j < fc; j++) {
+                    if (vt->fields[i].name_length == fi[j].name_length &&
+                        memcmp(vt->fields[i].name_start, fi[j].name_start,
+                               vt->fields[i].name_length) == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    diagnostic(ERR_S025_MISSING_CTOR_FIELD, node->loc.line,
+                               node->loc.column,
+                               "Missing field '%.*s' in '%.*s' constructor",
+                               (int)vt->fields[i].name_length,
+                               vt->fields[i].name_start,
+                               (int)tlen, tname);
+                }
+            }
+
+            node->expr_type = vtype;
+            return vtype;
+        }
+
+        case AST_FIELD_ACCESS: {
+            Type obj_type = typecheck_expression(node->as.field_access.object,
+                                                  scope, func_table);
+            if (!type_is_value(obj_type)) {
+                diagnostic(ERR_S028_FIELD_ON_NON_VALUE, node->loc.line,
+                           node->loc.column,
+                           "Cannot access field on non-value type %s",
+                           type_name(obj_type));
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+            int idx = type_value_index(obj_type);
+            ValueTypeEntry *vt = &g_value_table->types[idx];
+            int fidx = value_table_find_field(vt,
+                                               node->as.field_access.field_start,
+                                               node->as.field_access.field_length);
+            if (fidx < 0) {
+                diagnostic(ERR_S029_UNKNOWN_FIELD_ACCESS, node->loc.line,
+                           node->loc.column,
+                           "No field '%.*s' on type '%.*s'",
+                           (int)node->as.field_access.field_length,
+                           node->as.field_access.field_start,
+                           (int)vt->name_length, vt->name_start);
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+            Type field_type = vt->fields[fidx].type;
+            node->expr_type = field_type;
+            return field_type;
+        }
+
         default:
             break;
     }
@@ -3067,29 +3626,46 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         }
 
         case AST_ASSIGNMENT: {
-            Variable *v = scope_lookup(*scope, node->as.assignment.name_start,
-                                        node->as.assignment.name_length);
-            if (v == NULL) {
-                diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
-                           node->loc.column, "Undeclared variable '%.*s'",
-                           (int)node->as.assignment.name_length,
-                           node->as.assignment.name_start);
-                break;
+            Ast *target = node->as.assignment.target;
+
+            /* Type-check the target expression to get its type */
+            Type target_type = typecheck_expression(target, *scope, func_table);
+
+            /* Walk to root variable for mutability check */
+            Ast *root = target;
+            while (root->kind == AST_FIELD_ACCESS) {
+                root = root->as.field_access.object;
             }
-            if (!v->is_mutable) {
-                diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
-                           node->loc.column,
-                           "Cannot assign to immutable variable '%.*s'",
-                           (int)node->as.assignment.name_length,
-                           node->as.assignment.name_start);
+            if (root->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(*scope, root->as.identifier.start,
+                                            root->as.identifier.length);
+                if (v == NULL) {
+                    /* Already reported by typecheck_expression */
+                    break;
+                }
+                if (!v->is_mutable) {
+                    if (target->kind == AST_FIELD_ACCESS) {
+                        diagnostic(ERR_S030_FIELD_IMMUTABLE, node->loc.line,
+                                   node->loc.column,
+                                   "Cannot assign to field of immutable variable '%.*s'",
+                                   (int)root->as.identifier.length,
+                                   root->as.identifier.start);
+                    } else {
+                        diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
+                                   node->loc.column,
+                                   "Cannot assign to immutable variable '%.*s'",
+                                   (int)root->as.identifier.length,
+                                   root->as.identifier.start);
+                    }
+                }
             }
 
             Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
-            if (!type_can_coerce(value_type, v->type)) {
+            if (!type_can_coerce(value_type, target_type)) {
                 diagnostic(ERR_S006_TYPE_MISMATCH, node->as.assignment.value->loc.line,
                            node->as.assignment.value->loc.column,
-                           "Cannot assign %s to variable of type %s",
-                           type_name(value_type), type_name(v->type));
+                           "Cannot assign %s to %s",
+                           type_name(value_type), type_name(target_type));
             }
             break;
         }
@@ -3246,6 +3822,41 @@ static void typecheck_program(Ast *program) {
     FunctionTable *func_table = func_table_create();
     bool has_main = false;
 
+    /* Validate value type declarations */
+    for (size_t i = 0; i < program->as.program.count; i++) {
+        Ast *node = program->as.program.statements[i];
+        if (node->kind == AST_VALUE_DECL) {
+            Parameter *fields = node->as.value_decl.fields;
+            size_t field_count = node->as.value_decl.field_count;
+
+            for (size_t f = 0; f < field_count; f++) {
+                /* Check for duplicate field names */
+                for (size_t g = 0; g < f; g++) {
+                    if (fields[f].name_length == fields[g].name_length &&
+                        memcmp(fields[f].name_start, fields[g].name_start,
+                               fields[f].name_length) == 0) {
+                        diagnostic(ERR_S022_DUPLICATE_FIELD, node->loc.line,
+                                   node->loc.column,
+                                   "Duplicate field '%.*s' in value type '%.*s'",
+                                   (int)fields[f].name_length, fields[f].name_start,
+                                   (int)node->as.value_decl.name_length,
+                                   node->as.value_decl.name_start);
+                        break;
+                    }
+                }
+                /* Check field type is valid (not void, not unknown) */
+                if (fields[f].type == TYPE_VOID || fields[f].type == TYPE_UNKNOWN) {
+                    diagnostic(ERR_S023_UNKNOWN_FIELD_TYPE, node->loc.line,
+                               node->loc.column,
+                               "Invalid type for field '%.*s' in value type '%.*s'",
+                               (int)fields[f].name_length, fields[f].name_start,
+                               (int)node->as.value_decl.name_length,
+                               node->as.value_decl.name_start);
+                }
+            }
+        }
+    }
+
     /* First pass: register all functions */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
@@ -3288,6 +3899,7 @@ static void typecheck_program(Ast *program) {
 
 /* ============================ Code Generation ============================= */
 
+static const char *codegen_type_to_c(Type type);  /* forward declaration */
 static int codegen_temp_counter = 0;
 
 /* Check if a block can be emitted as a simple expression (no hoisting needed) */
@@ -3390,6 +4002,24 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             }
             break;
 
+        case AST_VALUE_CONSTRUCTOR: {
+            fprintf(out, "(%s){", codegen_type_to_c(node->expr_type));
+            for (size_t i = 0; i < node->as.value_constructor.field_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                FieldInit *fi = &node->as.value_constructor.fields[i];
+                fprintf(out, ".ni_%.*s = ", (int)fi->name_length, fi->name_start);
+                codegen_emit_expression(out, (Ast *)fi->value);
+            }
+            fprintf(out, "}");
+            break;
+        }
+
+        case AST_FIELD_ACCESS:
+            codegen_emit_expression(out, node->as.field_access.object);
+            fprintf(out, ".ni_%.*s", (int)node->as.field_access.field_length,
+                    node->as.field_access.field_start);
+            break;
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -3399,6 +4029,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_BREAK:
         case AST_CONTINUE:
         case AST_FUNC_DECL:
+        case AST_VALUE_DECL:
         case AST_PROGRAM:
             /* These should never appear in expressions */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
@@ -3421,8 +4052,21 @@ static const char *codegen_type_to_c(Type type) {
         case TYPE_VOID:          return "void";
         case TYPE_COMPTIME_INT:  return "long";   /* default */
         case TYPE_COMPTIME_FLOAT: return "double"; /* default */
+        default:
+            if (type_is_value(type) && g_value_table) {
+                int idx = type_value_index(type);
+                if (idx >= 0 && (size_t)idx < g_value_table->count) {
+                    ValueTypeEntry *vt = &g_value_table->types[idx];
+                    static char bufs[4][80];
+                    static int buf_idx = 0;
+                    char *buf = bufs[buf_idx++ % 4];
+                    snprintf(buf, 80, "ni_%.*s",
+                             (int)vt->name_length, vt->name_start);
+                    return buf;
+                }
+            }
+            return "long";
     }
-    return "long";
 }
 
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent);
@@ -3577,31 +4221,13 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             }
             break;
 
-        case AST_ASSIGNMENT: {
-            const char *name_start = node->as.assignment.name_start;
-            size_t name_length = node->as.assignment.name_length;
-
-            Variable *v = scope_lookup(*scope, name_start, name_length);
-            if (v == NULL) {
-                diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
-                           node->loc.column, "Undeclared variable '%.*s'",
-                           (int)name_length, name_start);
-                break;  /* Skip code generation */
-            }
-            if (!v->is_mutable) {
-                diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
-                           node->loc.column,
-                           "Cannot assign to immutable variable '%.*s'",
-                           (int)name_length, name_start);
-                break;  /* Skip code generation */
-            }
-
+        case AST_ASSIGNMENT:
             codegen_indent(out, indent);
-            fprintf(out, "ni_%.*s = ", (int)name_length, name_start);
+            codegen_emit_expression(out, node->as.assignment.target);
+            fprintf(out, " = ");
             codegen_emit_expression(out, node->as.assignment.value);
             fprintf(out, ";\n");
             break;
-        }
 
         case AST_ASSERT:
             codegen_indent(out, indent);
@@ -3684,6 +4310,10 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, "}\n");
             break;
 
+        case AST_VALUE_DECL:
+            /* Typedef already emitted at top level */
+            break;
+
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
     }
@@ -3744,6 +4374,23 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     if (ast->kind != AST_PROGRAM) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
     }
+
+    /* Emit value type typedefs */
+    for (size_t i = 0; i < ast->as.program.count; i++) {
+        Ast *node = ast->as.program.statements[i];
+        if (node->kind == AST_VALUE_DECL) {
+            fprintf(out, "typedef struct {");
+            for (size_t f = 0; f < node->as.value_decl.field_count; f++) {
+                Parameter *field = &node->as.value_decl.fields[f];
+                fprintf(out, " %s ni_%.*s;", codegen_type_to_c(field->type),
+                        (int)field->name_length, field->name_start);
+            }
+            fprintf(out, " } ni_%.*s;\n",
+                    (int)node->as.value_decl.name_length,
+                    node->as.value_decl.name_start);
+        }
+    }
+    fprintf(out, "\n");
 
     /* Emit all functions */
     for (size_t i = 0; i < ast->as.program.count; i++) {
@@ -3897,6 +4544,8 @@ int main(int argc, char **argv) {
         lexer_print_tokens(&lexer, source);
     }
 
+    /* Initialize value type table */
+    g_value_table = value_table_create();
     /* Parse program */
     Parser parser;
     parser_init(&parser, &lexer);
@@ -3926,12 +4575,14 @@ int main(int argc, char **argv) {
     /* Report any collected errors */
     if (g_had_error) {
         ast_free(ast);
+        value_table_destroy(g_value_table);
         free(source);
         report_errors_and_exit();
     }
 
     /* Cleanup */
     ast_free(ast);
+    value_table_destroy(g_value_table);
     free(source);
 
     return 0;
