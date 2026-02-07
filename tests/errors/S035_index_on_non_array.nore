@@ -1,0 +1,4 @@
+func main(): void = {
+    val x: i64 = 42
+    val y: i64 = x[0]
+}

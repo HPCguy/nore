@@ -1,0 +1,4 @@
+func main(): void = {
+    val arr: [i64; 3] = [1, 2, 3]
+    arr[0] = 99
+}

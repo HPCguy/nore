@@ -32,6 +32,7 @@ val y: i64 = 10
 - `f64` - 64-bit floating-point number
 - `bool` - Boolean type (`true` or `false`)
 - `void` - No return value (functions only)
+- `[T; N]` - Fixed-size array (see Arrays)
 - User-defined `value` types (see Value Types)
 
 **Compile-time types** (internal):
@@ -179,7 +180,7 @@ value Color { r: i64, g: i64, b: i64 }
 - Keyword: `value`
 - Must be declared before use (textual order)
 - Fields are comma-separated with type annotations (`name: Type`)
-- Field types can be any concrete type (`i64`, `f64`, `bool`) or other value types
+- Field types can be any concrete type (`i64`, `f64`, `bool`), arrays, or other value types
 
 **Constructors**:
 ```nore
@@ -213,6 +214,72 @@ val a: Vec2 = Vec2 { x: 1.0, y: 2.0 }
 mut b: Vec2 = a       // copy, not reference
 b.x = 99.0            // does not affect a
 assert a.x == 1.0     // a is unchanged
+```
+- Assigned by copy (no shared references)
+- Passed to functions by copy
+- Returned from functions by copy
+
+### Arrays
+
+Fixed-size arrays with compile-time known size, value semantics, and bounds checking.
+
+**Type Syntax**:
+```nore
+[i64; 3]          // array of 3 integers
+[f64; 4]          // array of 4 floats
+[bool; 2]         // array of 2 booleans
+[[i64; 2]; 3]     // nested: 3 arrays of 2 integers
+```
+- Size must be a positive integer literal
+- Element type can be any concrete type, array, or value type
+
+**Array Literals**:
+```nore
+val arr: [i64; 3] = [1, 2, 3]
+val floats: [f64; 2] = [1.5, 2.5]
+val grid: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]]
+```
+- Elements are comma-separated expressions in brackets
+- Number of elements must match the declared array size
+- Element types must be compatible (comptime coercion applies)
+
+**Indexing**:
+```nore
+val x: i64 = arr[0]
+val y: i64 = arr[i]
+val z: i64 = grid[1][0]   // nested indexing
+```
+- Index must be integer type (`i64` or `comptime_int`)
+- Bounds checking at runtime (exits with error code 2 on out-of-bounds)
+- Chains with field access: `v.data[i]`
+
+**Element Assignment**:
+```nore
+mut arr: [i64; 3] = [1, 2, 3]
+arr[0] = 99
+arr[i] = arr[i] + 1
+```
+- Only on `mut` variables (root variable must be mutable)
+- `val` arrays and their elements are immutable
+- Bounds checking on assignment too
+
+**As Value Type Fields**:
+```nore
+value Vec3 { data: [f64; 3] }
+
+func main(): void = {
+    mut v: Vec3 = Vec3 { data: [1.0, 2.0, 3.0] }
+    v.data[0] = 10.0
+    assert v.data[0] == 10.0
+}
+```
+
+**Value Semantics**:
+```nore
+val a: [i64; 3] = [1, 2, 3]
+mut b: [i64; 3] = a       // copy, not reference
+b[0] = 99                 // does not affect a
+assert a[0] == 1           // a is unchanged
 ```
 - Assigned by copy (no shared references)
 - Passed to functions by copy
@@ -320,6 +387,7 @@ Both operands must be the same concrete type (after coercion).
 - `mut name: type = expr` - Mutable variable declaration
 - `name = expr` - Assignment (mutable only)
 - `expr.field = expr` - Field assignment (root variable must be mutable)
+- `expr[index] = expr` - Array element assignment (root variable must be mutable)
 - `return expr` - Return from function
 - `assert expr` - Runtime assertion (bool expr, exits with code 2 on failure)
 - `break` - Exit innermost loop
@@ -375,8 +443,10 @@ func main(): void = {
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)
 - `{` `}` - Braces (blocks, function bodies, value type declarations, constructors)
+- `[` `]` - Brackets (array types, array literals, indexing)
 - `:` - Type annotation separator
-- `,` - Parameter/field separator
+- `;` - Array type size separator (`[T; N]`)
+- `,` - Parameter/field/element separator
 - `.` - Field access
 
 ## Design Decisions
@@ -406,7 +476,7 @@ func main(): void = {
 **Not yet implemented**:
 - String and character literals
 - Additional types (`i32`, `u32`, `f32`)
-- Fixed-size arrays
+- `ref` parameters (pass by reference)
 - `struct` types (resource owners with ref semantics)
 - Module system
 - While as expressions

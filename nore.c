@@ -74,6 +74,11 @@ typedef enum {
     ERR_P028_EXPECTED_FIELD_CTOR   = ERR_GROUP_PARSER + 28,
     ERR_P029_EXPECTED_COLON_CTOR   = ERR_GROUP_PARSER + 29,
     ERR_P030_EXPECTED_RBRACE_CTOR  = ERR_GROUP_PARSER + 30,
+    ERR_P031_EXPECTED_ARRAY_ELEM_TYPE = ERR_GROUP_PARSER + 31,
+    ERR_P032_EXPECTED_SEMICOLON_ARRAY = ERR_GROUP_PARSER + 32,
+    ERR_P033_EXPECTED_ARRAY_SIZE   = ERR_GROUP_PARSER + 33,
+    ERR_P034_EXPECTED_RBRACKET     = ERR_GROUP_PARSER + 34,
+    ERR_P035_EXPECTED_RBRACKET_LITERAL = ERR_GROUP_PARSER + 35,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -106,9 +111,16 @@ typedef enum {
     ERR_S028_FIELD_ON_NON_VALUE    = ERR_GROUP_SEMANTIC + 28,
     ERR_S029_UNKNOWN_FIELD_ACCESS  = ERR_GROUP_SEMANTIC + 29,
     ERR_S030_FIELD_IMMUTABLE       = ERR_GROUP_SEMANTIC + 30,
+    ERR_S031_ARRAY_SIZE_INVALID    = ERR_GROUP_SEMANTIC + 31,
+    ERR_S032_ARRAY_LENGTH_MISMATCH = ERR_GROUP_SEMANTIC + 32,
+    ERR_S033_ARRAY_ELEM_TYPE       = ERR_GROUP_SEMANTIC + 33,
+    ERR_S034_INDEX_NOT_INTEGER     = ERR_GROUP_SEMANTIC + 34,
+    ERR_S035_INDEX_ON_NON_ARRAY    = ERR_GROUP_SEMANTIC + 35,
+    ERR_S036_INDEX_IMMUTABLE       = ERR_GROUP_SEMANTIC + 36,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
+    ERR_R002_INDEX_OUT_OF_BOUNDS   = ERR_GROUP_RUNTIME + 2,
 } ErrorCode;
 
 static const char *error_code_str(ErrorCode code) {
@@ -304,6 +316,9 @@ typedef enum {
     TOKEN_COLON,
     TOKEN_COMMA,
     TOKEN_DOT,
+    TOKEN_LBRACKET,
+    TOKEN_RBRACKET,
+    TOKEN_SEMICOLON,
 
     TOKEN_EOF,
     TOKEN_ERROR
@@ -360,6 +375,9 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_COLON:         return "COLON";
         case TOKEN_COMMA:         return "COMMA";
         case TOKEN_DOT:           return "DOT";
+        case TOKEN_LBRACKET:      return "LBRACKET";
+        case TOKEN_RBRACKET:      return "RBRACKET";
+        case TOKEN_SEMICOLON:     return "SEMICOLON";
         case TOKEN_EOF:           return "EOF";
         case TOKEN_ERROR:         return "ERROR";
         default:                  return "UNKNOWN";
@@ -555,6 +573,9 @@ Token lexer_next_token(Lexer *lexer) {
         case ':': return lexer_make_token(lexer, TOKEN_COLON);
         case ',': return lexer_make_token(lexer, TOKEN_COMMA);
         case '.': return lexer_make_token(lexer, TOKEN_DOT);
+        case '[': return lexer_make_token(lexer, TOKEN_LBRACKET);
+        case ']': return lexer_make_token(lexer, TOKEN_RBRACKET);
+        case ';': return lexer_make_token(lexer, TOKEN_SEMICOLON);
         case '+': return lexer_make_token(lexer, TOKEN_PLUS);
         case '-': return lexer_make_token(lexer, TOKEN_MINUS);
         case '*': return lexer_make_token(lexer, TOKEN_STAR);
@@ -639,6 +660,8 @@ typedef enum {
     TYPE_COMPTIME_FLOAT,
     /* User-defined value types start at this offset */
     TYPE_VALUE_BASE = 16,
+    /* Array types start at this offset */
+    TYPE_ARRAY_BASE = 1024,
 } Type;
 
 /* Forward declaration - defined after ValueTypeTable */
@@ -654,20 +677,23 @@ static bool type_is_numeric(Type type) {
 }
 
 static bool type_is_value(Type type) {
-    return type >= TYPE_VALUE_BASE;
+    return type >= TYPE_VALUE_BASE && type < TYPE_ARRAY_BASE;
+}
+
+static bool type_is_array(Type type) {
+    return type >= TYPE_ARRAY_BASE;
+}
+
+static int type_array_index(Type type) {
+    return type - TYPE_ARRAY_BASE;
 }
 
 static int type_value_index(Type type) {
     return type - TYPE_VALUE_BASE;
 }
 
-/* Check if 'from' can coerce to 'to' */
-static bool type_can_coerce(Type from, Type to) {
-    if (from == to) return true;
-    if (from == TYPE_COMPTIME_INT && (to == TYPE_I64 || to == TYPE_F64)) return true;
-    if (from == TYPE_COMPTIME_FLOAT && to == TYPE_F64) return true;
-    return false;
-}
+/* Forward declaration - defined after ArrayTypeTable */
+static bool type_can_coerce(Type from, Type to);
 
 /* Resolve result type for numeric binary operation.
  * Returns TYPE_VOID on error (incompatible types). */
@@ -821,6 +847,81 @@ static ValueTypeEntry *value_table_get(Type type) {
     return &g_value_table->types[idx];
 }
 
+/* ============================== Array Type Table =========================== */
+
+typedef struct {
+    Type element_type;
+    size_t size;
+} ArrayTypeEntry;
+
+typedef struct {
+    ArrayTypeEntry *types;
+    size_t count;
+    size_t capacity;
+} ArrayTypeTable;
+
+static ArrayTypeTable *g_array_table = NULL;
+
+static ArrayTypeTable *array_table_create(void) {
+    ArrayTypeTable *table = malloc(sizeof(ArrayTypeTable));
+    if (!table) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate array type table");
+    table->capacity = 8;
+    table->count = 0;
+    table->types = malloc(table->capacity * sizeof(ArrayTypeEntry));
+    if (!table->types) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate array type entries");
+    return table;
+}
+
+static void array_table_destroy(ArrayTypeTable *table) {
+    if (!table) return;
+    free(table->types);
+    free(table);
+}
+
+static ArrayTypeEntry *array_table_get(Type type) {
+    if (!type_is_array(type) || !g_array_table) return NULL;
+    int idx = type_array_index(type);
+    if (idx < 0 || (size_t)idx >= g_array_table->count) return NULL;
+    return &g_array_table->types[idx];
+}
+
+/* Find-or-create an array type. Returns the Type. */
+static Type array_table_intern(Type element_type, size_t size) {
+    /* Search for existing entry */
+    for (size_t i = 0; i < g_array_table->count; i++) {
+        if (g_array_table->types[i].element_type == element_type &&
+            g_array_table->types[i].size == size) {
+            return (Type)(TYPE_ARRAY_BASE + (int)i);
+        }
+    }
+    /* Create new entry */
+    if (g_array_table->count >= g_array_table->capacity) {
+        g_array_table->capacity *= 2;
+        g_array_table->types = realloc(g_array_table->types,
+                                        g_array_table->capacity * sizeof(ArrayTypeEntry));
+        if (!g_array_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing array type table");
+    }
+    ArrayTypeEntry *entry = &g_array_table->types[g_array_table->count];
+    entry->element_type = element_type;
+    entry->size = size;
+    return (Type)(TYPE_ARRAY_BASE + (int)g_array_table->count++);
+}
+
+static bool type_can_coerce(Type from, Type to) {
+    if (from == to) return true;
+    if (from == TYPE_COMPTIME_INT && (to == TYPE_I64 || to == TYPE_F64)) return true;
+    if (from == TYPE_COMPTIME_FLOAT && to == TYPE_F64) return true;
+    /* Array-to-array coercion: same size, element types coerce */
+    if (type_is_array(from) && type_is_array(to)) {
+        ArrayTypeEntry *fa = array_table_get(from);
+        ArrayTypeEntry *ta = array_table_get(to);
+        if (fa && ta && fa->size == ta->size) {
+            return type_can_coerce(fa->element_type, ta->element_type);
+        }
+    }
+    return false;
+}
+
 static const char *type_name(Type type) {
     switch (type) {
         case TYPE_UNKNOWN:       return "unknown";
@@ -838,6 +939,14 @@ static const char *type_name(Type type) {
                 static int buf_idx = 0;
                 char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 64, "%.*s", (int)vt->name_length, vt->name_start);
+                return buf;
+            }
+            ArrayTypeEntry *at = array_table_get(type);
+            if (at) {
+                static char abufs[4][64];
+                static int abuf_idx = 0;
+                char *buf = abufs[abuf_idx++ % 4];
+                snprintf(buf, 64, "[%s; %zu]", type_name(at->element_type), at->size);
                 return buf;
             }
             return "unknown";
@@ -869,6 +978,8 @@ typedef enum {
     AST_VALUE_DECL,
     AST_VALUE_CONSTRUCTOR,
     AST_FIELD_ACCESS,
+    AST_ARRAY_LITERAL,
+    AST_INDEX_ACCESS,
     AST_PROGRAM
 } AstKind;
 
@@ -1011,6 +1122,16 @@ typedef struct Ast {
             const char *field_start;
             size_t field_length;
         } field_access;
+
+        struct {
+            struct Ast **elements;
+            size_t element_count;
+        } array_literal;
+
+        struct {
+            struct Ast *object;
+            struct Ast *index;
+        } index_access;
 
         struct {
             struct Ast **statements;
@@ -1351,6 +1472,27 @@ static Ast *ast_make_field_access(Ast *object, const char *field_start,
     return node;
 }
 
+static Ast *ast_make_array_literal(Ast **elements, size_t element_count,
+                                    SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ARRAY_LITERAL;
+    node->loc = loc;
+    node->as.array_literal.elements = elements;
+    node->as.array_literal.element_count = element_count;
+    return node;
+}
+
+static Ast *ast_make_index_access(Ast *object, Ast *index, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_INDEX_ACCESS;
+    node->loc = loc;
+    node->as.index_access.object = object;
+    node->as.index_access.index = index;
+    return node;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
 
@@ -1415,6 +1557,16 @@ static void ast_free(Ast *node) {
             break;
         case AST_FIELD_ACCESS:
             ast_free(node->as.field_access.object);
+            break;
+        case AST_ARRAY_LITERAL:
+            for (size_t i = 0; i < node->as.array_literal.element_count; i++) {
+                ast_free(node->as.array_literal.elements[i]);
+            }
+            free(node->as.array_literal.elements);
+            break;
+        case AST_INDEX_ACCESS:
+            ast_free(node->as.index_access.object);
+            ast_free(node->as.index_access.index);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -1483,6 +1635,50 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
             int idx = (int)(vt - g_value_table->types);
             return (Type)(TYPE_VALUE_BASE + idx);
         }
+    }
+    /* Array type: [T; N] */
+    if (parser_match(parser, TOKEN_LBRACKET)) {
+        Type elem_type = parser_parse_type(parser, false);
+        if (elem_type == TYPE_UNKNOWN) {
+            diagnostic(ERR_P031_EXPECTED_ARRAY_ELEM_TYPE, parser->current.line,
+                       parser->current.column,
+                       "Expected element type in array type");
+            return TYPE_UNKNOWN;
+        }
+        if (!parser_match(parser, TOKEN_SEMICOLON)) {
+            diagnostic(ERR_P032_EXPECTED_SEMICOLON_ARRAY, parser->current.line,
+                       parser->current.column,
+                       "Expected ';' in array type");
+            return TYPE_UNKNOWN;
+        }
+        if (!parser_check(parser, TOKEN_NUMBER)) {
+            diagnostic(ERR_P033_EXPECTED_ARRAY_SIZE, parser->current.line,
+                       parser->current.column,
+                       "Expected array size");
+            return TYPE_UNKNOWN;
+        }
+        /* Parse the size as integer literal */
+        char buffer[32];
+        size_t len = parser->current.length;
+        if (len >= sizeof(buffer)) len = sizeof(buffer) - 1;
+        memcpy(buffer, parser->current.start, len);
+        buffer[len] = '\0';
+        long size_val = strtol(buffer, NULL, 10);
+        SourceLoc size_loc = token_loc(&parser->current);
+        parser_advance(parser);  /* consume the number */
+        if (size_val <= 0) {
+            diagnostic(ERR_S031_ARRAY_SIZE_INVALID, size_loc.line,
+                       size_loc.column,
+                       "Array size must be a positive integer");
+            return TYPE_UNKNOWN;
+        }
+        if (!parser_match(parser, TOKEN_RBRACKET)) {
+            diagnostic(ERR_P034_EXPECTED_RBRACKET, parser->current.line,
+                       parser->current.column,
+                       "Expected ']' to close array type");
+            return TYPE_UNKNOWN;
+        }
+        return array_table_intern(elem_type, (size_t)size_val);
     }
     return TYPE_UNKNOWN;
 }
@@ -1718,6 +1914,44 @@ static Ast *parser_parse_primary(Parser *parser) {
         return ast_make_identifier(name_start, name_length, loc);
     }
 
+    /* Array literal: [expr, expr, ...] */
+    if (parser_match(parser, TOKEN_LBRACKET)) {
+        SourceLoc loc = token_loc(&parser->previous);
+
+        size_t capacity = 4;
+        size_t count = 0;
+        Ast **elements = malloc(capacity * sizeof(Ast *));
+        if (!elements) panic(ERR_I001_OUT_OF_MEMORY, "allocating array literal elements");
+
+        if (!parser_check(parser, TOKEN_RBRACKET)) {
+            do {
+                Ast *elem = parser_parse_expression(parser);
+                if (!elem) {
+                    for (size_t i = 0; i < count; i++) ast_free(elements[i]);
+                    free(elements);
+                    return NULL;
+                }
+                if (count >= capacity) {
+                    capacity *= 2;
+                    elements = realloc(elements, capacity * sizeof(Ast *));
+                    if (!elements) panic(ERR_I001_OUT_OF_MEMORY, "growing array literal");
+                }
+                elements[count++] = elem;
+            } while (parser_match(parser, TOKEN_COMMA));
+        }
+
+        if (!parser_match(parser, TOKEN_RBRACKET)) {
+            diagnostic(ERR_P035_EXPECTED_RBRACKET_LITERAL, parser->current.line,
+                       parser->current.column,
+                       "Expected ']' to close array literal");
+            for (size_t i = 0; i < count; i++) ast_free(elements[i]);
+            free(elements);
+            return NULL;
+        }
+
+        return ast_make_array_literal(elements, count, loc);
+    }
+
     if (parser_match(parser, TOKEN_LPAREN)) {
         Ast *expr = parser_parse_expression(parser);
         if (!expr) return NULL;
@@ -1748,17 +1982,37 @@ static Ast *parser_parse_postfix(Parser *parser) {
     Ast *expr = parser_parse_primary(parser);
     if (!expr) return NULL;
 
-    /* Chain field access: expr.field.field... */
-    while (parser_match(parser, TOKEN_DOT)) {
-        SourceLoc loc = token_loc(&parser->previous);
-        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-            diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
-                       parser->current.column, "Expected field name after '.'");
-            ast_free(expr);
-            return NULL;
+    /* Chain field access and index access: expr.field, expr[i] */
+    for (;;) {
+        if (parser_match(parser, TOKEN_DOT)) {
+            SourceLoc loc = token_loc(&parser->previous);
+            if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                           parser->current.column, "Expected field name after '.'");
+                ast_free(expr);
+                return NULL;
+            }
+            expr = ast_make_field_access(expr, parser->previous.start,
+                                          parser->previous.length, loc);
+        } else if (parser_match(parser, TOKEN_LBRACKET)) {
+            SourceLoc loc = token_loc(&parser->previous);
+            Ast *index = parser_parse_expression(parser);
+            if (!index) {
+                ast_free(expr);
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_RBRACKET)) {
+                diagnostic(ERR_P034_EXPECTED_RBRACKET, parser->current.line,
+                           parser->current.column,
+                           "Expected ']' after index expression");
+                ast_free(expr);
+                ast_free(index);
+                return NULL;
+            }
+            expr = ast_make_index_access(expr, index, loc);
+        } else {
+            break;
         }
-        expr = ast_make_field_access(expr, parser->previous.start,
-                                      parser->previous.length, loc);
     }
     return expr;
 }
@@ -2628,6 +2882,24 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.field_access.object, indent + 1);
             break;
 
+        case AST_ARRAY_LITERAL:
+            printf("ARRAY_LITERAL(%zu elements)\n",
+                   node->as.array_literal.element_count);
+            for (size_t i = 0; i < node->as.array_literal.element_count; i++) {
+                parser_print_ast_step(node->as.array_literal.elements[i], indent + 1);
+            }
+            break;
+
+        case AST_INDEX_ACCESS:
+            printf("INDEX_ACCESS\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("OBJECT:\n");
+            parser_print_ast_step(node->as.index_access.object, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("INDEX:\n");
+            parser_print_ast_step(node->as.index_access.index, indent + 2);
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -3483,6 +3755,67 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return vtype;
         }
 
+        case AST_ARRAY_LITERAL: {
+            size_t count = node->as.array_literal.element_count;
+            if (count == 0) {
+                /* Empty array literal - can't infer type */
+                diagnostic(ERR_S033_ARRAY_ELEM_TYPE, node->loc.line,
+                           node->loc.column,
+                           "Empty array literal requires type context");
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+            /* Type-check all elements and resolve common type */
+            Type common = typecheck_expression(node->as.array_literal.elements[0],
+                                                scope, func_table);
+            for (size_t i = 1; i < count; i++) {
+                Type elem = typecheck_expression(node->as.array_literal.elements[i],
+                                                  scope, func_table);
+                Type resolved = resolve_numeric_binary_type(common, elem);
+                if (resolved == TYPE_VOID) {
+                    /* Try branch resolution for non-numeric types */
+                    resolved = resolve_branch_types(common, elem);
+                }
+                if (resolved == TYPE_VOID) {
+                    diagnostic(ERR_S033_ARRAY_ELEM_TYPE,
+                               node->as.array_literal.elements[i]->loc.line,
+                               node->as.array_literal.elements[i]->loc.column,
+                               "Array element type mismatch: expected %s, got %s",
+                               type_name(common), type_name(elem));
+                } else {
+                    common = resolved;
+                }
+            }
+            Type arr_type = array_table_intern(common, count);
+            node->expr_type = arr_type;
+            return arr_type;
+        }
+
+        case AST_INDEX_ACCESS: {
+            Type obj_type = typecheck_expression(node->as.index_access.object,
+                                                  scope, func_table);
+            Type idx_type = typecheck_expression(node->as.index_access.index,
+                                                  scope, func_table);
+            if (!type_is_array(obj_type)) {
+                diagnostic(ERR_S035_INDEX_ON_NON_ARRAY, node->loc.line,
+                           node->loc.column,
+                           "Cannot index non-array type %s",
+                           type_name(obj_type));
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+            if (idx_type != TYPE_I64 && idx_type != TYPE_COMPTIME_INT) {
+                diagnostic(ERR_S034_INDEX_NOT_INTEGER, node->as.index_access.index->loc.line,
+                           node->as.index_access.index->loc.column,
+                           "Index must be integer, got %s",
+                           type_name(idx_type));
+            }
+            ArrayTypeEntry *at = array_table_get(obj_type);
+            Type elem_type = at ? at->element_type : TYPE_I64;
+            node->expr_type = elem_type;
+            return elem_type;
+        }
+
         case AST_FIELD_ACCESS: {
             Type obj_type = typecheck_expression(node->as.field_access.object,
                                                   scope, func_table);
@@ -3541,10 +3874,30 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             } else {
                 /* Explicit type — check coercion */
                 if (!type_can_coerce(init_type, declared)) {
-                    diagnostic(ERR_S006_TYPE_MISMATCH, node->as.val_decl.initializer->loc.line,
-                               node->as.val_decl.initializer->loc.column,
-                               "Cannot assign %s to variable of type %s",
-                               type_name(init_type), type_name(declared));
+                    /* Specific diagnostic for array length mismatch */
+                    if (type_is_array(init_type) && type_is_array(declared)) {
+                        ArrayTypeEntry *fa = array_table_get(init_type);
+                        ArrayTypeEntry *ta = array_table_get(declared);
+                        if (fa && ta && fa->size != ta->size) {
+                            diagnostic(ERR_S032_ARRAY_LENGTH_MISMATCH,
+                                       node->as.val_decl.initializer->loc.line,
+                                       node->as.val_decl.initializer->loc.column,
+                                       "Array literal has %zu elements, expected %zu",
+                                       fa->size, ta->size);
+                        } else {
+                            diagnostic(ERR_S006_TYPE_MISMATCH,
+                                       node->as.val_decl.initializer->loc.line,
+                                       node->as.val_decl.initializer->loc.column,
+                                       "Cannot assign %s to variable of type %s",
+                                       type_name(init_type), type_name(declared));
+                        }
+                    } else {
+                        diagnostic(ERR_S006_TYPE_MISMATCH,
+                                   node->as.val_decl.initializer->loc.line,
+                                   node->as.val_decl.initializer->loc.column,
+                                   "Cannot assign %s to variable of type %s",
+                                   type_name(init_type), type_name(declared));
+                    }
                 }
             }
 
@@ -3573,10 +3926,29 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type declared = node->as.mut_decl.type;
 
             if (!type_can_coerce(init_type, declared)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.mut_decl.initializer->loc.line,
-                           node->as.mut_decl.initializer->loc.column,
-                           "Cannot assign %s to variable of type %s",
-                           type_name(init_type), type_name(declared));
+                if (type_is_array(init_type) && type_is_array(declared)) {
+                    ArrayTypeEntry *fa = array_table_get(init_type);
+                    ArrayTypeEntry *ta = array_table_get(declared);
+                    if (fa && ta && fa->size != ta->size) {
+                        diagnostic(ERR_S032_ARRAY_LENGTH_MISMATCH,
+                                   node->as.mut_decl.initializer->loc.line,
+                                   node->as.mut_decl.initializer->loc.column,
+                                   "Array literal has %zu elements, expected %zu",
+                                   fa->size, ta->size);
+                    } else {
+                        diagnostic(ERR_S006_TYPE_MISMATCH,
+                                   node->as.mut_decl.initializer->loc.line,
+                                   node->as.mut_decl.initializer->loc.column,
+                                   "Cannot assign %s to variable of type %s",
+                                   type_name(init_type), type_name(declared));
+                    }
+                } else {
+                    diagnostic(ERR_S006_TYPE_MISMATCH,
+                               node->as.mut_decl.initializer->loc.line,
+                               node->as.mut_decl.initializer->loc.column,
+                               "Cannot assign %s to variable of type %s",
+                               type_name(init_type), type_name(declared));
+                }
             }
 
             scope_add(*scope, node->as.mut_decl.name_start,
@@ -3595,6 +3967,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             while (root->kind == AST_FIELD_ACCESS) {
                 root = root->as.field_access.object;
             }
+            while (root->kind == AST_INDEX_ACCESS) {
+                root = root->as.index_access.object;
+            }
+            /* May still have chained field.index or index.field */
+            while (root->kind == AST_FIELD_ACCESS || root->kind == AST_INDEX_ACCESS) {
+                if (root->kind == AST_FIELD_ACCESS) root = root->as.field_access.object;
+                else root = root->as.index_access.object;
+            }
             if (root->kind == AST_IDENTIFIER) {
                 Variable *v = scope_lookup(*scope, root->as.identifier.start,
                                             root->as.identifier.length);
@@ -3607,6 +3987,12 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                         diagnostic(ERR_S030_FIELD_IMMUTABLE, node->loc.line,
                                    node->loc.column,
                                    "Cannot assign to field of immutable variable '%.*s'",
+                                   (int)root->as.identifier.length,
+                                   root->as.identifier.start);
+                    } else if (target->kind == AST_INDEX_ACCESS) {
+                        diagnostic(ERR_S036_INDEX_IMMUTABLE, node->loc.line,
+                                   node->loc.column,
+                                   "Cannot assign to element of immutable variable '%.*s'",
                                    (int)root->as.identifier.length,
                                    root->as.identifier.start);
                     } else {
@@ -3873,6 +4259,20 @@ static bool codegen_is_simple_if(Ast *node) {
            codegen_is_simple_block(node->as.if_stmt.else_block);
 }
 
+/* Resolve comptime array types to their concrete C types for codegen.
+ * e.g. [comptime_int; 3] -> [i64; 3], [comptime_float; 2] -> [f64; 2] */
+static Type codegen_concrete_array_type(Type type) {
+    if (!type_is_array(type)) return type;
+    ArrayTypeEntry *at = array_table_get(type);
+    if (!at) return type;
+    Type elem = at->element_type;
+    if (elem == TYPE_COMPTIME_INT) elem = TYPE_I64;
+    else if (elem == TYPE_COMPTIME_FLOAT) elem = TYPE_F64;
+    else if (type_is_array(elem)) elem = codegen_concrete_array_type(elem);
+    if (elem == at->element_type) return type;  /* no change */
+    return array_table_intern(elem, at->size);
+}
+
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
         case AST_NUMBER:
@@ -3979,6 +4379,41 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                     node->as.field_access.field_start);
             break;
 
+        case AST_ARRAY_LITERAL: {
+            Type concrete = codegen_concrete_array_type(node->expr_type);
+            fprintf(out, "(%s){{", codegen_type_to_c(concrete));
+            for (size_t i = 0; i < node->as.array_literal.element_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                codegen_emit_expression(out, node->as.array_literal.elements[i]);
+            }
+            fprintf(out, "}}");
+            break;
+        }
+
+        case AST_INDEX_ACCESS: {
+            /* Emit bounds-checked index access as comma expression:
+             * (NI_BOUNDS_CHECK(idx, size, file, line, col), obj.data[idx]) */
+            ArrayTypeEntry *at = array_table_get(
+                node->as.index_access.object->expr_type);
+            if (at) {
+                fprintf(out, "(NI_BOUNDS_CHECK(");
+                codegen_emit_expression(out, node->as.index_access.index);
+                fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL), ",
+                        at->size, g_source_file,
+                        node->loc.line, node->loc.column);
+                codegen_emit_expression(out, node->as.index_access.object);
+                fprintf(out, ".data[");
+                codegen_emit_expression(out, node->as.index_access.index);
+                fprintf(out, "])");
+            } else {
+                codegen_emit_expression(out, node->as.index_access.object);
+                fprintf(out, ".data[");
+                codegen_emit_expression(out, node->as.index_access.index);
+                fprintf(out, "]");
+            }
+            break;
+        }
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -3990,7 +4425,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_FUNC_DECL:
         case AST_VALUE_DECL:
         case AST_PROGRAM:
-            /* These should never appear in expressions */
+            /* These should never appear in expression context */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
             break;
     }
@@ -4021,12 +4456,69 @@ static const char *codegen_type_to_c(Type type) {
                          (int)vt->name_length, vt->name_start);
                 return buf;
             }
+            if (type_is_array(type)) {
+                static char abufs[4][32];
+                static int abuf_idx = 0;
+                char *buf = abufs[abuf_idx++ % 4];
+                snprintf(buf, 32, "ni_arr_%d", type_array_index(type));
+                return buf;
+            }
             return "long";
         }
     }
 }
 
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent);
+
+static void codegen_emit_lvalue(FILE *out, Ast *node) {
+    switch (node->kind) {
+        case AST_IDENTIFIER:
+            fprintf(out, "ni_%.*s", (int)node->as.identifier.length,
+                    node->as.identifier.start);
+            break;
+        case AST_FIELD_ACCESS:
+            codegen_emit_lvalue(out, node->as.field_access.object);
+            fprintf(out, ".ni_%.*s", (int)node->as.field_access.field_length,
+                    node->as.field_access.field_start);
+            break;
+        case AST_INDEX_ACCESS:
+            codegen_emit_lvalue(out, node->as.index_access.object);
+            fprintf(out, ".data[");
+            codegen_emit_expression(out, node->as.index_access.index);
+            fprintf(out, "]");
+            break;
+        default:
+            codegen_emit_expression(out, node);
+            break;
+    }
+}
+
+/* Check if assignment target contains an index access (needs bounds check) */
+static bool codegen_target_has_index(Ast *node) {
+    if (node->kind == AST_INDEX_ACCESS) return true;
+    if (node->kind == AST_FIELD_ACCESS) return codegen_target_has_index(node->as.field_access.object);
+    return false;
+}
+
+/* Emit bounds checks for all index accesses in an assignment target */
+static void codegen_emit_target_bounds_checks(FILE *out, Ast *node, int indent) {
+    if (node->kind == AST_INDEX_ACCESS) {
+        /* Recurse into the object first (for chained access) */
+        codegen_emit_target_bounds_checks(out, node->as.index_access.object, indent);
+        /* Emit bounds check for this index */
+        ArrayTypeEntry *at = array_table_get(node->as.index_access.object->expr_type);
+        if (at) {
+            codegen_indent(out, indent);
+            fprintf(out, "NI_BOUNDS_CHECK(");
+            codegen_emit_expression(out, node->as.index_access.index);
+            fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL);\n",
+                    at->size, g_source_file,
+                    node->loc.line, node->loc.column);
+        }
+    } else if (node->kind == AST_FIELD_ACCESS) {
+        codegen_emit_target_bounds_checks(out, node->as.field_access.object, indent);
+    }
+}
 
 /* Emit block statements with scoped variable management.
  * Creates a child scope, emits statements, then restores parent scope. */
@@ -4179,8 +4671,11 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             break;
 
         case AST_ASSIGNMENT:
+            if (codegen_target_has_index(node->as.assignment.target)) {
+                codegen_emit_target_bounds_checks(out, node->as.assignment.target, indent);
+            }
             codegen_indent(out, indent);
-            codegen_emit_expression(out, node->as.assignment.target);
+            codegen_emit_lvalue(out, node->as.assignment.target);
             fprintf(out, " = ");
             codegen_emit_expression(out, node->as.assignment.value);
             fprintf(out, ";\n");
@@ -4331,6 +4826,27 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     if (ast->kind != AST_PROGRAM) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
     }
+
+    /* Emit bounds check helper and macro if any array types exist */
+    if (g_array_table->count > 0) {
+        fprintf(out, "static void ni_bounds_fail(long idx, size_t size,\n");
+        fprintf(out, "                           const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    fprintf(stderr, \"%%s:%%lu:%%lu: error[R002]: Array index out of bounds: %%ld not in [0, %%zu)\\n\",\n");
+        fprintf(out, "            file, line, col, idx, size);\n");
+        fprintf(out, "    exit(2);\n");
+        fprintf(out, "}\n");
+        fprintf(out, "#define NI_BOUNDS_CHECK(idx, size, file, line, col) \\\n");
+        fprintf(out, "    ((unsigned long)(idx) >= (unsigned long)(size) \\\n");
+        fprintf(out, "     ? (ni_bounds_fail((long)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
+    }
+
+    /* Emit array type typedefs */
+    for (size_t i = 0; i < g_array_table->count; i++) {
+        ArrayTypeEntry *at = &g_array_table->types[i];
+        fprintf(out, "typedef struct { %s data[%zu]; } ni_arr_%zu;\n",
+                codegen_type_to_c(at->element_type), at->size, i);
+    }
+    if (g_array_table->count > 0) fprintf(out, "\n");
 
     /* Emit value type typedefs */
     for (size_t i = 0; i < ast->as.program.count; i++) {
@@ -4501,8 +5017,9 @@ int main(int argc, char **argv) {
         lexer_print_tokens(&lexer, source);
     }
 
-    /* Initialize value type table */
+    /* Initialize type tables */
     g_value_table = value_table_create();
+    g_array_table = array_table_create();
     /* Parse program */
     Parser parser;
     parser_init(&parser, &lexer);
@@ -4533,6 +5050,7 @@ int main(int argc, char **argv) {
     if (g_had_error) {
         ast_free(ast);
         value_table_destroy(g_value_table);
+        array_table_destroy(g_array_table);
         free(source);
         report_errors_and_exit();
     }
@@ -4540,6 +5058,7 @@ int main(int argc, char **argv) {
     /* Cleanup */
     ast_free(ast);
     value_table_destroy(g_value_table);
+    array_table_destroy(g_array_table);
     free(source);
 
     return 0;
