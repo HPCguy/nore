@@ -932,20 +932,18 @@ static const char *type_name(Type type) {
         case TYPE_COMPTIME_INT:  return "comptime_int";
         case TYPE_COMPTIME_FLOAT: return "comptime_float";
         default: {
+            /* Rotating buffers: safe when called multiple times in one printf */
+            static char bufs[4][64];
+            static int buf_idx = 0;
             ValueTypeEntry *vt = value_table_get(type);
             if (vt) {
-                /* Rotating buffers: safe when called multiple times in one printf */
-                static char bufs[4][64];
-                static int buf_idx = 0;
                 char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 64, "%.*s", (int)vt->name_length, vt->name_start);
                 return buf;
             }
             ArrayTypeEntry *at = array_table_get(type);
             if (at) {
-                static char abufs[4][64];
-                static int abuf_idx = 0;
-                char *buf = abufs[abuf_idx++ % 4];
+                char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 64, "[%s; %zu]", type_name(at->element_type), at->size);
                 return buf;
             }
@@ -3855,6 +3853,23 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
     return TYPE_I64;
 }
 
+/* Report a type coercion error, with a specific diagnostic for array length mismatch */
+static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc loc) {
+    if (type_is_array(init_type) && type_is_array(declared)) {
+        ArrayTypeEntry *fa = array_table_get(init_type);
+        ArrayTypeEntry *ta = array_table_get(declared);
+        if (fa && ta && fa->size != ta->size) {
+            diagnostic(ERR_S032_ARRAY_LENGTH_MISMATCH, loc.line, loc.column,
+                       "Array literal has %zu elements, expected %zu",
+                       fa->size, ta->size);
+            return;
+        }
+    }
+    diagnostic(ERR_S006_TYPE_MISMATCH, loc.line, loc.column,
+               "Cannot assign %s to variable of type %s",
+               type_name(init_type), type_name(declared));
+}
+
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_VAL_DECL: {
@@ -3874,30 +3889,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             } else {
                 /* Explicit type — check coercion */
                 if (!type_can_coerce(init_type, declared)) {
-                    /* Specific diagnostic for array length mismatch */
-                    if (type_is_array(init_type) && type_is_array(declared)) {
-                        ArrayTypeEntry *fa = array_table_get(init_type);
-                        ArrayTypeEntry *ta = array_table_get(declared);
-                        if (fa && ta && fa->size != ta->size) {
-                            diagnostic(ERR_S032_ARRAY_LENGTH_MISMATCH,
-                                       node->as.val_decl.initializer->loc.line,
-                                       node->as.val_decl.initializer->loc.column,
-                                       "Array literal has %zu elements, expected %zu",
-                                       fa->size, ta->size);
-                        } else {
-                            diagnostic(ERR_S006_TYPE_MISMATCH,
-                                       node->as.val_decl.initializer->loc.line,
-                                       node->as.val_decl.initializer->loc.column,
-                                       "Cannot assign %s to variable of type %s",
-                                       type_name(init_type), type_name(declared));
-                        }
-                    } else {
-                        diagnostic(ERR_S006_TYPE_MISMATCH,
-                                   node->as.val_decl.initializer->loc.line,
-                                   node->as.val_decl.initializer->loc.column,
-                                   "Cannot assign %s to variable of type %s",
-                                   type_name(init_type), type_name(declared));
-                    }
+                    typecheck_coercion_error(init_type, declared,
+                                             node->as.val_decl.initializer->loc);
                 }
             }
 
@@ -3926,29 +3919,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type declared = node->as.mut_decl.type;
 
             if (!type_can_coerce(init_type, declared)) {
-                if (type_is_array(init_type) && type_is_array(declared)) {
-                    ArrayTypeEntry *fa = array_table_get(init_type);
-                    ArrayTypeEntry *ta = array_table_get(declared);
-                    if (fa && ta && fa->size != ta->size) {
-                        diagnostic(ERR_S032_ARRAY_LENGTH_MISMATCH,
-                                   node->as.mut_decl.initializer->loc.line,
-                                   node->as.mut_decl.initializer->loc.column,
-                                   "Array literal has %zu elements, expected %zu",
-                                   fa->size, ta->size);
-                    } else {
-                        diagnostic(ERR_S006_TYPE_MISMATCH,
-                                   node->as.mut_decl.initializer->loc.line,
-                                   node->as.mut_decl.initializer->loc.column,
-                                   "Cannot assign %s to variable of type %s",
-                                   type_name(init_type), type_name(declared));
-                    }
-                } else {
-                    diagnostic(ERR_S006_TYPE_MISMATCH,
-                               node->as.mut_decl.initializer->loc.line,
-                               node->as.mut_decl.initializer->loc.column,
-                               "Cannot assign %s to variable of type %s",
-                               type_name(init_type), type_name(declared));
-                }
+                typecheck_coercion_error(init_type, declared,
+                                         node->as.mut_decl.initializer->loc);
             }
 
             scope_add(*scope, node->as.mut_decl.name_start,
@@ -3962,15 +3934,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             /* Type-check the target expression to get its type */
             Type target_type = typecheck_expression(target, *scope, func_table);
 
-            /* Walk to root variable for mutability check */
+            /* Walk through field/index chains to find root variable */
             Ast *root = target;
-            while (root->kind == AST_FIELD_ACCESS) {
-                root = root->as.field_access.object;
-            }
-            while (root->kind == AST_INDEX_ACCESS) {
-                root = root->as.index_access.object;
-            }
-            /* May still have chained field.index or index.field */
             while (root->kind == AST_FIELD_ACCESS || root->kind == AST_INDEX_ACCESS) {
                 if (root->kind == AST_FIELD_ACCESS) root = root->as.field_access.object;
                 else root = root->as.index_access.object;
@@ -4447,20 +4412,18 @@ static const char *codegen_type_to_c(Type type) {
         case TYPE_COMPTIME_INT:  return "long";   /* default */
         case TYPE_COMPTIME_FLOAT: return "double"; /* default */
         default: {
+            static char bufs[4][80];
+            static int buf_idx = 0;
             ValueTypeEntry *vt = value_table_get(type);
             if (vt) {
-                static char bufs[4][80];
-                static int buf_idx = 0;
                 char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 80, "ni_%.*s",
                          (int)vt->name_length, vt->name_start);
                 return buf;
             }
             if (type_is_array(type)) {
-                static char abufs[4][32];
-                static int abuf_idx = 0;
-                char *buf = abufs[abuf_idx++ % 4];
-                snprintf(buf, 32, "ni_arr_%d", type_array_index(type));
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 80, "ni_arr_%d", type_array_index(type));
                 return buf;
             }
             return "long";
