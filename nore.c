@@ -4782,6 +4782,18 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     fprintf(out, "}\n\n");
 }
 
+/* Check whether all custom-type dependencies among fields have been emitted.
+ * emitted[] uses indices 0..vcount-1 for value types, vcount..N for arrays. */
+static bool type_deps_emitted(Parameter *fields, size_t count,
+                              const bool *emitted, size_t vcount) {
+    for (size_t i = 0; i < count; i++) {
+        Type t = fields[i].type;
+        if (type_is_value(t) && !emitted[type_value_index(t)]) return false;
+        if (type_is_array(t) && !emitted[vcount + type_array_index(t)]) return false;
+    }
+    return true;
+}
+
 static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "#include <stdlib.h>\n\n");
@@ -4803,30 +4815,50 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "     ? (ni_bounds_fail((long)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
     }
 
-    /* Emit array type typedefs */
-    for (size_t i = 0; i < g_array_table->count; i++) {
-        ArrayTypeEntry *at = &g_array_table->types[i];
-        fprintf(out, "typedef struct { %s data[%zu]; } ni_arr_%zu;\n",
-                codegen_type_to_c(at->element_type), at->size, i);
-    }
-    if (g_array_table->count > 0) fprintf(out, "\n");
+    /* Emit type typedefs in dependency order (topological sort).
+     * Types with no unresolved deps are emitted first. */
+    size_t vcount = g_value_table->count;
+    size_t acount = g_array_table->count;
+    size_t total = vcount + acount;
 
-    /* Emit value type typedefs */
-    for (size_t i = 0; i < ast->as.program.count; i++) {
-        Ast *node = ast->as.program.statements[i];
-        if (node->kind == AST_VALUE_DECL) {
-            fprintf(out, "typedef struct {");
-            for (size_t f = 0; f < node->as.value_decl.field_count; f++) {
-                Parameter *field = &node->as.value_decl.fields[f];
-                fprintf(out, " %s ni_%.*s;", codegen_type_to_c(field->type),
-                        (int)field->name_length, field->name_start);
+    if (total > 0) {
+        bool *emitted = calloc(total, sizeof(bool));
+        size_t done = 0;
+
+        while (done < total) {
+            size_t progress = 0;
+
+            for (size_t i = 0; i < vcount; i++) {
+                if (emitted[i]) continue;
+                ValueTypeEntry *vt = &g_value_table->types[i];
+                if (!type_deps_emitted(vt->fields, vt->field_count, emitted, vcount)) continue;
+                fprintf(out, "typedef struct {");
+                for (size_t f = 0; f < vt->field_count; f++) {
+                    Parameter *field = &vt->fields[f];
+                    fprintf(out, " %s ni_%.*s;", codegen_type_to_c(field->type),
+                            (int)field->name_length, field->name_start);
+                }
+                fprintf(out, " } ni_%.*s;\n",
+                        (int)vt->name_length, vt->name_start);
+                emitted[i] = true;
+                done++; progress++;
             }
-            fprintf(out, " } ni_%.*s;\n",
-                    (int)node->as.value_decl.name_length,
-                    node->as.value_decl.name_start);
+
+            for (size_t i = 0; i < acount; i++) {
+                if (emitted[vcount + i]) continue;
+                ArrayTypeEntry *at = &g_array_table->types[i];
+                if (!type_deps_emitted(&(Parameter){.type = at->element_type}, 1, emitted, vcount)) continue;
+                fprintf(out, "typedef struct { %s data[%zu]; } ni_arr_%zu;\n",
+                        codegen_type_to_c(at->element_type), at->size, i);
+                emitted[vcount + i] = true;
+                done++; progress++;
+            }
+
+            if (progress == 0) break;
         }
+        free(emitted);
+        fprintf(out, "\n");
     }
-    fprintf(out, "\n");
 
     /* Emit all functions */
     for (size_t i = 0; i < ast->as.program.count; i++) {
