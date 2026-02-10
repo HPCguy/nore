@@ -1,0 +1,6 @@
+struct Foo { x: i64, y: i64 }
+
+func main(): void = {
+    val a: Foo = Foo { x: 1, y: 2 }
+    val b: Foo = a
+}

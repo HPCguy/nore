@@ -34,6 +34,7 @@ val y: i64 = 10
 - `void` - No return value (functions only)
 - `[T; N]` - Fixed-size array (see Arrays)
 - User-defined `value` types (see Value Types)
+- User-defined `struct` types (see Struct Types)
 
 **Compile-time types** (internal):
 - `comptime_int` - Integer literal (coerces to i64 or f64)
@@ -266,6 +267,72 @@ assert a.x == 1.0     // a is unchanged
 - Passed to functions by copy
 - Returned from functions by copy
 
+### Struct Types
+
+Struct types are resource owners with ref-only passing semantics. Unlike value types, structs cannot be copied — they must be passed by `ref` or `mut ref`.
+
+**Declaration** (top-level only):
+```nore
+struct Entity { x: f64, y: f64, health: i64 }
+struct Player { pos: Vec2, score: i64 }
+```
+- Keyword: `struct`
+- Must be declared before use (textual order)
+- Fields are comma-separated with type annotations (`name: Type`)
+- Field types can be any concrete type (`i64`, `f64`, `bool`), arrays, or value types
+- Cannot embed other struct types as fields
+
+**Constructors**:
+```nore
+val e: Entity = Entity { x: 1.0, y: 2.0, health: 100 }
+```
+- Same syntax as value type constructors
+- All fields must be provided (no defaults)
+- Fields can be in any order
+
+**Field Access and Assignment**:
+```nore
+val hp: i64 = e.health
+mut e: Entity = Entity { x: 0.0, y: 0.0, health: 100 }
+e.health = 50
+```
+- Same dot notation as value types
+- Field assignment requires `mut` variable
+
+**No Copy Semantics**:
+```nore
+val a: Entity = Entity { x: 1.0, y: 2.0, health: 100 }
+val b: Entity = a    // ERROR: Cannot copy struct
+b = a                // ERROR: Cannot assign to struct variable
+```
+- Structs can only be initialized from constructors or function return values
+- Cannot assign one struct variable to another
+
+**Ref-Only Passing**:
+```nore
+func get_health(ref e: Entity): i64 = {
+    return e.health
+}
+
+func damage(mut ref e: Entity, amount: i64): void = {
+    e.health = e.health - amount
+}
+```
+- Struct parameters must use `ref` (read-only) or `mut ref` (mutable)
+- Passing a struct by value is an error
+- Call-site syntax matches value types: `ref e` or `mut ref e`
+
+**Returning Structs**:
+```nore
+func make_entity(x: f64, y: f64, hp: i64): Entity = {
+    return Entity { x: x, y: y, health: hp }
+}
+
+val e: Entity = make_entity(1.0, 2.0, 100)
+```
+- Functions can return struct types
+- Return value can initialize a struct variable (not a copy)
+
 ### Arrays
 
 Fixed-size arrays with compile-time known size, value semantics, and bounds checking.
@@ -466,6 +533,7 @@ func main(): void = {
 ### Keywords
 - `func` - Function declaration
 - `value` - Value type declaration
+- `struct` - Struct type declaration
 - `ref` - Reference parameter/argument
 - `val` - Immutable variable
 - `mut` - Mutable variable/reference
@@ -525,7 +593,6 @@ func main(): void = {
 **Not yet implemented**:
 - String and character literals
 - Additional types (`i32`, `u32`, `f32`)
-- `struct` types (resource owners with ref semantics)
 - Module system
 - While as expressions
 - Early exit from expression blocks (`yield` keyword)

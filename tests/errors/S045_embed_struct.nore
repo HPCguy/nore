@@ -1,0 +1,5 @@
+struct Inner { x: i64 }
+value Outer { inner: Inner }
+
+func main(): void = {
+}

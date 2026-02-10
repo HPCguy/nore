@@ -125,6 +125,9 @@ typedef enum {
     ERR_S040_MUT_REF_IMMUTABLE     = ERR_GROUP_SEMANTIC + 40,
     ERR_S041_REF_SCALAR_FIELD      = ERR_GROUP_SEMANTIC + 41,
     ERR_S042_REF_ARRAY_ELEMENT     = ERR_GROUP_SEMANTIC + 42,
+    ERR_S043_STRUCT_COPY           = ERR_GROUP_SEMANTIC + 43,
+    ERR_S044_STRUCT_BY_VALUE       = ERR_GROUP_SEMANTIC + 44,
+    ERR_S045_EMBED_STRUCT          = ERR_GROUP_SEMANTIC + 45,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -301,6 +304,7 @@ typedef enum {
     TOKEN_TRUE,
     TOKEN_FALSE,
     TOKEN_VALUE,
+    TOKEN_STRUCT,
     TOKEN_REF,
 
     TOKEN_PLUS,
@@ -363,6 +367,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_TRUE:          return "TRUE";
         case TOKEN_FALSE:         return "FALSE";
         case TOKEN_VALUE:         return "VALUE";
+        case TOKEN_STRUCT:        return "STRUCT";
         case TOKEN_REF:           return "REF";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
@@ -538,6 +543,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
         case 6:
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
             if (memcmp(start, "assert", 6) == 0) return TOKEN_ASSERT;
+            if (memcmp(start, "struct", 6) == 0) return TOKEN_STRUCT;
             break;
         case 8:
             if (memcmp(start, "continue", 8) == 0) return TOKEN_CONTINUE;
@@ -801,6 +807,7 @@ typedef struct {
     Parameter *fields;
     size_t field_count;
     SourceLoc loc;
+    bool is_struct;
 } ValueTypeEntry;
 
 typedef struct {
@@ -858,6 +865,11 @@ static ValueTypeEntry *value_table_get(Type type) {
     int idx = type_value_index(type);
     if (idx < 0 || (size_t)idx >= g_value_table->count) return NULL;
     return &g_value_table->types[idx];
+}
+
+static bool type_is_struct(Type type) {
+    ValueTypeEntry *vt = value_table_get(type);
+    return vt && vt->is_struct;
 }
 
 /* ============================== Array Type Table =========================== */
@@ -1121,6 +1133,7 @@ typedef struct Ast {
             size_t name_length;
             Parameter *fields;
             size_t field_count;
+            bool is_struct;
         } value_decl;
 
         struct {
@@ -1450,7 +1463,7 @@ static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
 
 static Ast *ast_make_value_decl(const char *name_start, size_t name_length,
                                  Parameter *fields, size_t field_count,
-                                 SourceLoc loc) {
+                                 bool is_struct, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     node->kind = AST_VALUE_DECL;
@@ -1459,6 +1472,7 @@ static Ast *ast_make_value_decl(const char *name_start, size_t name_length,
     node->as.value_decl.name_length = name_length;
     node->as.value_decl.fields = fields;
     node->as.value_decl.field_count = field_count;
+    node->as.value_decl.is_struct = is_struct;
     return node;
 }
 
@@ -2668,15 +2682,17 @@ static Ast *parser_parse_statement(Parser *parser) {
     return NULL;
 }
 
-/* Parse value type declaration: value Name { field: Type, ... } */
-static Ast *parser_parse_value_decl(Parser *parser) {
-    /* TOKEN_VALUE already consumed */
+/* Parse value/struct type declaration: value|struct Name { field: Type, ... } */
+static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
+    /* TOKEN_VALUE or TOKEN_STRUCT already consumed */
     SourceLoc loc = token_loc(&parser->previous);
+    const char *keyword = is_struct ? "struct" : "value";
 
     /* Expect type name */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         diagnostic(ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
-                   parser->current.column, "Expected value type name after 'value'");
+                   parser->current.column,
+                   "Expected %s type name after '%s'", keyword, keyword);
         parser_synchronize(parser);
         return NULL;
     }
@@ -2686,7 +2702,8 @@ static Ast *parser_parse_value_decl(Parser *parser) {
     /* Expect '{' */
     if (!parser_match(parser, TOKEN_LBRACE)) {
         diagnostic(ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
-                   parser->current.column, "Expected '{' after value type name");
+                   parser->current.column,
+                   "Expected '{' after %s type name", keyword);
         parser_synchronize(parser);
         return NULL;
     }
@@ -2703,7 +2720,8 @@ static Ast *parser_parse_value_decl(Parser *parser) {
     /* Expect '}' */
     if (!parser_match(parser, TOKEN_RBRACE)) {
         diagnostic(ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
-                   parser->current.column, "Expected '}' to close value type");
+                   parser->current.column,
+                   "Expected '}' to close %s type", keyword);
         free(fields);
         parser_synchronize(parser);
         return NULL;
@@ -2728,9 +2746,11 @@ static Ast *parser_parse_value_decl(Parser *parser) {
     entry->fields = table_fields;
     entry->field_count = field_count;
     entry->loc = loc;
+    entry->is_struct = is_struct;
     g_value_table->count++;
 
-    return ast_make_value_decl(name_start, name_length, fields, field_count, loc);
+    return ast_make_value_decl(name_start, name_length, fields, field_count,
+                               is_struct, loc);
 }
 
 static Ast *parser_parse_program(Parser *parser) {
@@ -2742,10 +2762,12 @@ static Ast *parser_parse_program(Parser *parser) {
             if (func) {
                 ast_program_add_statement(program, func);
             }
-        } else if (parser_match(parser, TOKEN_VALUE)) {
-            Ast *vdecl = parser_parse_value_decl(parser);
-            if (vdecl) {
-                ast_program_add_statement(program, vdecl);
+        } else if (parser_match(parser, TOKEN_VALUE) ||
+                   parser_match(parser, TOKEN_STRUCT)) {
+            bool is_struct = parser->previous.kind == TOKEN_STRUCT;
+            Ast *decl = parser_parse_value_decl(parser, is_struct);
+            if (decl) {
+                ast_program_add_statement(program, decl);
             }
         } else {
             diagnostic(ERR_P016_EXPECTED_FUNC, parser->current.line,
@@ -2754,6 +2776,7 @@ static Ast *parser_parse_program(Parser *parser) {
             /* Skip tokens until we find a declaration or EOF */
             while (!parser_check(parser, TOKEN_FUNC) &&
                    !parser_check(parser, TOKEN_VALUE) &&
+                   !parser_check(parser, TOKEN_STRUCT) &&
                    !parser_check(parser, TOKEN_EOF)) {
                 parser_advance(parser);
             }
@@ -2943,7 +2966,8 @@ static void parser_print_ast_step(Ast *node, int indent) {
             break;
 
         case AST_VALUE_DECL:
-            printf("VALUE_DECL(%.*s)\n",
+            printf("%s(%.*s)\n",
+                   node->as.value_decl.is_struct ? "STRUCT_DECL" : "VALUE_DECL",
                    (int)node->as.value_decl.name_length,
                    node->as.value_decl.name_start);
             for (size_t i = 0; i < node->as.value_decl.field_count; i++) {
@@ -4068,6 +4092,15 @@ static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc lo
                type_name(init_type), type_name(declared));
 }
 
+/* Emit S043 if a struct-typed initializer is not a constructor or function call */
+static void typecheck_struct_copy(Type type, Ast *init) {
+    if (type_is_struct(type) &&
+        init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL) {
+        diagnostic(ERR_S043_STRUCT_COPY, init->loc.line, init->loc.column,
+                   "Cannot copy struct (only constructor or function return allowed)");
+    }
+}
+
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_VAL_DECL: {
@@ -4091,6 +4124,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                                              node->as.val_decl.initializer->loc);
                 }
             }
+
+            typecheck_struct_copy(declared, node->as.val_decl.initializer);
 
             /* Add to scope with comptime info if applicable */
             if (type_is_comptime(declared) && is_comptime_constant(node->as.val_decl.initializer, *scope)) {
@@ -4120,6 +4155,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 typecheck_coercion_error(init_type, declared,
                                          node->as.mut_decl.initializer->loc);
             }
+
+            typecheck_struct_copy(declared, node->as.mut_decl.initializer);
 
             scope_add(*scope, node->as.mut_decl.name_start,
                       node->as.mut_decl.name_length, true, declared, node->loc);
@@ -4162,6 +4199,13 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                                    root->as.identifier.start);
                     }
                 }
+            }
+
+            /* Prevent whole-struct reassignment (struct is not copyable) */
+            if (target->kind == AST_IDENTIFIER && type_is_struct(target_type)) {
+                diagnostic(ERR_S043_STRUCT_COPY, node->loc.line,
+                           node->loc.column,
+                           "Cannot assign to struct variable (structs are not copyable)");
             }
 
             Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
@@ -4310,7 +4354,17 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
             diagnostic(ERR_S011_DUPLICATE_PARAM, func_decl->loc.line,
                        func_decl->loc.column, "Duplicate parameter '%.*s'",
                        (int)param->name_length, param->name_start);
-        } else {
+        }
+
+        /* Struct parameters must use ref or mut ref */
+        if (type_is_struct(param->type) && !param->is_ref) {
+            diagnostic(ERR_S044_STRUCT_BY_VALUE, func_decl->loc.line,
+                       func_decl->loc.column,
+                       "Struct parameter '%.*s' must use 'ref' or 'mut ref'",
+                       (int)param->name_length, param->name_start);
+        }
+
+        if (!scope_lookup_local(scope, param->name_start, param->name_length)) {
             /* ref → immutable, mut ref → mutable, normal → immutable */
             bool is_mutable = param->is_mut_ref;
             Variable *v = scope_add(scope, param->name_start, param->name_length,
@@ -4337,12 +4391,14 @@ static void typecheck_program(Ast *program) {
     FunctionTable *func_table = func_table_create();
     bool has_main = false;
 
-    /* Validate value type declarations */
+    /* Validate value/struct type declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
         if (node->kind == AST_VALUE_DECL) {
             Parameter *fields = node->as.value_decl.fields;
             size_t field_count = node->as.value_decl.field_count;
+            const char *kind_label = node->as.value_decl.is_struct
+                                     ? "struct" : "value";
 
             for (size_t f = 0; f < field_count; f++) {
                 /* Check for duplicate field names */
@@ -4352,26 +4408,38 @@ static void typecheck_program(Ast *program) {
                                fields[f].name_length) == 0) {
                         diagnostic(ERR_S022_DUPLICATE_FIELD, node->loc.line,
                                    node->loc.column,
-                                   "Duplicate field '%.*s' in value type '%.*s'",
+                                   "Duplicate field '%.*s' in %s type '%.*s'",
                                    (int)fields[f].name_length, fields[f].name_start,
+                                   kind_label,
                                    (int)node->as.value_decl.name_length,
                                    node->as.value_decl.name_start);
                         break;
                     }
                 }
-                /* Reject ref on value type fields */
+                /* Reject ref on fields */
                 if (fields[f].is_ref || fields[f].is_mut_ref) {
                     diagnostic(ERR_S037_REF_ON_FIELD, node->loc.line,
                                node->loc.column,
-                               "'ref' not allowed on value type field '%.*s'",
+                               "'ref' not allowed on %s type field '%.*s'",
+                               kind_label,
                                (int)fields[f].name_length, fields[f].name_start);
                 }
                 /* Check field type is valid (not void, not unknown) */
                 if (fields[f].type == TYPE_VOID || fields[f].type == TYPE_UNKNOWN) {
                     diagnostic(ERR_S023_UNKNOWN_FIELD_TYPE, node->loc.line,
                                node->loc.column,
-                               "Invalid type for field '%.*s' in value type '%.*s'",
+                               "Invalid type for field '%.*s' in %s type '%.*s'",
                                (int)fields[f].name_length, fields[f].name_start,
+                               kind_label,
+                               (int)node->as.value_decl.name_length,
+                               node->as.value_decl.name_start);
+                }
+                /* Reject struct types as fields */
+                if (type_is_struct(fields[f].type)) {
+                    diagnostic(ERR_S045_EMBED_STRUCT, node->loc.line,
+                               node->loc.column,
+                               "Cannot embed struct type '%s' as field in %s type '%.*s'",
+                               type_name(fields[f].type), kind_label,
                                (int)node->as.value_decl.name_length,
                                node->as.value_decl.name_start);
                 }

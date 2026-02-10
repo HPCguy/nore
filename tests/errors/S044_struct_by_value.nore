@@ -1,0 +1,7 @@
+struct Foo { x: i64, y: i64 }
+
+func take_foo(f: Foo): void = {
+}
+
+func main(): void = {
+}
