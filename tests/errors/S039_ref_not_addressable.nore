@@ -1,0 +1,5 @@
+// S039: Cannot take reference of non-addressable expression
+func foo(ref x: i64): void = { }
+func main(): void = {
+    foo(ref 42)
+}

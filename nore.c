@@ -79,6 +79,8 @@ typedef enum {
     ERR_P033_EXPECTED_ARRAY_SIZE   = ERR_GROUP_PARSER + 33,
     ERR_P034_EXPECTED_RBRACKET     = ERR_GROUP_PARSER + 34,
     ERR_P035_EXPECTED_RBRACKET_LITERAL = ERR_GROUP_PARSER + 35,
+    ERR_P036_EXPECTED_REF_PARAM    = ERR_GROUP_PARSER + 36,
+    ERR_P037_EXPECTED_REF_ARG      = ERR_GROUP_PARSER + 37,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -117,6 +119,12 @@ typedef enum {
     ERR_S034_INDEX_NOT_INTEGER     = ERR_GROUP_SEMANTIC + 34,
     ERR_S035_INDEX_ON_NON_ARRAY    = ERR_GROUP_SEMANTIC + 35,
     ERR_S036_INDEX_IMMUTABLE       = ERR_GROUP_SEMANTIC + 36,
+    ERR_S037_REF_ON_FIELD          = ERR_GROUP_SEMANTIC + 37,
+    ERR_S038_REF_MISMATCH          = ERR_GROUP_SEMANTIC + 38,
+    ERR_S039_REF_NOT_ADDRESSABLE   = ERR_GROUP_SEMANTIC + 39,
+    ERR_S040_MUT_REF_IMMUTABLE     = ERR_GROUP_SEMANTIC + 40,
+    ERR_S041_REF_SCALAR_FIELD      = ERR_GROUP_SEMANTIC + 41,
+    ERR_S042_REF_ARRAY_ELEMENT     = ERR_GROUP_SEMANTIC + 42,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -293,6 +301,7 @@ typedef enum {
     TOKEN_TRUE,
     TOKEN_FALSE,
     TOKEN_VALUE,
+    TOKEN_REF,
 
     TOKEN_PLUS,
     TOKEN_MINUS,
@@ -354,6 +363,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_TRUE:          return "TRUE";
         case TOKEN_FALSE:         return "FALSE";
         case TOKEN_VALUE:         return "VALUE";
+        case TOKEN_REF:           return "REF";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
@@ -508,6 +518,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
         case 3:
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
             if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
+            if (memcmp(start, "ref", 3) == 0) return TOKEN_REF;
             if (memcmp(start, "i64", 3) == 0) return TOKEN_I64;
             if (memcmp(start, "f64", 3) == 0) return TOKEN_F64;
             break;
@@ -778,6 +789,8 @@ typedef struct {
     const char *name_start;
     size_t name_length;
     Type type;
+    bool is_ref;
+    bool is_mut_ref;
 } Parameter;
 
 /* ============================== Value Type Table =========================== */
@@ -1044,6 +1057,8 @@ typedef struct Ast {
             const char *name_start;
             size_t name_length;
             struct Ast **arguments;
+            bool *arg_is_ref;
+            bool *arg_is_mut_ref;
             size_t arg_count;
         } func_call;
 
@@ -1212,7 +1227,9 @@ static Ast *ast_make_unary(UnaryOp op, Ast *operand, SourceLoc loc) {
 }
 
 static Ast *ast_make_func_call(const char *name_start, size_t name_length,
-                               Ast **arguments, size_t arg_count, SourceLoc loc) {
+                               Ast **arguments, bool *arg_is_ref,
+                               bool *arg_is_mut_ref, size_t arg_count,
+                               SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -1222,6 +1239,8 @@ static Ast *ast_make_func_call(const char *name_start, size_t name_length,
     node->as.func_call.name_start = name_start;
     node->as.func_call.name_length = name_length;
     node->as.func_call.arguments = arguments;
+    node->as.func_call.arg_is_ref = arg_is_ref;
+    node->as.func_call.arg_is_mut_ref = arg_is_mut_ref;
     node->as.func_call.arg_count = arg_count;
     return node;
 }
@@ -1507,6 +1526,8 @@ static void ast_free(Ast *node) {
                 ast_free(node->as.func_call.arguments[i]);
             }
             free(node->as.func_call.arguments);
+            free(node->as.func_call.arg_is_ref);
+            free(node->as.func_call.arg_is_mut_ref);
             break;
         case AST_VAL_DECL:
             ast_free(node->as.val_decl.initializer);
@@ -1760,7 +1781,8 @@ static BinaryOp parser_token_to_binary_op(TokenKind kind) {
 /* ============================= Expression Parsing ========================= */
 
 static Ast *parser_parse_expression(Parser *parser);
-static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error);
+static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error,
+                                    bool **out_is_ref, bool **out_is_mut_ref);
 static Ast *parser_parse_block(Parser *parser);
 static Ast *parser_parse_if(Parser *parser);
 
@@ -1832,7 +1854,10 @@ static Ast *parser_parse_primary(Parser *parser) {
 
             size_t arg_count = 0;
             bool parse_error = false;
-            Ast **arguments = parser_parse_arg_list(parser, &arg_count, &parse_error);
+            bool *arg_is_ref = NULL;
+            bool *arg_is_mut_ref = NULL;
+            Ast **arguments = parser_parse_arg_list(parser, &arg_count, &parse_error,
+                                                     &arg_is_ref, &arg_is_mut_ref);
 
             if (parse_error) {
                 return NULL;
@@ -1842,10 +1867,13 @@ static Ast *parser_parse_primary(Parser *parser) {
                 diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after arguments");
                 free(arguments);
+                free(arg_is_ref);
+                free(arg_is_mut_ref);
                 return NULL;
             }
 
-            return ast_make_func_call(name_start, name_length, arguments, arg_count, loc);
+            return ast_make_func_call(name_start, name_length, arguments,
+                                       arg_is_ref, arg_is_mut_ref, arg_count, loc);
         }
 
         /* Check for value constructor: TypeName { ... } */
@@ -2217,6 +2245,9 @@ static Ast *parser_parse_block(Parser *parser) {
                     } else {
                         ast_free(expr);
                     }
+                } else if (expr->kind == AST_FUNC_CALL) {
+                    /* Bare function call as statement */
+                    ast_block_add_statement(block, expr);
                 } else {
                     /* Expression not at end of block */
                     diagnostic(ERR_P005_EXPECTED_STATEMENT,
@@ -2339,8 +2370,25 @@ static Ast *parser_parse_continue(Parser *parser) {
     return ast_make_continue(loc);
 }
 
-/* Parse a single parameter: name: type */
+/* Parse a single parameter: [mut] [ref] name: type */
 static bool parser_parse_parameter(Parser *parser, Parameter *param) {
+    param->is_ref = false;
+    param->is_mut_ref = false;
+
+    /* Check for [mut] ref prefix */
+    if (parser_match(parser, TOKEN_MUT)) {
+        if (!parser_match(parser, TOKEN_REF)) {
+            diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                       parser->current.column,
+                       "Expected 'ref' after 'mut' in parameter");
+            return false;
+        }
+        param->is_ref = true;
+        param->is_mut_ref = true;
+    } else if (parser_match(parser, TOKEN_REF)) {
+        param->is_ref = true;
+    }
+
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
         diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                    parser->current.column, "Expected parameter name");
@@ -2370,12 +2418,16 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
     return true;
 }
 
-/* Parse argument list (without parens): expr, expr, ...
+/* Parse argument list (without parens): [ref|mut ref] expr, ...
  * Sets *count to number of args. Sets *error to true on parse failure.
- * Returns NULL on empty list (not an error). Caller must free the returned array. */
-static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error) {
+ * Returns NULL on empty list (not an error). Caller must free the returned arrays.
+ * *out_is_ref and *out_is_mut_ref are parallel bool arrays (caller frees). */
+static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error,
+                                    bool **out_is_ref, bool **out_is_mut_ref) {
     *count = 0;
     *error = false;
+    *out_is_ref = NULL;
+    *out_is_mut_ref = NULL;
 
     /* Empty argument list */
     if (parser_check(parser, TOKEN_RPAREN)) {
@@ -2385,24 +2437,56 @@ static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error) {
     size_t capacity = 4;
     Ast **args = malloc(capacity * sizeof(Ast *));
     if (!args) panic(ERR_I001_OUT_OF_MEMORY, "allocating argument list");
+    bool *is_ref = malloc(capacity * sizeof(bool));
+    if (!is_ref) panic(ERR_I001_OUT_OF_MEMORY, "allocating ref flags");
+    bool *is_mut_ref = malloc(capacity * sizeof(bool));
+    if (!is_mut_ref) panic(ERR_I001_OUT_OF_MEMORY, "allocating mut ref flags");
 
     do {
-        Ast *arg = parser_parse_expression(parser);
-        if (!arg) {
-            free(args);
-            *count = 0;
-            *error = true;
-            return NULL;
+        bool arg_ref = false;
+        bool arg_mut_ref = false;
+
+        if (parser_match(parser, TOKEN_MUT)) {
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P037_EXPECTED_REF_ARG, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in argument");
+                goto fail;
+            }
+            arg_ref = true;
+            arg_mut_ref = true;
+        } else if (parser_match(parser, TOKEN_REF)) {
+            arg_ref = true;
         }
+
+        Ast *arg = parser_parse_expression(parser);
+        if (!arg) goto fail;
+
         if (*count >= capacity) {
             capacity *= 2;
             args = realloc(args, capacity * sizeof(Ast *));
             if (!args) panic(ERR_I001_OUT_OF_MEMORY, "growing argument list");
+            is_ref = realloc(is_ref, capacity * sizeof(bool));
+            if (!is_ref) panic(ERR_I001_OUT_OF_MEMORY, "growing ref flags");
+            is_mut_ref = realloc(is_mut_ref, capacity * sizeof(bool));
+            if (!is_mut_ref) panic(ERR_I001_OUT_OF_MEMORY, "growing mut ref flags");
         }
+        is_ref[*count] = arg_ref;
+        is_mut_ref[*count] = arg_mut_ref;
         args[(*count)++] = arg;
     } while (parser_match(parser, TOKEN_COMMA));
 
+    *out_is_ref = is_ref;
+    *out_is_mut_ref = is_mut_ref;
     return args;
+
+fail:
+    free(args);
+    free(is_ref);
+    free(is_mut_ref);
+    *count = 0;
+    *error = true;
+    return NULL;
 }
 
 /* Parse parameter list: name: type, name: type, ...
@@ -2745,7 +2829,15 @@ static void parser_print_ast_step(Ast *node, int indent) {
                    (int)node->as.func_call.name_length,
                    node->as.func_call.name_start);
             for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
-                parser_print_ast_step(node->as.func_call.arguments[i], indent + 1);
+                for (int j = 0; j < indent + 1; j++) printf("  ");
+                bool is_ref = node->as.func_call.arg_is_ref &&
+                              node->as.func_call.arg_is_ref[i];
+                bool is_mut = node->as.func_call.arg_is_mut_ref &&
+                              node->as.func_call.arg_is_mut_ref[i];
+                if (is_mut) printf("MUT_REF_ARG:\n");
+                else if (is_ref) printf("REF_ARG:\n");
+                else printf("ARG:\n");
+                parser_print_ast_step(node->as.func_call.arguments[i], indent + 2);
             }
             break;
 
@@ -2838,7 +2930,10 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (size_t i = 0; i < node->as.func_decl.param_count; i++) {
                 for (int j = 0; j < indent + 1; j++) printf("  ");
                 Parameter *p = &node->as.func_decl.params[i];
-                printf("PARAM(%.*s: %s)\n",
+                const char *ref_prefix = "";
+                if (p->is_mut_ref) ref_prefix = "mut ref ";
+                else if (p->is_ref) ref_prefix = "ref ";
+                printf("PARAM(%s%.*s: %s)\n", ref_prefix,
                        (int)p->name_length, p->name_start,
                        type_name(p->type));
             }
@@ -2920,6 +3015,7 @@ struct Variable {
     const char *name_start;
     size_t name_length;
     bool is_mutable;
+    bool is_ref;
     Type type;
     bool is_comptime;
     union {
@@ -3010,6 +3106,7 @@ static Variable *scope_add(Scope *scope, const char *name_start,
     v->name_start = name_start;
     v->name_length = name_length;
     v->is_mutable = is_mutable;
+    v->is_ref = false;
     v->type = type;
     v->is_comptime = false;
     scope->count++;
@@ -3045,6 +3142,8 @@ typedef struct {
     size_t name_length;
     Type return_type;
     Type *param_types;
+    bool *param_is_ref;
+    bool *param_is_mut_ref;
     size_t param_count;
     SourceLoc loc;
 } FunctionEntry;
@@ -3071,6 +3170,8 @@ static FunctionTable *func_table_create(void) {
 static void func_table_destroy(FunctionTable *table) {
     for (size_t i = 0; i < table->count; i++) {
         free(table->functions[i].param_types);
+        free(table->functions[i].param_is_ref);
+        free(table->functions[i].param_is_mut_ref);
     }
     free(table->functions);
     free(table);
@@ -3113,17 +3214,25 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
     entry->return_type = func_decl->as.func_decl.return_type;
     entry->loc = func_decl->loc;
 
-    /* Store parameter types */
+    /* Store parameter types and ref flags */
     size_t param_count = func_decl->as.func_decl.param_count;
     entry->param_count = param_count;
     if (param_count > 0) {
         entry->param_types = malloc(param_count * sizeof(Type));
         if (!entry->param_types) panic(ERR_I001_OUT_OF_MEMORY, "allocating param types");
+        entry->param_is_ref = malloc(param_count * sizeof(bool));
+        if (!entry->param_is_ref) panic(ERR_I001_OUT_OF_MEMORY, "allocating param ref flags");
+        entry->param_is_mut_ref = malloc(param_count * sizeof(bool));
+        if (!entry->param_is_mut_ref) panic(ERR_I001_OUT_OF_MEMORY, "allocating param mut ref flags");
         for (size_t i = 0; i < param_count; i++) {
             entry->param_types[i] = func_decl->as.func_decl.params[i].type;
+            entry->param_is_ref[i] = func_decl->as.func_decl.params[i].is_ref;
+            entry->param_is_mut_ref[i] = func_decl->as.func_decl.params[i].is_mut_ref;
         }
     } else {
         entry->param_types = NULL;
+        entry->param_is_ref = NULL;
+        entry->param_is_mut_ref = NULL;
     }
 }
 
@@ -3372,6 +3481,74 @@ static Ast *try_fold_if_expr(Ast *node, Scope *scope) {
 
 /* ============================== Type Checking ============================== */
 
+/* Check if a node is addressable (can take a reference to it).
+ * True for identifiers and field-access chains rooted on an identifier. */
+static bool is_addressable(Ast *node) {
+    if (node->kind == AST_IDENTIFIER) return true;
+    if (node->kind == AST_FIELD_ACCESS) return is_addressable(node->as.field_access.object);
+    return false;
+}
+
+/* Check if a type is a scalar (i64, f64, bool, or comptime) */
+static bool type_is_scalar(Type type) {
+    return type == TYPE_I64 || type == TYPE_F64 || type == TYPE_BOOL ||
+           type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
+}
+
+/* Walk through field/index chains to find the root AST node */
+static Ast *ast_root_target(Ast *node) {
+    while (node->kind == AST_FIELD_ACCESS || node->kind == AST_INDEX_ACCESS) {
+        if (node->kind == AST_FIELD_ACCESS) node = node->as.field_access.object;
+        else node = node->as.index_access.object;
+    }
+    return node;
+}
+
+/* Return a human-readable label for ref/mut ref passing style */
+static const char *ref_label(bool is_ref, bool is_mut_ref) {
+    if (is_mut_ref) return "mut ref";
+    if (is_ref) return "ref";
+    return "(none)";
+}
+
+/* Validate a ref argument: addressability, scalar field, and mutability checks */
+static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
+                               Scope *scope) {
+    if (!is_addressable(arg)) {
+        if (arg->kind == AST_INDEX_ACCESS) {
+            diagnostic(ERR_S042_REF_ARRAY_ELEMENT, arg->loc.line,
+                       arg->loc.column,
+                       "Cannot take reference of array element");
+        } else {
+            diagnostic(ERR_S039_REF_NOT_ADDRESSABLE, arg->loc.line,
+                       arg->loc.column,
+                       "Cannot take reference of non-addressable expression");
+        }
+        return;
+    }
+
+    if (arg->kind == AST_FIELD_ACCESS && type_is_scalar(arg_type)) {
+        diagnostic(ERR_S041_REF_SCALAR_FIELD, arg->loc.line,
+                   arg->loc.column,
+                   "Cannot take reference of scalar field (just copy it)");
+    }
+
+    if (is_mut) {
+        Ast *root = ast_root_target(arg);
+        if (root->kind == AST_IDENTIFIER) {
+            Variable *v = scope_lookup(scope, root->as.identifier.start,
+                                        root->as.identifier.length);
+            if (v && !v->is_mutable) {
+                diagnostic(ERR_S040_MUT_REF_IMMUTABLE, arg->loc.line,
+                           arg->loc.column,
+                           "Cannot pass 'mut ref' to immutable variable '%.*s'",
+                           (int)root->as.identifier.length,
+                           root->as.identifier.start);
+            }
+        }
+    }
+}
+
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
 
@@ -3559,12 +3736,33 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             size_t check_count = node->as.func_call.arg_count < entry->param_count
                                  ? node->as.func_call.arg_count : entry->param_count;
             for (size_t i = 0; i < check_count; i++) {
-                Type arg_type = typecheck_expression(node->as.func_call.arguments[i],
-                                                     scope, func_table);
+                Ast *arg = node->as.func_call.arguments[i];
+                Type arg_type = typecheck_expression(arg, scope, func_table);
+
+                /* Check ref/mut ref matching between call site and parameter */
+                bool call_ref = node->as.func_call.arg_is_ref &&
+                                node->as.func_call.arg_is_ref[i];
+                bool call_mut = node->as.func_call.arg_is_mut_ref &&
+                                node->as.func_call.arg_is_mut_ref[i];
+                bool param_ref = entry->param_is_ref[i];
+                bool param_mut = entry->param_is_mut_ref[i];
+
+                if (call_ref != param_ref || call_mut != param_mut) {
+                    diagnostic(ERR_S038_REF_MISMATCH, arg->loc.line,
+                               arg->loc.column,
+                               "Argument %zu: expected %s, got %s",
+                               i + 1,
+                               ref_label(param_ref, param_mut),
+                               ref_label(call_ref, call_mut));
+                }
+
+                if (call_ref) {
+                    typecheck_ref_arg(arg, arg_type, call_mut, scope);
+                }
+
                 if (!type_can_coerce(arg_type, entry->param_types[i])) {
                     diagnostic(ERR_S018_ARG_TYPE_MISMATCH,
-                               node->as.func_call.arguments[i]->loc.line,
-                               node->as.func_call.arguments[i]->loc.column,
+                               arg->loc.line, arg->loc.column,
                                "Argument %zu: expected %s, got %s",
                                i + 1, type_name(entry->param_types[i]),
                                type_name(arg_type));
@@ -3935,11 +4133,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type target_type = typecheck_expression(target, *scope, func_table);
 
             /* Walk through field/index chains to find root variable */
-            Ast *root = target;
-            while (root->kind == AST_FIELD_ACCESS || root->kind == AST_INDEX_ACCESS) {
-                if (root->kind == AST_FIELD_ACCESS) root = root->as.field_access.object;
-                else root = root->as.index_access.object;
-            }
+            Ast *root = ast_root_target(target);
             if (root->kind == AST_IDENTIFIER) {
                 Variable *v = scope_lookup(*scope, root->as.identifier.start,
                                             root->as.identifier.length);
@@ -4093,6 +4287,10 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             break;
         }
 
+        case AST_FUNC_CALL:
+            typecheck_expression(node, *scope, func_table);
+            break;
+
         default:
             break;
     }
@@ -4113,8 +4311,11 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
                        func_decl->loc.column, "Duplicate parameter '%.*s'",
                        (int)param->name_length, param->name_start);
         } else {
-            scope_add(scope, param->name_start, param->name_length,
-                      false, param->type, func_decl->loc);  /* Parameters are immutable */
+            /* ref → immutable, mut ref → mutable, normal → immutable */
+            bool is_mutable = param->is_mut_ref;
+            Variable *v = scope_add(scope, param->name_start, param->name_length,
+                                    is_mutable, param->type, func_decl->loc);
+            if (v) v->is_ref = param->is_ref;
         }
     }
 
@@ -4123,6 +4324,10 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
     Ast *body = func_decl->as.func_decl.body;
     for (size_t i = 0; i < body->as.block.count; i++) {
         typecheck_statement(body->as.block.statements[i], &scope, return_type, func_table);
+    }
+    /* Typecheck trailing value expression if present (e.g. bare call at end of body) */
+    if (body->as.block.value_expr) {
+        typecheck_expression(body->as.block.value_expr, scope, func_table);
     }
 
     scope_destroy(scope);
@@ -4153,6 +4358,13 @@ static void typecheck_program(Ast *program) {
                                    node->as.value_decl.name_start);
                         break;
                     }
+                }
+                /* Reject ref on value type fields */
+                if (fields[f].is_ref || fields[f].is_mut_ref) {
+                    diagnostic(ERR_S037_REF_ON_FIELD, node->loc.line,
+                               node->loc.column,
+                               "'ref' not allowed on value type field '%.*s'",
+                               (int)fields[f].name_length, fields[f].name_start);
                 }
                 /* Check field type is valid (not void, not unknown) */
                 if (fields[f].type == TYPE_VOID || fields[f].type == TYPE_UNKNOWN) {
@@ -4211,6 +4423,7 @@ static void typecheck_program(Ast *program) {
 
 static const char *codegen_type_to_c(Type type);  /* forward declaration */
 static int codegen_temp_counter = 0;
+static Scope *g_codegen_scope = NULL;  /* current codegen scope for ref lookups */
 
 /* Check if a block can be emitted as a simple expression (no hoisting needed) */
 static bool codegen_is_simple_block(Ast *block) {
@@ -4238,6 +4451,42 @@ static Type codegen_concrete_array_type(Type type) {
     return array_table_intern(elem, at->size);
 }
 
+/* Check if an identifier variable is passed by reference in the current codegen scope */
+static bool codegen_is_ref(const char *name_start, size_t name_length) {
+    if (!g_codegen_scope) return false;
+    Variable *v = scope_lookup(g_codegen_scope, name_start, name_length);
+    return v && v->is_ref;
+}
+
+/* Emit a ref-aware identifier: (*ni_X) for ref params, ni_X otherwise */
+static void codegen_emit_identifier(FILE *out, const char *name_start, size_t name_length) {
+    if (codegen_is_ref(name_start, name_length)) {
+        fprintf(out, "(*ni_%.*s)", (int)name_length, name_start);
+    } else {
+        fprintf(out, "ni_%.*s", (int)name_length, name_start);
+    }
+}
+
+/* Emit field access on an object, using -> for ref identifiers, . otherwise.
+ * emit_object_fn is used to recursively emit the object when not a ref identifier. */
+static void codegen_emit_field(FILE *out, Ast *node,
+                                void (*emit_object_fn)(FILE *, Ast *)) {
+    Ast *obj = node->as.field_access.object;
+    if (obj->kind == AST_IDENTIFIER &&
+        codegen_is_ref(obj->as.identifier.start, obj->as.identifier.length)) {
+        fprintf(out, "ni_%.*s->ni_%.*s",
+                (int)obj->as.identifier.length, obj->as.identifier.start,
+                (int)node->as.field_access.field_length,
+                node->as.field_access.field_start);
+    } else {
+        emit_object_fn(out, obj);
+        fprintf(out, ".ni_%.*s", (int)node->as.field_access.field_length,
+                node->as.field_access.field_start);
+    }
+}
+
+static void codegen_emit_lvalue(FILE *out, Ast *node);  /* forward declaration */
+
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
         case AST_NUMBER:
@@ -4253,8 +4502,8 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
 
         case AST_IDENTIFIER:
-            fprintf(out, "ni_%.*s", (int)node->as.identifier.length,
-                    node->as.identifier.start);
+            codegen_emit_identifier(out, node->as.identifier.start,
+                                    node->as.identifier.length);
             break;
 
         case AST_BINARY: {
@@ -4297,7 +4546,14 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                     node->as.func_call.name_start);
             for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
                 if (i > 0) fprintf(out, ", ");
-                codegen_emit_expression(out, node->as.func_call.arguments[i]);
+                bool is_ref = node->as.func_call.arg_is_ref &&
+                              node->as.func_call.arg_is_ref[i];
+                if (is_ref) {
+                    fprintf(out, "&");
+                    codegen_emit_lvalue(out, node->as.func_call.arguments[i]);
+                } else {
+                    codegen_emit_expression(out, node->as.func_call.arguments[i]);
+                }
             }
             fprintf(out, ")");
             break;
@@ -4339,9 +4595,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         }
 
         case AST_FIELD_ACCESS:
-            codegen_emit_expression(out, node->as.field_access.object);
-            fprintf(out, ".ni_%.*s", (int)node->as.field_access.field_length,
-                    node->as.field_access.field_start);
+            codegen_emit_field(out, node, codegen_emit_expression);
             break;
 
         case AST_ARRAY_LITERAL: {
@@ -4358,24 +4612,21 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_INDEX_ACCESS: {
             /* Emit bounds-checked index access as comma expression:
              * (NI_BOUNDS_CHECK(idx, size, file, line, col), obj.data[idx]) */
-            ArrayTypeEntry *at = array_table_get(
-                node->as.index_access.object->expr_type);
+            Ast *obj = node->as.index_access.object;
+            ArrayTypeEntry *at = array_table_get(obj->expr_type);
+
             if (at) {
                 fprintf(out, "(NI_BOUNDS_CHECK(");
                 codegen_emit_expression(out, node->as.index_access.index);
                 fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL), ",
                         at->size, g_source_file,
                         node->loc.line, node->loc.column);
-                codegen_emit_expression(out, node->as.index_access.object);
-                fprintf(out, ".data[");
-                codegen_emit_expression(out, node->as.index_access.index);
-                fprintf(out, "])");
-            } else {
-                codegen_emit_expression(out, node->as.index_access.object);
-                fprintf(out, ".data[");
-                codegen_emit_expression(out, node->as.index_access.index);
-                fprintf(out, "]");
             }
+            codegen_emit_lvalue(out, obj);
+            fprintf(out, ".data[");
+            codegen_emit_expression(out, node->as.index_access.index);
+            fprintf(out, "]");
+            if (at) fprintf(out, ")");
             break;
         }
 
@@ -4436,13 +4687,11 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 static void codegen_emit_lvalue(FILE *out, Ast *node) {
     switch (node->kind) {
         case AST_IDENTIFIER:
-            fprintf(out, "ni_%.*s", (int)node->as.identifier.length,
-                    node->as.identifier.start);
+            codegen_emit_identifier(out, node->as.identifier.start,
+                                    node->as.identifier.length);
             break;
         case AST_FIELD_ACCESS:
-            codegen_emit_lvalue(out, node->as.field_access.object);
-            fprintf(out, ".ni_%.*s", (int)node->as.field_access.field_length,
-                    node->as.field_access.field_start);
+            codegen_emit_field(out, node, codegen_emit_lvalue);
             break;
         case AST_INDEX_ACCESS:
             codegen_emit_lvalue(out, node->as.index_access.object);
@@ -4489,6 +4738,7 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
                                           int indent, bool is_loop) {
     *scope = scope_create(*scope);
     if (is_loop) (*scope)->loop_depth++;
+    g_codegen_scope = *scope;
 
     for (size_t i = 0; i < block->as.block.count; i++) {
         codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
@@ -4496,6 +4746,7 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
 
     Scope *old = *scope;
     *scope = old->parent;
+    g_codegen_scope = *scope;
     scope_destroy(old);
 }
 
@@ -4514,6 +4765,7 @@ static bool codegen_needs_hoisting(Ast *node) {
 static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
                                      Scope **scope, int indent) {
     *scope = scope_create(*scope);
+    g_codegen_scope = *scope;
     for (size_t i = 0; i < block->as.block.count; i++) {
         codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
     }
@@ -4525,6 +4777,7 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
     }
     Scope *old = *scope;
     *scope = old->parent;
+    g_codegen_scope = *scope;
     scope_destroy(old);
 }
 
@@ -4729,6 +4982,12 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             /* Typedef already emitted at top level */
             break;
 
+        case AST_FUNC_CALL:
+            codegen_indent(out, indent);
+            codegen_emit_expression(out, node);
+            fprintf(out, ";\n");
+            break;
+
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
     }
@@ -4756,27 +5015,47 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
             Parameter *param = &func_decl->as.func_decl.params[i];
             if (i > 0) fprintf(out, ", ");
-            fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
-                    (int)param->name_length, param->name_start);
+            if (param->is_mut_ref) {
+                fprintf(out, "%s *ni_%.*s", codegen_type_to_c(param->type),
+                        (int)param->name_length, param->name_start);
+            } else if (param->is_ref) {
+                fprintf(out, "const %s *ni_%.*s", codegen_type_to_c(param->type),
+                        (int)param->name_length, param->name_start);
+            } else {
+                fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
+                        (int)param->name_length, param->name_start);
+            }
         }
     }
 
     fprintf(out, ") {\n");
 
-    /* Create scope with parameters */
+    /* Create scope with parameters (tracking ref flags for codegen) */
     Scope *scope = scope_create(NULL);
     for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
         Parameter *param = &func_decl->as.func_decl.params[i];
-        scope_add(scope, param->name_start, param->name_length,
-                  false, param->type, func_decl->loc);
+        bool is_mutable = param->is_mut_ref;
+        Variable *v = scope_add(scope, param->name_start, param->name_length,
+                                is_mutable, param->type, func_decl->loc);
+        if (v) v->is_ref = param->is_ref;
     }
+
+    /* Set global codegen scope */
+    g_codegen_scope = scope;
 
     /* Emit body */
     Ast *body = func_decl->as.func_decl.body;
     for (size_t i = 0; i < body->as.block.count; i++) {
         codegen_emit_statement(out, body->as.block.statements[i], &scope, 1);
     }
+    /* Emit trailing value expression as statement (e.g. bare call at end of body) */
+    if (body->as.block.value_expr) {
+        codegen_indent(out, 1);
+        codegen_emit_expression(out, body->as.block.value_expr);
+        fprintf(out, ";\n");
+    }
 
+    g_codegen_scope = NULL;
     scope_destroy(scope);
 
     fprintf(out, "}\n\n");

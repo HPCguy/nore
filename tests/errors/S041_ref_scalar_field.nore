@@ -1,0 +1,7 @@
+// S041: Cannot take reference of scalar field
+value Vec2 { x: f64, y: f64 }
+func foo(ref x: f64): void = { }
+func main(): void = {
+    val v: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+    foo(ref v.x)
+}

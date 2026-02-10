@@ -132,7 +132,7 @@ func name(param1: type1, param2: type2): returnType = {
 
 **Syntax**:
 - Keyword: `func`
-- Parameters: Comma-separated with type annotations
+- Parameters: Comma-separated with type annotations, optionally prefixed with `ref` or `mut ref`
 - Return type: Required, specified after `:`
 - Equals sign: `=` precedes the function body (functions are values)
 - Body: Enclosed in braces `{}`
@@ -146,6 +146,10 @@ func add(a: i64, b: i64): i64 = {
 func greet(): void = {
     // no return needed
 }
+
+func scale(mut ref v: Vec2, factor: f64): void = {
+    v.x = v.x * factor
+}
 ```
 
 ### Function Calls
@@ -158,7 +162,7 @@ name(arg1, arg2, ...)
 - Function name followed by parentheses
 - Arguments: Comma-separated expressions
 - Zero arguments: Use empty parentheses `()`
-- Can be used as expressions
+- Can be used as expressions or bare statements
 
 **Examples**:
 ```nore
@@ -166,7 +170,50 @@ val sum: i64 = add(10, 20)
 val nested: i64 = add(mul(2, 3), 4)
 val result: i64 = 1 + add(2, 3) * 2
 val value: i64 = get_value()
+process()                              // bare call statement
 ```
+
+### Ref Parameters
+
+Reference parameters allow functions to access or modify the caller's data without copying.
+
+**Read-only ref** (`ref`):
+```nore
+func length_sq(ref v: Vec2): f64 = {
+    return v.x * v.x + v.y * v.y
+}
+```
+- Keyword: `ref` before parameter name
+- Generates `const T *` in C
+- Cannot modify the referenced data
+
+**Mutable ref** (`mut ref`):
+```nore
+func scale(mut ref v: Vec2, factor: f64): void = {
+    v.x = v.x * factor
+    v.y = v.y * factor
+}
+```
+- Keywords: `mut ref` before parameter name
+- Generates `T *` in C
+- Can modify the referenced data
+
+**Call-site syntax** (explicit):
+```nore
+val p: Vec2 = Vec2 { x: 3.0, y: 4.0 }
+val lsq: f64 = length_sq(ref p)
+
+mut q: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+scale(mut ref q, 2.0)
+```
+- Call site must explicitly match: `ref` for `ref` params, `mut ref` for `mut ref` params
+- Argument must be addressable (variable or field-access chain)
+- `mut ref` requires the root variable to be `mut`
+
+**Restrictions**:
+- Cannot take ref of scalar fields (i64, f64, bool) — just copy them
+- Cannot take ref of array elements (deferred to slices)
+- Refs are a calling convention only — cannot be stored, returned, or used as local variables
 
 ### Value Types
 
@@ -388,6 +435,7 @@ Both operands must be the same concrete type (after coercion).
 - `name = expr` - Assignment (mutable only)
 - `expr.field = expr` - Field assignment (root variable must be mutable)
 - `expr[index] = expr` - Array element assignment (root variable must be mutable)
+- `name(args...)` - Bare function call statement
 - `return expr` - Return from function
 - `assert expr` - Runtime assertion (bool expr, exits with code 2 on failure)
 - `break` - Exit innermost loop
@@ -418,8 +466,9 @@ func main(): void = {
 ### Keywords
 - `func` - Function declaration
 - `value` - Value type declaration
+- `ref` - Reference parameter/argument
 - `val` - Immutable variable
-- `mut` - Mutable variable
+- `mut` - Mutable variable/reference
 - `return` - Return statement
 - `assert` - Runtime assertion
 - `if` - Conditional
@@ -476,7 +525,6 @@ func main(): void = {
 **Not yet implemented**:
 - String and character literals
 - Additional types (`i32`, `u32`, `f32`)
-- `ref` parameters (pass by reference)
 - `struct` types (resource owners with ref semantics)
 - Module system
 - While as expressions

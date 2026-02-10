@@ -1,0 +1,6 @@
+// S038: ref/mut ref mismatch between call site and parameter
+func foo(ref x: i64): void = { }
+func main(): void = {
+    mut n: i64 = 10
+    foo(n)
+}

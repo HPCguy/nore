@@ -1,0 +1,3 @@
+// P036: Expected 'ref' after 'mut' in parameter
+func foo(mut x: i64): void = { }
+func main(): void = { }

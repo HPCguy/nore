@@ -1,0 +1,6 @@
+// P037: Expected 'ref' after 'mut' in argument
+func foo(mut ref x: i64): void = { x = x + 1 }
+func main(): void = {
+    mut n: i64 = 10
+    foo(mut n)
+}

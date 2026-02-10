@@ -1,0 +1,6 @@
+// S042: Cannot take reference of array element
+func foo(ref x: i64): void = { }
+func main(): void = {
+    val arr: [i64; 3] = [1, 2, 3]
+    foo(ref arr[0])
+}
