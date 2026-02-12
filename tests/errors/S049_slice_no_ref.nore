@@ -1,0 +1,5 @@
+func bad(data: [i64]): void = {
+}
+
+func main(): void = {
+}

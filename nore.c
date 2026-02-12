@@ -128,6 +128,10 @@ typedef enum {
     ERR_S043_STRUCT_COPY           = ERR_GROUP_SEMANTIC + 43,
     ERR_S044_STRUCT_BY_VALUE       = ERR_GROUP_SEMANTIC + 44,
     ERR_S045_EMBED_STRUCT          = ERR_GROUP_SEMANTIC + 45,
+    ERR_S046_SLICE_LOCAL_VAR       = ERR_GROUP_SEMANTIC + 46,
+    ERR_S047_SLICE_AS_FIELD        = ERR_GROUP_SEMANTIC + 47,
+    ERR_S048_SLICE_RETURN          = ERR_GROUP_SEMANTIC + 48,
+    ERR_S049_SLICE_NO_REF          = ERR_GROUP_SEMANTIC + 49,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -679,6 +683,8 @@ typedef enum {
     TYPE_VALUE_BASE = 16,
     /* Array types start at this offset */
     TYPE_ARRAY_BASE = 1024,
+    /* Slice types start at this offset */
+    TYPE_SLICE_BASE = 2048,
 } Type;
 
 /* Forward declaration - defined after ValueTypeTable */
@@ -698,7 +704,15 @@ static bool type_is_value(Type type) {
 }
 
 static bool type_is_array(Type type) {
-    return type >= TYPE_ARRAY_BASE;
+    return type >= TYPE_ARRAY_BASE && type < TYPE_SLICE_BASE;
+}
+
+static bool type_is_slice(Type type) {
+    return type >= TYPE_SLICE_BASE;
+}
+
+static int type_slice_index(Type type) {
+    return type - TYPE_SLICE_BASE;
 }
 
 static int type_array_index(Type type) {
@@ -932,6 +946,71 @@ static Type array_table_intern(Type element_type, size_t size) {
     return (Type)(TYPE_ARRAY_BASE + (int)g_array_table->count++);
 }
 
+/* ============================== Slice Type Table =========================== */
+
+typedef struct { Type element_type; } SliceTypeEntry;
+
+typedef struct {
+    SliceTypeEntry *types;
+    size_t count;
+    size_t capacity;
+} SliceTypeTable;
+
+static SliceTypeTable *g_slice_table = NULL;
+
+static SliceTypeTable *slice_table_create(void) {
+    SliceTypeTable *table = malloc(sizeof(SliceTypeTable));
+    if (!table) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate slice type table");
+    table->capacity = 8;
+    table->count = 0;
+    table->types = malloc(table->capacity * sizeof(SliceTypeEntry));
+    if (!table->types) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate slice type entries");
+    return table;
+}
+
+static void slice_table_destroy(SliceTypeTable *table) {
+    if (!table) return;
+    free(table->types);
+    free(table);
+}
+
+static SliceTypeEntry *slice_table_get(Type type) {
+    if (!type_is_slice(type) || !g_slice_table) return NULL;
+    int idx = type_slice_index(type);
+    if (idx < 0 || (size_t)idx >= g_slice_table->count) return NULL;
+    return &g_slice_table->types[idx];
+}
+
+static Type slice_table_intern(Type element_type) {
+    for (size_t i = 0; i < g_slice_table->count; i++) {
+        if (g_slice_table->types[i].element_type == element_type) {
+            return (Type)(TYPE_SLICE_BASE + (int)i);
+        }
+    }
+    if (g_slice_table->count >= g_slice_table->capacity) {
+        g_slice_table->capacity *= 2;
+        g_slice_table->types = realloc(g_slice_table->types,
+                                        g_slice_table->capacity * sizeof(SliceTypeEntry));
+        if (!g_slice_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing slice type table");
+    }
+    SliceTypeEntry *entry = &g_slice_table->types[g_slice_table->count];
+    entry->element_type = element_type;
+    return (Type)(TYPE_SLICE_BASE + (int)g_slice_table->count++);
+}
+
+/* Get element type for arrays and slices, TYPE_UNKNOWN otherwise */
+static Type type_element_type(Type type) {
+    if (type_is_array(type)) {
+        ArrayTypeEntry *at = array_table_get(type);
+        return at ? at->element_type : TYPE_UNKNOWN;
+    }
+    if (type_is_slice(type)) {
+        SliceTypeEntry *se = slice_table_get(type);
+        return se ? se->element_type : TYPE_UNKNOWN;
+    }
+    return TYPE_UNKNOWN;
+}
+
 static bool type_can_coerce(Type from, Type to) {
     if (from == to) return true;
     if (from == TYPE_COMPTIME_INT && (to == TYPE_I64 || to == TYPE_F64)) return true;
@@ -942,6 +1021,14 @@ static bool type_can_coerce(Type from, Type to) {
         ArrayTypeEntry *ta = array_table_get(to);
         if (fa && ta && fa->size == ta->size) {
             return type_can_coerce(fa->element_type, ta->element_type);
+        }
+    }
+    /* Array→slice or slice→slice coercion: element types must coerce */
+    if (type_is_slice(to) && (type_is_array(from) || type_is_slice(from))) {
+        Type from_elem = type_element_type(from);
+        Type to_elem = type_element_type(to);
+        if (from_elem != TYPE_UNKNOWN && to_elem != TYPE_UNKNOWN) {
+            return type_can_coerce(from_elem, to_elem);
         }
     }
     return false;
@@ -970,6 +1057,12 @@ static const char *type_name(Type type) {
             if (at) {
                 char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 64, "[%s; %zu]", type_name(at->element_type), at->size);
+                return buf;
+            }
+            SliceTypeEntry *se = slice_table_get(type);
+            if (se) {
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 64, "[%s]", type_name(se->element_type));
                 return buf;
             }
             return "unknown";
@@ -1669,19 +1762,23 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
             return (Type)(TYPE_VALUE_BASE + idx);
         }
     }
-    /* Array type: [T; N] */
+    /* Array type: [T; N] or Slice type: [T] */
     if (parser_match(parser, TOKEN_LBRACKET)) {
         Type elem_type = parser_parse_type(parser, false);
         if (elem_type == TYPE_UNKNOWN) {
             diagnostic(ERR_P031_EXPECTED_ARRAY_ELEM_TYPE, parser->current.line,
                        parser->current.column,
-                       "Expected element type in array type");
+                       "Expected element type in array/slice type");
             return TYPE_UNKNOWN;
+        }
+        /* [T] — slice type */
+        if (parser_match(parser, TOKEN_RBRACKET)) {
+            return slice_table_intern(elem_type);
         }
         if (!parser_match(parser, TOKEN_SEMICOLON)) {
             diagnostic(ERR_P032_EXPECTED_SEMICOLON_ARRAY, parser->current.line,
                        parser->current.column,
-                       "Expected ';' in array type");
+                       "Expected ';' or ']' in array/slice type");
             return TYPE_UNKNOWN;
         }
         if (!parser_check(parser, TOKEN_NUMBER)) {
@@ -3780,15 +3877,32 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                ref_label(call_ref, call_mut));
                 }
 
-                if (call_ref) {
+                Type param_type = entry->param_types[i];
+
+                if (call_ref && type_is_slice(param_type)) {
+                    /* Slice ref: only check mutability (no addressability needed) */
+                    if (call_mut) {
+                        Ast *root = ast_root_target(arg);
+                        if (root->kind == AST_IDENTIFIER) {
+                            Variable *v = scope_lookup(scope, root->as.identifier.start,
+                                                        root->as.identifier.length);
+                            if (v && !v->is_mutable) {
+                                diagnostic(ERR_S040_MUT_REF_IMMUTABLE, arg->loc.line,
+                                           arg->loc.column,
+                                           "Cannot pass 'mut ref' to immutable variable '%.*s'",
+                                           (int)root->as.identifier.length,
+                                           root->as.identifier.start);
+                            }
+                        }
+                    }
+                } else if (call_ref) {
                     typecheck_ref_arg(arg, arg_type, call_mut, scope);
                 }
-
-                if (!type_can_coerce(arg_type, entry->param_types[i])) {
+                if (!type_can_coerce(arg_type, param_type)) {
                     diagnostic(ERR_S018_ARG_TYPE_MISMATCH,
                                arg->loc.line, arg->loc.column,
                                "Argument %zu: expected %s, got %s",
-                               i + 1, type_name(entry->param_types[i]),
+                               i + 1, type_name(param_type),
                                type_name(arg_type));
                 }
             }
@@ -4016,7 +4130,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                                   scope, func_table);
             Type idx_type = typecheck_expression(node->as.index_access.index,
                                                   scope, func_table);
-            if (!type_is_array(obj_type)) {
+            if (!type_is_array(obj_type) && !type_is_slice(obj_type)) {
                 diagnostic(ERR_S035_INDEX_ON_NON_ARRAY, node->loc.line,
                            node->loc.column,
                            "Cannot index non-array type %s",
@@ -4030,8 +4144,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                            "Index must be integer, got %s",
                            type_name(idx_type));
             }
-            ArrayTypeEntry *at = array_table_get(obj_type);
-            Type elem_type = at ? at->element_type : TYPE_I64;
+            Type elem_type = type_element_type(obj_type);
+            if (elem_type == TYPE_UNKNOWN) elem_type = TYPE_I64;
             node->expr_type = elem_type;
             return elem_type;
         }
@@ -4039,6 +4153,22 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_FIELD_ACCESS: {
             Type obj_type = typecheck_expression(node->as.field_access.object,
                                                   scope, func_table);
+            /* Slice .len field access */
+            if (type_is_slice(obj_type)) {
+                if (node->as.field_access.field_length == 3 &&
+                    memcmp(node->as.field_access.field_start, "len", 3) == 0) {
+                    node->expr_type = TYPE_I64;
+                    return TYPE_I64;
+                }
+                diagnostic(ERR_S029_UNKNOWN_FIELD_ACCESS, node->loc.line,
+                           node->loc.column,
+                           "No field '%.*s' on slice type '%s'",
+                           (int)node->as.field_access.field_length,
+                           node->as.field_access.field_start,
+                           type_name(obj_type));
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
             if (!type_is_value(obj_type)) {
                 diagnostic(ERR_S028_FIELD_ON_NON_VALUE, node->loc.line,
                            node->loc.column,
@@ -4107,6 +4237,12 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
             Type declared = node->as.val_decl.type;
 
+            if (type_is_slice(declared)) {
+                diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
+                           node->loc.column,
+                           "Slice type not allowed as local variable (use fixed-size array)");
+            }
+
             if (declared == TYPE_UNKNOWN) {
                 /* No explicit type — must be comptime */
                 if (!type_is_comptime(init_type)) {
@@ -4150,6 +4286,12 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_MUT_DECL: {
             Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope, func_table);
             Type declared = node->as.mut_decl.type;
+
+            if (type_is_slice(declared)) {
+                diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
+                           node->loc.column,
+                           "Slice type not allowed as local variable (use fixed-size array)");
+            }
 
             if (!type_can_coerce(init_type, declared)) {
                 typecheck_coercion_error(init_type, declared,
@@ -4342,6 +4484,13 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
 /* Type check a function declaration */
 static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
+    /* Reject slice return types */
+    if (type_is_slice(func_decl->as.func_decl.return_type)) {
+        diagnostic(ERR_S048_SLICE_RETURN, func_decl->loc.line,
+                   func_decl->loc.column,
+                   "Cannot return slice type");
+    }
+
     /* Create scope with parameters */
     Scope *scope = scope_create(NULL);
 
@@ -4361,6 +4510,14 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
             diagnostic(ERR_S044_STRUCT_BY_VALUE, func_decl->loc.line,
                        func_decl->loc.column,
                        "Struct parameter '%.*s' must use 'ref' or 'mut ref'",
+                       (int)param->name_length, param->name_start);
+        }
+
+        /* Slice parameters must use ref or mut ref */
+        if (type_is_slice(param->type) && !param->is_ref) {
+            diagnostic(ERR_S049_SLICE_NO_REF, func_decl->loc.line,
+                       func_decl->loc.column,
+                       "Slice parameter '%.*s' must use 'ref' or 'mut ref'",
                        (int)param->name_length, param->name_start);
         }
 
@@ -4386,6 +4543,9 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
 
     scope_destroy(scope);
 }
+
+/* Forward declaration: codegen needs access to the function table */
+static FunctionTable *g_codegen_func_table = NULL;
 
 static void typecheck_program(Ast *program) {
     FunctionTable *func_table = func_table_create();
@@ -4443,6 +4603,16 @@ static void typecheck_program(Ast *program) {
                                (int)node->as.value_decl.name_length,
                                node->as.value_decl.name_start);
                 }
+                /* Reject slice types as fields */
+                if (type_is_slice(fields[f].type)) {
+                    diagnostic(ERR_S047_SLICE_AS_FIELD, node->loc.line,
+                               node->loc.column,
+                               "Slice type not allowed as field '%.*s' in %s type '%.*s'",
+                               (int)fields[f].name_length, fields[f].name_start,
+                               kind_label,
+                               (int)node->as.value_decl.name_length,
+                               node->as.value_decl.name_start);
+                }
             }
         }
     }
@@ -4484,7 +4654,8 @@ static void typecheck_program(Ast *program) {
         }
     }
 
-    func_table_destroy(func_table);
+    /* Keep func_table alive for codegen (slice call-site needs param types) */
+    g_codegen_func_table = func_table;
 }
 
 /* ============================ Code Generation ============================= */
@@ -4537,6 +4708,13 @@ static void codegen_emit_identifier(FILE *out, const char *name_start, size_t na
 
 /* Emit field access on an object, using -> for ref identifiers, . otherwise.
  * emit_object_fn is used to recursively emit the object when not a ref identifier. */
+/* Check if a field access node is slice.len */
+static bool codegen_is_slice_len(Ast *node) {
+    return type_is_slice(node->as.field_access.object->expr_type) &&
+           node->as.field_access.field_length == 3 &&
+           memcmp(node->as.field_access.field_start, "len", 3) == 0;
+}
+
 static void codegen_emit_field(FILE *out, Ast *node,
                                 void (*emit_object_fn)(FILE *, Ast *)) {
     Ast *obj = node->as.field_access.object;
@@ -4609,22 +4787,68 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
         }
 
-        case AST_FUNC_CALL:
+        case AST_FUNC_CALL: {
             fprintf(out, "ni_%.*s(", (int)node->as.func_call.name_length,
                     node->as.func_call.name_start);
+            /* Look up function entry for param type info (needed for slice coercion) */
+            FunctionEntry *fentry = g_codegen_func_table
+                ? func_table_lookup(g_codegen_func_table,
+                                    node->as.func_call.name_start,
+                                    node->as.func_call.name_length)
+                : NULL;
             for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
                 if (i > 0) fprintf(out, ", ");
+                Ast *arg = node->as.func_call.arguments[i];
                 bool is_ref = node->as.func_call.arg_is_ref &&
                               node->as.func_call.arg_is_ref[i];
-                if (is_ref) {
+                Type param_type = (fentry && i < fentry->param_count)
+                                  ? fentry->param_types[i] : TYPE_UNKNOWN;
+
+                if (is_ref && type_is_slice(param_type)) {
+                    Type arg_type = arg->expr_type;
+                    if (type_is_array(arg_type)) {
+                        /* Array→slice coercion: create fat pointer */
+                        ArrayTypeEntry *ae = array_table_get(arg_type);
+                        Type slice_elem = type_element_type(param_type);
+                        /* If arg is an index access, emit bounds check inline */
+                        if (arg->kind == AST_INDEX_ACCESS) {
+                            Ast *idx_obj = arg->as.index_access.object;
+                            Type idx_obj_type = idx_obj->expr_type;
+                            fprintf(out, "(NI_BOUNDS_CHECK(");
+                            codegen_emit_expression(out, arg->as.index_access.index);
+                            if (type_is_slice(idx_obj_type)) {
+                                fprintf(out, ", ");
+                                codegen_emit_expression(out, idx_obj);
+                                fprintf(out, ".len");
+                            } else {
+                                ArrayTypeEntry *oae = array_table_get(idx_obj_type);
+                                fprintf(out, ", %zu", oae ? oae->size : 0);
+                            }
+                            fprintf(out, ", \"%s\", %zuUL, %zuUL), ",
+                                    g_source_file, arg->loc.line, arg->loc.column);
+                        }
+                        fprintf(out, "(%s){.data = (%s *)",
+                                codegen_type_to_c(param_type),
+                                codegen_type_to_c(slice_elem));
+                        codegen_emit_lvalue(out, arg);
+                        fprintf(out, ".data, .len = %zuL}", ae ? ae->size : 0);
+                        if (arg->kind == AST_INDEX_ACCESS) {
+                            fprintf(out, ")");
+                        }
+                    } else {
+                        /* Slice→slice passthrough: just pass through */
+                        codegen_emit_expression(out, arg);
+                    }
+                } else if (is_ref) {
                     fprintf(out, "&");
-                    codegen_emit_lvalue(out, node->as.func_call.arguments[i]);
+                    codegen_emit_lvalue(out, arg);
                 } else {
-                    codegen_emit_expression(out, node->as.func_call.arguments[i]);
+                    codegen_emit_expression(out, arg);
                 }
             }
             fprintf(out, ")");
             break;
+        }
 
         case AST_BLOCK:
             /* Only simple blocks (no statements) can be emitted inline */
@@ -4663,7 +4887,12 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         }
 
         case AST_FIELD_ACCESS:
-            codegen_emit_field(out, node, codegen_emit_expression);
+            if (codegen_is_slice_len(node)) {
+                codegen_emit_expression(out, node->as.field_access.object);
+                fprintf(out, ".len");
+            } else {
+                codegen_emit_field(out, node, codegen_emit_expression);
+            }
             break;
 
         case AST_ARRAY_LITERAL: {
@@ -4681,20 +4910,35 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             /* Emit bounds-checked index access as comma expression:
              * (NI_BOUNDS_CHECK(idx, size, file, line, col), obj.data[idx]) */
             Ast *obj = node->as.index_access.object;
-            ArrayTypeEntry *at = array_table_get(obj->expr_type);
+            Type obj_type = obj->expr_type;
 
-            if (at) {
+            if (type_is_slice(obj_type)) {
+                /* Slice: runtime bounds check using .len */
                 fprintf(out, "(NI_BOUNDS_CHECK(");
                 codegen_emit_expression(out, node->as.index_access.index);
-                fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL), ",
-                        at->size, g_source_file,
-                        node->loc.line, node->loc.column);
+                fprintf(out, ", ");
+                codegen_emit_expression(out, obj);
+                fprintf(out, ".len, \"%s\", %zuUL, %zuUL), ",
+                        g_source_file, node->loc.line, node->loc.column);
+                codegen_emit_expression(out, obj);
+                fprintf(out, ".data[");
+                codegen_emit_expression(out, node->as.index_access.index);
+                fprintf(out, "])");
+            } else {
+                ArrayTypeEntry *at = array_table_get(obj_type);
+                if (at) {
+                    fprintf(out, "(NI_BOUNDS_CHECK(");
+                    codegen_emit_expression(out, node->as.index_access.index);
+                    fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL), ",
+                            at->size, g_source_file,
+                            node->loc.line, node->loc.column);
+                }
+                codegen_emit_lvalue(out, obj);
+                fprintf(out, ".data[");
+                codegen_emit_expression(out, node->as.index_access.index);
+                fprintf(out, "]");
+                if (at) fprintf(out, ")");
             }
-            codegen_emit_lvalue(out, obj);
-            fprintf(out, ".data[");
-            codegen_emit_expression(out, node->as.index_access.index);
-            fprintf(out, "]");
-            if (at) fprintf(out, ")");
             break;
         }
 
@@ -4745,6 +4989,11 @@ static const char *codegen_type_to_c(Type type) {
                 snprintf(buf, 80, "ni_arr_%d", type_array_index(type));
                 return buf;
             }
+            if (type_is_slice(type)) {
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 80, "ni_slice_%d", type_slice_index(type));
+                return buf;
+            }
             return "long";
         }
     }
@@ -4759,7 +5008,12 @@ static void codegen_emit_lvalue(FILE *out, Ast *node) {
                                     node->as.identifier.length);
             break;
         case AST_FIELD_ACCESS:
-            codegen_emit_field(out, node, codegen_emit_lvalue);
+            if (codegen_is_slice_len(node)) {
+                codegen_emit_lvalue(out, node->as.field_access.object);
+                fprintf(out, ".len");
+            } else {
+                codegen_emit_field(out, node, codegen_emit_lvalue);
+            }
             break;
         case AST_INDEX_ACCESS:
             codegen_emit_lvalue(out, node->as.index_access.object);
@@ -4786,14 +5040,25 @@ static void codegen_emit_target_bounds_checks(FILE *out, Ast *node, int indent) 
         /* Recurse into the object first (for chained access) */
         codegen_emit_target_bounds_checks(out, node->as.index_access.object, indent);
         /* Emit bounds check for this index */
-        ArrayTypeEntry *at = array_table_get(node->as.index_access.object->expr_type);
-        if (at) {
+        Type obj_type = node->as.index_access.object->expr_type;
+        if (type_is_slice(obj_type)) {
             codegen_indent(out, indent);
             fprintf(out, "NI_BOUNDS_CHECK(");
             codegen_emit_expression(out, node->as.index_access.index);
-            fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL);\n",
-                    at->size, g_source_file,
-                    node->loc.line, node->loc.column);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.index_access.object);
+            fprintf(out, ".len, \"%s\", %zuUL, %zuUL);\n",
+                    g_source_file, node->loc.line, node->loc.column);
+        } else {
+            ArrayTypeEntry *at = array_table_get(obj_type);
+            if (at) {
+                codegen_indent(out, indent);
+                fprintf(out, "NI_BOUNDS_CHECK(");
+                codegen_emit_expression(out, node->as.index_access.index);
+                fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL);\n",
+                        at->size, g_source_file,
+                        node->loc.line, node->loc.column);
+            }
         }
     } else if (node->kind == AST_FIELD_ACCESS) {
         codegen_emit_target_bounds_checks(out, node->as.field_access.object, indent);
@@ -5083,7 +5348,11 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
             Parameter *param = &func_decl->as.func_decl.params[i];
             if (i > 0) fprintf(out, ", ");
-            if (param->is_mut_ref) {
+            if (type_is_slice(param->type)) {
+                /* Slice: passed by value as fat pointer struct */
+                fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
+                        (int)param->name_length, param->name_start);
+            } else if (param->is_mut_ref) {
                 fprintf(out, "%s *ni_%.*s", codegen_type_to_c(param->type),
                         (int)param->name_length, param->name_start);
             } else if (param->is_ref) {
@@ -5105,7 +5374,10 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         bool is_mutable = param->is_mut_ref;
         Variable *v = scope_add(scope, param->name_start, param->name_length,
                                 is_mutable, param->type, func_decl->loc);
-        if (v) v->is_ref = param->is_ref;
+        if (v) {
+            /* Slice params are passed by value as fat pointer struct, not as C pointer */
+            v->is_ref = type_is_slice(param->type) ? false : param->is_ref;
+        }
     }
 
     /* Set global codegen scope */
@@ -5130,15 +5402,24 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
 }
 
 /* Check whether all custom-type dependencies among fields have been emitted.
- * emitted[] uses indices 0..vcount-1 for value types, vcount..N for arrays. */
+ * emitted[] layout: [0..vcount) value types, [vcount..vcount+acount) arrays,
+ *                   [vcount+acount..total) slices. */
 static bool type_deps_emitted(Parameter *fields, size_t count,
-                              const bool *emitted, size_t vcount) {
+                              const bool *emitted, size_t vcount, size_t acount) {
     for (size_t i = 0; i < count; i++) {
         Type t = fields[i].type;
         if (type_is_value(t) && !emitted[type_value_index(t)]) return false;
         if (type_is_array(t) && !emitted[vcount + type_array_index(t)]) return false;
+        if (type_is_slice(t) && !emitted[vcount + acount + type_slice_index(t)]) return false;
     }
     return true;
+}
+
+/* Single-field dependency check helper for array/slice element types */
+static bool type_elem_dep_emitted(Type elem_type, const bool *emitted,
+                                   size_t vcount, size_t acount) {
+    Parameter p = {.type = elem_type};
+    return type_deps_emitted(&p, 1, emitted, vcount, acount);
 }
 
 static void codegen_emit_ir(FILE *out, Ast *ast) {
@@ -5149,8 +5430,8 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
     }
 
-    /* Emit bounds check helper and macro if any array types exist */
-    if (g_array_table->count > 0) {
+    /* Emit bounds check helper and macro if any array or slice types exist */
+    if (g_array_table->count > 0 || g_slice_table->count > 0) {
         fprintf(out, "static void ni_bounds_fail(long idx, size_t size,\n");
         fprintf(out, "                           const char *file, unsigned long line, unsigned long col) {\n");
         fprintf(out, "    fprintf(stderr, \"%%s:%%lu:%%lu: error[R002]: Array index out of bounds: %%ld not in [0, %%zu)\\n\",\n");
@@ -5166,7 +5447,8 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
      * Types with no unresolved deps are emitted first. */
     size_t vcount = g_value_table->count;
     size_t acount = g_array_table->count;
-    size_t total = vcount + acount;
+    size_t scount = g_slice_table->count;
+    size_t total = vcount + acount + scount;
 
     if (total > 0) {
         bool *emitted = calloc(total, sizeof(bool));
@@ -5178,7 +5460,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
             for (size_t i = 0; i < vcount; i++) {
                 if (emitted[i]) continue;
                 ValueTypeEntry *vt = &g_value_table->types[i];
-                if (!type_deps_emitted(vt->fields, vt->field_count, emitted, vcount)) continue;
+                if (!type_deps_emitted(vt->fields, vt->field_count, emitted, vcount, acount)) continue;
                 fprintf(out, "typedef struct {");
                 for (size_t f = 0; f < vt->field_count; f++) {
                     Parameter *field = &vt->fields[f];
@@ -5194,10 +5476,20 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
             for (size_t i = 0; i < acount; i++) {
                 if (emitted[vcount + i]) continue;
                 ArrayTypeEntry *at = &g_array_table->types[i];
-                if (!type_deps_emitted(&(Parameter){.type = at->element_type}, 1, emitted, vcount)) continue;
+                if (!type_elem_dep_emitted(at->element_type, emitted, vcount, acount)) continue;
                 fprintf(out, "typedef struct { %s data[%zu]; } ni_arr_%zu;\n",
                         codegen_type_to_c(at->element_type), at->size, i);
                 emitted[vcount + i] = true;
+                done++; progress++;
+            }
+
+            for (size_t i = 0; i < scount; i++) {
+                if (emitted[vcount + acount + i]) continue;
+                SliceTypeEntry *se = &g_slice_table->types[i];
+                if (!type_elem_dep_emitted(se->element_type, emitted, vcount, acount)) continue;
+                fprintf(out, "typedef struct { %s *data; long len; } ni_slice_%zu;\n",
+                        codegen_type_to_c(se->element_type), i);
+                emitted[vcount + acount + i] = true;
                 done++; progress++;
             }
 
@@ -5362,6 +5654,7 @@ int main(int argc, char **argv) {
     /* Initialize type tables */
     g_value_table = value_table_create();
     g_array_table = array_table_create();
+    g_slice_table = slice_table_create();
     /* Parse program */
     Parser parser;
     parser_init(&parser, &lexer);
@@ -5388,20 +5681,16 @@ int main(int argc, char **argv) {
         codegen_compile(ast, output_path);
     }
 
-    /* Report any collected errors */
-    if (g_had_error) {
-        ast_free(ast);
-        value_table_destroy(g_value_table);
-        array_table_destroy(g_array_table);
-        free(source);
-        report_errors_and_exit();
-    }
-
     /* Cleanup */
     ast_free(ast);
     value_table_destroy(g_value_table);
     array_table_destroy(g_array_table);
+    slice_table_destroy(g_slice_table);
+    if (g_codegen_func_table) func_table_destroy(g_codegen_func_table);
     free(source);
+
+    /* Report any collected errors (exits with non-zero) */
+    if (g_had_error) report_errors_and_exit();
 
     return 0;
 }

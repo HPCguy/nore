@@ -1,0 +1,4 @@
+value Foo { data: [i64] }
+
+func main(): void = {
+}

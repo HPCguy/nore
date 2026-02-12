@@ -1,0 +1,6 @@
+func bad(): [i64] = {
+    return 0
+}
+
+func main(): void = {
+}

@@ -33,6 +33,7 @@ val y: i64 = 10
 - `bool` - Boolean type (`true` or `false`)
 - `void` - No return value (functions only)
 - `[T; N]` - Fixed-size array (see Arrays)
+- `[T]` - Slice (see Slices)
 - User-defined `value` types (see Value Types)
 - User-defined `struct` types (see Struct Types)
 
@@ -398,6 +399,94 @@ assert a[0] == 1           // a is unchanged
 - Assigned by copy (no shared references)
 - Passed to functions by copy
 - Returned from functions by copy
+
+### Slices
+
+Slices are views into existing fixed-size arrays. A slice is a fat pointer containing a data pointer and length, allowing functions to operate on arrays of any size.
+
+**Type Syntax**:
+```nore
+[i64]             // slice of integers
+[f64]             // slice of floats
+[Vec2]            // slice of value types
+```
+- Drop the size from `[T; N]` to get `[T]`
+- Element type can be any concrete type or value type
+
+**Slice Parameters** (ref required):
+```nore
+func sum(ref data: [i64]): i64 = {
+    mut total: i64 = 0
+    mut i: i64 = 0
+    while (i < data.len) {
+        total = total + data[i]
+        i = i + 1
+    }
+    return total
+}
+```
+- Slice parameters must use `ref` (read-only) or `mut ref` (mutable)
+- Passing a slice by value is an error
+
+**Call-Site Coercion** (array → slice):
+```nore
+val a: [i64; 3] = [1, 2, 3]
+val b: [i64; 5] = [10, 20, 30, 40, 50]
+assert sum(ref a) == 6       // [i64; 3] → [i64]
+assert sum(ref b) == 150     // [i64; 5] → [i64]
+```
+- Fixed-size arrays coerce to slices at `ref`/`mut ref` call sites
+- Element types must be compatible
+
+**Mutable Slices**:
+```nore
+func double_all(mut ref data: [i64]): void = {
+    mut i: i64 = 0
+    while (i < data.len) {
+        data[i] = data[i] * 2
+        i = i + 1
+    }
+}
+
+mut arr: [i64; 3] = [1, 2, 3]
+double_all(mut ref arr)
+assert arr[0] == 2
+```
+- `mut ref` slices can modify elements through the slice
+- Root variable must be `mut`
+
+**Slice Passthrough**:
+```nore
+func first(ref data: [i64]): i64 = {
+    return data[0]
+}
+
+func get_first(ref data: [i64]): i64 = {
+    return first(ref data)    // pass slice to another function
+}
+```
+- A slice parameter can be passed directly to another function expecting a slice
+
+**Length Field**:
+```nore
+func len(ref data: [i64]): i64 = {
+    return data.len
+}
+```
+- `.len` returns the number of elements as `i64`
+- This is the only field on slices
+
+**Indexing and Bounds Checking**:
+```nore
+val x: i64 = data[0]         // indexing
+data[i] = 42                 // element assignment (mut ref only)
+```
+- Same syntax as arrays
+- Runtime bounds checking (exits with error code 2 on out-of-bounds)
+
+**Restrictions** (current):
+- Slices are parameter-only — no local slice variables, return types, or fields
+- These restrictions will lift when arenas are introduced
 
 ### Control Flow
 
