@@ -793,24 +793,16 @@ static Type resolve_numeric_binary_type(Type left, Type right) {
 /* Resolve common type for if/else branches.
  * Returns TYPE_VOID if types are incompatible. */
 static Type resolve_branch_types(Type then_type, Type else_type) {
-    /* Same type */
+    /* Same type (includes both-void case) */
     if (then_type == else_type) {
         return then_type;
     }
-    /* Both void */
-    if (then_type == TYPE_VOID && else_type == TYPE_VOID) {
-        return TYPE_VOID;
-    }
     /* comptime_int can coerce to any numeric */
-    if (then_type == TYPE_COMPTIME_INT) {
-        if (type_is_numeric(else_type) || else_type == TYPE_COMPTIME_FLOAT) {
-            return else_type;
-        }
+    if (then_type == TYPE_COMPTIME_INT && type_is_numeric(else_type)) {
+        return else_type;
     }
-    if (else_type == TYPE_COMPTIME_INT) {
-        if (type_is_numeric(then_type) || then_type == TYPE_COMPTIME_FLOAT) {
-            return then_type;
-        }
+    if (else_type == TYPE_COMPTIME_INT && type_is_numeric(then_type)) {
+        return then_type;
     }
     /* comptime_float can coerce to f64 */
     if (then_type == TYPE_COMPTIME_FLOAT && else_type == TYPE_F64) {
@@ -1037,8 +1029,7 @@ static Type type_element_type(Type type) {
 
 static bool type_can_coerce(Type from, Type to) {
     if (from == to) return true;
-    if (from == TYPE_COMPTIME_INT &&
-        (to == TYPE_I64 || to == TYPE_I32 || to == TYPE_U8 || to == TYPE_U32 || to == TYPE_F64)) return true;
+    if (from == TYPE_COMPTIME_INT && type_is_numeric(to) && !type_is_comptime(to)) return true;
     if (from == TYPE_COMPTIME_FLOAT && to == TYPE_F64) return true;
     /* Array-to-array coercion: same size, element types coerce */
     if (type_is_array(from) && type_is_array(to)) {
@@ -3456,6 +3447,23 @@ static bool is_comptime_int_type(Ast *node, Scope *scope) {
     return true;  /* default to int */
 }
 
+static bool int_add_overflows(long l, long r) {
+    return (r > 0 && l > INT64_MAX - r) || (r < 0 && l < INT64_MIN - r);
+}
+
+static bool int_sub_overflows(long l, long r) {
+    return (r < 0 && l > INT64_MAX + r) || (r > 0 && l < INT64_MIN + r);
+}
+
+static bool int_mul_overflows(long l, long r) {
+    if (r == 0) return false;
+    return (r == -1 && l == INT64_MIN) ||
+           (l > 0 && r > 0 && l > INT64_MAX / r) ||
+           (l < 0 && r < 0 && l < INT64_MAX / r) ||
+           (l > 0 && r < 0 && r < INT64_MIN / l) ||
+           (l < 0 && r > 0 && l < INT64_MIN / r);
+}
+
 /* Try to fold a binary arithmetic operation. Returns folded node or NULL.
  * Sets *div_by_zero to true if division by zero detected. */
 static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
@@ -3508,42 +3516,21 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
     } else {
         long l = get_comptime_int(left, scope);
         long r = get_comptime_int(right, scope);
-        long result;
+        bool overflow = false;
+        long result = 0;
 
         switch (op) {
-            case OP_ADD:
-                if ((r > 0 && l > INT64_MAX - r) || (r < 0 && l < INT64_MIN - r)) {
-                    diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
-                               node->loc.column,
-                               "Integer overflow in constant expression");
-                    return NULL;
-                }
-                result = l + r;
-                break;
-            case OP_SUB:
-                if ((r < 0 && l > INT64_MAX + r) || (r > 0 && l < INT64_MIN + r)) {
-                    diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
-                               node->loc.column,
-                               "Integer overflow in constant expression");
-                    return NULL;
-                }
-                result = l - r;
-                break;
-            case OP_MUL:
-                if (r != 0 && ((r == -1 && l == INT64_MIN) ||
-                    (l > 0 && r > 0 && l > INT64_MAX / r) ||
-                    (l < 0 && r < 0 && l < INT64_MAX / r) ||
-                    (l > 0 && r < 0 && r < INT64_MIN / l) ||
-                    (l < 0 && r > 0 && l < INT64_MIN / r))) {
-                    diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
-                               node->loc.column,
-                               "Integer overflow in constant expression");
-                    return NULL;
-                }
-                result = l * r;
-                break;
+            case OP_ADD: overflow = int_add_overflows(l, r); if (!overflow) result = l + r; break;
+            case OP_SUB: overflow = int_sub_overflows(l, r); if (!overflow) result = l - r; break;
+            case OP_MUL: overflow = int_mul_overflows(l, r); if (!overflow) result = l * r; break;
             case OP_DIV: result = l / r; break;
             default: return NULL;
+        }
+        if (overflow) {
+            diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
+                       node->loc.column,
+                       "Integer overflow in constant expression");
+            return NULL;
         }
 
         Ast *folded = ast_make_number(result, node->loc);
@@ -3677,10 +3664,7 @@ static bool is_addressable(Ast *node) {
 
 /* Check if a type is a scalar (integer, f64, bool, or comptime) */
 static bool type_is_scalar(Type type) {
-    return type == TYPE_I64 || type == TYPE_I32 ||
-           type == TYPE_U8 || type == TYPE_U32 ||
-           type == TYPE_F64 || type == TYPE_BOOL ||
-           type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
+    return type_is_numeric(type) || type == TYPE_BOOL;
 }
 
 /* Walk through field/index chains to find the root AST node */
@@ -4291,13 +4275,13 @@ static void typecheck_comptime_range(Ast *init, Type target, Scope *scope) {
     const char *tname = NULL;
     switch (target) {
         case TYPE_U8:
-            if (value < 0 || value > 255) tname = "u8 (0..255)";
+            if (value < 0 || value > UINT8_MAX) tname = "u8 (0..255)";
             break;
         case TYPE_I32:
-            if (value < -2147483648L || value > 2147483647L) tname = "i32 (-2147483648..2147483647)";
+            if (value < INT32_MIN || value > INT32_MAX) tname = "i32 (-2147483648..2147483647)";
             break;
         case TYPE_U32:
-            if (value < 0 || value > 4294967295L) tname = "u32 (0..4294967295)";
+            if (value < 0 || value > UINT32_MAX) tname = "u32 (0..4294967295)";
             break;
         default:
             return;
