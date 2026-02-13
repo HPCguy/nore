@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include <string.h>
 #include <errno.h>
+#include <stdint.h>
 #include <unistd.h>
 #include <sys/wait.h>
 
@@ -132,6 +133,7 @@ typedef enum {
     ERR_S047_SLICE_AS_FIELD        = ERR_GROUP_SEMANTIC + 47,
     ERR_S048_SLICE_RETURN          = ERR_GROUP_SEMANTIC + 48,
     ERR_S049_SLICE_NO_REF          = ERR_GROUP_SEMANTIC + 49,
+    ERR_S050_LITERAL_OUT_OF_RANGE  = ERR_GROUP_SEMANTIC + 50,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -303,6 +305,9 @@ typedef enum {
     TOKEN_CONTINUE,
     TOKEN_VOID,
     TOKEN_I64,
+    TOKEN_I32,
+    TOKEN_U8,
+    TOKEN_U32,
     TOKEN_F64,
     TOKEN_BOOL,
     TOKEN_TRUE,
@@ -366,6 +371,9 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_CONTINUE:      return "CONTINUE";
         case TOKEN_VOID:          return "VOID";
         case TOKEN_I64:           return "I64";
+        case TOKEN_I32:           return "I32";
+        case TOKEN_U8:            return "U8";
+        case TOKEN_U32:           return "U32";
         case TOKEN_F64:           return "F64";
         case TOKEN_BOOL:          return "BOOL";
         case TOKEN_TRUE:          return "TRUE";
@@ -523,12 +531,15 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
     switch (length) {
         case 2:
             if (memcmp(start, "if", 2) == 0) return TOKEN_IF;
+            if (memcmp(start, "u8", 2) == 0) return TOKEN_U8;
             break;
         case 3:
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
             if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
             if (memcmp(start, "ref", 3) == 0) return TOKEN_REF;
             if (memcmp(start, "i64", 3) == 0) return TOKEN_I64;
+            if (memcmp(start, "i32", 3) == 0) return TOKEN_I32;
+            if (memcmp(start, "u32", 3) == 0) return TOKEN_U32;
             if (memcmp(start, "f64", 3) == 0) return TOKEN_F64;
             break;
         case 4:
@@ -673,6 +684,9 @@ typedef enum {
     TYPE_UNKNOWN = -1,
     /* Concrete types */
     TYPE_I64,
+    TYPE_I32,
+    TYPE_U8,
+    TYPE_U32,
     TYPE_F64,
     TYPE_BOOL,
     TYPE_VOID,
@@ -695,8 +709,20 @@ static bool type_is_comptime(Type type) {
 }
 
 static bool type_is_numeric(Type type) {
-    return type == TYPE_I64 || type == TYPE_F64 ||
+    return type == TYPE_I64 || type == TYPE_I32 ||
+           type == TYPE_U8 || type == TYPE_U32 ||
+           type == TYPE_F64 ||
            type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
+}
+
+static bool type_is_integer(Type type) {
+    return type == TYPE_I64 || type == TYPE_I32 ||
+           type == TYPE_U8 || type == TYPE_U32 ||
+           type == TYPE_COMPTIME_INT;
+}
+
+static bool type_is_unsigned(Type type) {
+    return type == TYPE_U8 || type == TYPE_U32;
 }
 
 static bool type_is_value(Type type) {
@@ -737,11 +763,11 @@ static Type resolve_numeric_binary_type(Type left, Type right) {
     if (type_is_comptime(left) && type_is_comptime(right)) {
         return TYPE_COMPTIME_FLOAT;  /* int promotes to float */
     }
-    /* comptime_int + concrete → concrete */
-    if (left == TYPE_COMPTIME_INT && (right == TYPE_I64 || right == TYPE_F64)) {
+    /* comptime_int + concrete numeric → concrete */
+    if (left == TYPE_COMPTIME_INT && type_is_numeric(right) && !type_is_comptime(right)) {
         return right;
     }
-    if (right == TYPE_COMPTIME_INT && (left == TYPE_I64 || left == TYPE_F64)) {
+    if (right == TYPE_COMPTIME_INT && type_is_numeric(left) && !type_is_comptime(left)) {
         return left;
     }
     /* comptime_float + f64 → f64 */
@@ -751,16 +777,16 @@ static Type resolve_numeric_binary_type(Type left, Type right) {
     if (right == TYPE_COMPTIME_FLOAT && left == TYPE_F64) {
         return TYPE_F64;
     }
-    /* comptime_float + i64 → error */
-    if ((left == TYPE_COMPTIME_FLOAT && right == TYPE_I64) ||
-        (right == TYPE_COMPTIME_FLOAT && left == TYPE_I64)) {
+    /* comptime_float + integer → error */
+    if ((left == TYPE_COMPTIME_FLOAT && type_is_integer(right)) ||
+        (right == TYPE_COMPTIME_FLOAT && type_is_integer(left))) {
         return TYPE_VOID;  /* error */
     }
-    /* Both same concrete type */
-    if (left == right && (left == TYPE_I64 || left == TYPE_F64)) {
+    /* Both same concrete numeric type */
+    if (left == right && type_is_numeric(left)) {
         return left;
     }
-    /* Mixed concrete (i64 + f64) → error */
+    /* Mixed concrete types → error */
     return TYPE_VOID;
 }
 
@@ -777,14 +803,12 @@ static Type resolve_branch_types(Type then_type, Type else_type) {
     }
     /* comptime_int can coerce to any numeric */
     if (then_type == TYPE_COMPTIME_INT) {
-        if (else_type == TYPE_I64 || else_type == TYPE_F64 ||
-            else_type == TYPE_COMPTIME_INT || else_type == TYPE_COMPTIME_FLOAT) {
+        if (type_is_numeric(else_type) || else_type == TYPE_COMPTIME_FLOAT) {
             return else_type;
         }
     }
     if (else_type == TYPE_COMPTIME_INT) {
-        if (then_type == TYPE_I64 || then_type == TYPE_F64 ||
-            then_type == TYPE_COMPTIME_INT || then_type == TYPE_COMPTIME_FLOAT) {
+        if (type_is_numeric(then_type) || then_type == TYPE_COMPTIME_FLOAT) {
             return then_type;
         }
     }
@@ -1013,7 +1037,8 @@ static Type type_element_type(Type type) {
 
 static bool type_can_coerce(Type from, Type to) {
     if (from == to) return true;
-    if (from == TYPE_COMPTIME_INT && (to == TYPE_I64 || to == TYPE_F64)) return true;
+    if (from == TYPE_COMPTIME_INT &&
+        (to == TYPE_I64 || to == TYPE_I32 || to == TYPE_U8 || to == TYPE_U32 || to == TYPE_F64)) return true;
     if (from == TYPE_COMPTIME_FLOAT && to == TYPE_F64) return true;
     /* Array-to-array coercion: same size, element types coerce */
     if (type_is_array(from) && type_is_array(to)) {
@@ -1038,6 +1063,9 @@ static const char *type_name(Type type) {
     switch (type) {
         case TYPE_UNKNOWN:       return "unknown";
         case TYPE_I64:           return "i64";
+        case TYPE_I32:           return "i32";
+        case TYPE_U8:            return "u8";
+        case TYPE_U32:           return "u32";
         case TYPE_F64:           return "f64";
         case TYPE_BOOL:          return "bool";
         case TYPE_VOID:          return "void";
@@ -1748,6 +1776,9 @@ static int parser_match(Parser *parser, TokenKind kind) {
  * If allow_void is true, void is accepted as valid type. */
 static Type parser_parse_type(Parser *parser, bool allow_void) {
     if (parser_match(parser, TOKEN_I64)) return TYPE_I64;
+    if (parser_match(parser, TOKEN_I32)) return TYPE_I32;
+    if (parser_match(parser, TOKEN_U8))  return TYPE_U8;
+    if (parser_match(parser, TOKEN_U32)) return TYPE_U32;
     if (parser_match(parser, TOKEN_F64)) return TYPE_F64;
     if (parser_match(parser, TOKEN_BOOL)) return TYPE_BOOL;
     if (allow_void && parser_match(parser, TOKEN_VOID)) return TYPE_VOID;
@@ -1925,7 +1956,13 @@ static Ast *parser_parse_primary(Parser *parser) {
         }
         memcpy(buffer, parser->previous.start, len);
         buffer[len] = '\0';
+        errno = 0;
         long value = strtol(buffer, NULL, 10);
+        if (errno == ERANGE) {
+            diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+                       "Integer literal out of range");
+            return ast_make_number(0, loc);
+        }
         return ast_make_number(value, loc);
     }
 
@@ -2210,7 +2247,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, f64, or bool)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, or bool)");
             parser_synchronize(parser);
             return NULL;
         }
@@ -2218,7 +2255,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, f64, or bool)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, or bool)");
             parser_synchronize(parser);
             return NULL;
         }
@@ -2521,7 +2558,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
                        parser->previous.column, "void is not valid as parameter type");
         } else {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, f64, or bool)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, or bool)");
         }
         return false;
     }
@@ -3474,9 +3511,37 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
         long result;
 
         switch (op) {
-            case OP_ADD: result = l + r; break;
-            case OP_SUB: result = l - r; break;
-            case OP_MUL: result = l * r; break;
+            case OP_ADD:
+                if ((r > 0 && l > INT64_MAX - r) || (r < 0 && l < INT64_MIN - r)) {
+                    diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
+                               node->loc.column,
+                               "Integer overflow in constant expression");
+                    return NULL;
+                }
+                result = l + r;
+                break;
+            case OP_SUB:
+                if ((r < 0 && l > INT64_MAX + r) || (r > 0 && l < INT64_MIN + r)) {
+                    diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
+                               node->loc.column,
+                               "Integer overflow in constant expression");
+                    return NULL;
+                }
+                result = l - r;
+                break;
+            case OP_MUL:
+                if (r != 0 && ((r == -1 && l == INT64_MIN) ||
+                    (l > 0 && r > 0 && l > INT64_MAX / r) ||
+                    (l < 0 && r < 0 && l < INT64_MAX / r) ||
+                    (l > 0 && r < 0 && r < INT64_MIN / l) ||
+                    (l < 0 && r > 0 && l < INT64_MIN / r))) {
+                    diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
+                               node->loc.column,
+                               "Integer overflow in constant expression");
+                    return NULL;
+                }
+                result = l * r;
+                break;
             case OP_DIV: result = l / r; break;
             default: return NULL;
         }
@@ -3610,9 +3675,11 @@ static bool is_addressable(Ast *node) {
     return false;
 }
 
-/* Check if a type is a scalar (i64, f64, bool, or comptime) */
+/* Check if a type is a scalar (integer, f64, bool, or comptime) */
 static bool type_is_scalar(Type type) {
-    return type == TYPE_I64 || type == TYPE_F64 || type == TYPE_BOOL ||
+    return type == TYPE_I64 || type == TYPE_I32 ||
+           type == TYPE_U8 || type == TYPE_U32 ||
+           type == TYPE_F64 || type == TYPE_BOOL ||
            type == TYPE_COMPTIME_INT || type == TYPE_COMPTIME_FLOAT;
 }
 
@@ -3670,6 +3737,7 @@ static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
     }
 }
 
+static void typecheck_comptime_range(Ast *init, Type target, Scope *scope);
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
 
@@ -3805,6 +3873,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             switch (node->as.unary.op) {
                 /* Negation: numeric -> numeric (preserves type) */
                 case OP_NEG:
+                    if (type_is_unsigned(operand_type)) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                                   node->as.unary.operand->loc.column,
+                                   "Cannot negate unsigned type %s",
+                                   type_name(operand_type));
+                        node->expr_type = operand_type;
+                        return operand_type;
+                    }
                     if (!type_is_numeric(operand_type)) {
                         diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
@@ -3904,6 +3980,9 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                "Argument %zu: expected %s, got %s",
                                i + 1, type_name(param_type),
                                type_name(arg_type));
+                }
+                if (arg_type == TYPE_COMPTIME_INT && type_is_integer(param_type)) {
+                    typecheck_comptime_range(arg, param_type, scope);
                 }
             }
 
@@ -4138,7 +4217,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 node->expr_type = TYPE_I64;
                 return TYPE_I64;
             }
-            if (idx_type != TYPE_I64 && idx_type != TYPE_COMPTIME_INT) {
+            if (!type_is_integer(idx_type)) {
                 diagnostic(ERR_S034_INDEX_NOT_INTEGER, node->as.index_access.index->loc.line,
                            node->as.index_access.index->loc.column,
                            "Index must be integer, got %s",
@@ -4205,6 +4284,30 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
     return TYPE_I64;
 }
 
+/* Check if a comptime_int value fits in the target type's range */
+static void typecheck_comptime_range(Ast *init, Type target, Scope *scope) {
+    if (!is_comptime_constant(init, scope)) return;
+    long value = get_comptime_int(init, scope);
+    const char *tname = NULL;
+    switch (target) {
+        case TYPE_U8:
+            if (value < 0 || value > 255) tname = "u8 (0..255)";
+            break;
+        case TYPE_I32:
+            if (value < -2147483648L || value > 2147483647L) tname = "i32 (-2147483648..2147483647)";
+            break;
+        case TYPE_U32:
+            if (value < 0 || value > 4294967295L) tname = "u32 (0..4294967295)";
+            break;
+        default:
+            return;
+    }
+    if (tname) {
+        diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, init->loc.line, init->loc.column,
+                   "Value %ld out of range for %s", value, tname);
+    }
+}
+
 /* Report a type coercion error, with a specific diagnostic for array length mismatch */
 static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc loc) {
     if (type_is_array(init_type) && type_is_array(declared)) {
@@ -4259,6 +4362,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                     typecheck_coercion_error(init_type, declared,
                                              node->as.val_decl.initializer->loc);
                 }
+                if (init_type == TYPE_COMPTIME_INT && type_is_integer(declared)) {
+                    typecheck_comptime_range(node->as.val_decl.initializer, declared, *scope);
+                }
+                /* Propagate declared type into array literal for codegen */
+                if (type_is_array(init_type) && type_is_array(declared) &&
+                    init_type != declared) {
+                    node->as.val_decl.initializer->expr_type = declared;
+                }
             }
 
             typecheck_struct_copy(declared, node->as.val_decl.initializer);
@@ -4296,6 +4407,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (!type_can_coerce(init_type, declared)) {
                 typecheck_coercion_error(init_type, declared,
                                          node->as.mut_decl.initializer->loc);
+            }
+            if (init_type == TYPE_COMPTIME_INT && type_is_integer(declared)) {
+                typecheck_comptime_range(node->as.mut_decl.initializer, declared, *scope);
+            }
+            /* Propagate declared type into array literal for codegen */
+            if (type_is_array(init_type) && type_is_array(declared) &&
+                init_type != declared) {
+                node->as.mut_decl.initializer->expr_type = declared;
             }
 
             typecheck_struct_copy(declared, node->as.mut_decl.initializer);
@@ -4357,6 +4476,9 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                            "Cannot assign %s to %s",
                            type_name(value_type), type_name(target_type));
             }
+            if (value_type == TYPE_COMPTIME_INT && type_is_integer(target_type)) {
+                typecheck_comptime_range(node->as.assignment.value, target_type, *scope);
+            }
             break;
         }
 
@@ -4384,6 +4506,9 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                                    node->loc.column,
                                    "Return type mismatch: expected %s, got %s",
                                    type_name(return_type), type_name(value_type));
+                    }
+                    if (value_type == TYPE_COMPTIME_INT && type_is_integer(return_type)) {
+                        typecheck_comptime_range(value, return_type, *scope);
                     }
                 }
             }
@@ -4967,12 +5092,15 @@ static void codegen_indent(FILE *out, int indent) {
 
 static const char *codegen_type_to_c(Type type) {
     switch (type) {
-        case TYPE_UNKNOWN:       return "long";   /* should not happen */
-        case TYPE_I64:           return "long";
+        case TYPE_UNKNOWN:       return "int64_t";   /* should not happen */
+        case TYPE_I64:           return "int64_t";
+        case TYPE_I32:           return "int32_t";
+        case TYPE_U8:            return "uint8_t";
+        case TYPE_U32:           return "uint32_t";
         case TYPE_F64:           return "double";
         case TYPE_BOOL:          return "int";
         case TYPE_VOID:          return "void";
-        case TYPE_COMPTIME_INT:  return "long";   /* default */
+        case TYPE_COMPTIME_INT:  return "int64_t";   /* default */
         case TYPE_COMPTIME_FLOAT: return "double"; /* default */
         default: {
             static char bufs[4][80];
@@ -4994,7 +5122,7 @@ static const char *codegen_type_to_c(Type type) {
                 snprintf(buf, 80, "ni_slice_%d", type_slice_index(type));
                 return buf;
             }
-            return "long";
+            return "int64_t";
         }
     }
 }
@@ -5424,7 +5552,8 @@ static bool type_elem_dep_emitted(Type elem_type, const bool *emitted,
 
 static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
-    fprintf(out, "#include <stdlib.h>\n\n");
+    fprintf(out, "#include <stdlib.h>\n");
+    fprintf(out, "#include <stdint.h>\n\n");
 
     if (ast->kind != AST_PROGRAM) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
@@ -5432,15 +5561,15 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
 
     /* Emit bounds check helper and macro if any array or slice types exist */
     if (g_array_table->count > 0 || g_slice_table->count > 0) {
-        fprintf(out, "static void ni_bounds_fail(long idx, size_t size,\n");
+        fprintf(out, "static void ni_bounds_fail(int64_t idx, size_t size,\n");
         fprintf(out, "                           const char *file, unsigned long line, unsigned long col) {\n");
         fprintf(out, "    fprintf(stderr, \"%%s:%%lu:%%lu: error[R002]: Array index out of bounds: %%ld not in [0, %%zu)\\n\",\n");
-        fprintf(out, "            file, line, col, idx, size);\n");
+        fprintf(out, "            file, line, col, (long)idx, size);\n");
         fprintf(out, "    exit(2);\n");
         fprintf(out, "}\n");
         fprintf(out, "#define NI_BOUNDS_CHECK(idx, size, file, line, col) \\\n");
-        fprintf(out, "    ((unsigned long)(idx) >= (unsigned long)(size) \\\n");
-        fprintf(out, "     ? (ni_bounds_fail((long)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
+        fprintf(out, "    ((uint64_t)(idx) >= (uint64_t)(size) \\\n");
+        fprintf(out, "     ? (ni_bounds_fail((int64_t)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
     }
 
     /* Emit type typedefs in dependency order (topological sort).
@@ -5487,7 +5616,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
                 if (emitted[vcount + acount + i]) continue;
                 SliceTypeEntry *se = &g_slice_table->types[i];
                 if (!type_elem_dep_emitted(se->element_type, emitted, vcount, acount)) continue;
-                fprintf(out, "typedef struct { %s *data; long len; } ni_slice_%zu;\n",
+                fprintf(out, "typedef struct { %s *data; int64_t len; } ni_slice_%zu;\n",
                         codegen_type_to_c(se->element_type), i);
                 emitted[vcount + acount + i] = true;
                 done++; progress++;

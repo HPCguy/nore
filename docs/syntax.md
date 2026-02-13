@@ -29,6 +29,9 @@ val y: i64 = 10
 
 **Currently supported**:
 - `i64` - 64-bit signed integer
+- `i32` - 32-bit signed integer
+- `u8` - 8-bit unsigned integer
+- `u32` - 32-bit unsigned integer
 - `f64` - 64-bit floating-point number
 - `bool` - Boolean type (`true` or `false`)
 - `void` - No return value (functions only)
@@ -38,14 +41,14 @@ val y: i64 = 10
 - User-defined `struct` types (see Struct Types)
 
 **Compile-time types** (internal):
-- `comptime_int` - Integer literal (coerces to i64 or f64)
+- `comptime_int` - Integer literal (coerces to any integer type or f64)
 - `comptime_float` - Float literal (coerces to f64 only)
 
 ### Literals
 
 **Integer literals**:
 ```nore
-42      // comptime_int, coerces to i64 or f64
+42      // comptime_int, coerces to any integer type or f64
 -17     // negative integer
 ```
 
@@ -70,12 +73,19 @@ val x: i64 = 42      // comptime_int → i64
 val y: f64 = 42      // comptime_int → f64
 val z: f64 = 3.14    // comptime_float → f64
 val w: i64 = 3.14    // ERROR: comptime_float cannot coerce to i64
+val a: u8 = 255      // comptime_int → u8 (range-checked)
+val b: i32 = -100    // comptime_int → i32 (range-checked)
+val c: u32 = 42      // comptime_int → u32 (range-checked)
+val d: u8 = 256      // ERROR: out of range for u8
+val e: u32 = -1      // ERROR: out of range for u32
 ```
 
 **Coercion rules**:
-- `comptime_int` coerces to `i64` or `f64`
+- `comptime_int` coerces to any integer type (`i64`, `i32`, `u8`, `u32`) or `f64`
 - `comptime_float` coerces to `f64` only
-- No implicit coercion between concrete types (`i64` ↔ `f64`)
+- No implicit coercion between concrete types (`i64` ↔ `f64`, `i32` ↔ `i64`, etc.)
+- Compile-time range checking when assigning `comptime_int` to smaller types
+- Negation of unsigned types (`u8`, `u32`) is an error
 
 **In expressions**:
 ```nore
@@ -213,7 +223,7 @@ scale(mut ref q, 2.0)
 - `mut ref` requires the root variable to be `mut`
 
 **Restrictions**:
-- Cannot take ref of scalar fields (i64, f64, bool) — just copy them
+- Cannot take ref of scalar fields (i64, i32, u8, u32, f64, bool) — just copy them
 - Cannot take ref of array elements (deferred to slices)
 - Refs are a calling convention only — cannot be stored, returned, or used as local variables
 
@@ -364,7 +374,7 @@ val x: i64 = arr[0]
 val y: i64 = arr[i]
 val z: i64 = grid[1][0]   // nested indexing
 ```
-- Index must be integer type (`i64` or `comptime_int`)
+- Index must be integer type (`i64`, `i32`, `u8`, `u32`, or `comptime_int`)
 - Bounds checking at runtime (exits with error code 2 on out-of-bounds)
 - Chains with field access: `v.data[i]`
 
@@ -564,7 +574,7 @@ val y: i64 = {
 - `*` Multiplication
 - `/` Division
 
-Works with i64, f64, and comptime types. Both operands must be compatible (see Type Coercion).
+Works with all numeric types (i64, i32, u8, u32, f64) and comptime types. Both operands must be the same concrete type (after coercion). Negation (`-x`) is not allowed on unsigned types (`u8`, `u32`).
 
 **Comparison** (numeric operands, bool result):
 - `==` Equal
@@ -635,7 +645,10 @@ func main(): void = {
 - `continue` - Next iteration
 - `true` - Boolean true
 - `false` - Boolean false
-- `i64` - 64-bit integer type
+- `i64` - 64-bit signed integer type
+- `i32` - 32-bit signed integer type
+- `u8` - 8-bit unsigned integer type
+- `u32` - 32-bit unsigned integer type
 - `f64` - 64-bit floating-point type
 - `bool` - Boolean type
 - `void` - Void type
@@ -681,7 +694,7 @@ func main(): void = {
 
 **Not yet implemented**:
 - String and character literals
-- Additional types (`i32`, `u32`, `f32`)
+- Additional types (`f32`)
 - Module system
 - While as expressions
 - Early exit from expression blocks (`yield` keyword)

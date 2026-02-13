@@ -1,0 +1,3 @@
+func main(): void = {
+    val x: u32 = -1
+}
