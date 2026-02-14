@@ -539,8 +539,8 @@ mut pts: [Vec2] = alloc(mut ref mem, 100)      // 100 zero-initialized Vec2s
 
 **Passing Arenas to Functions**:
 ```nore
-func allocate(mut ref mem: Arena): [i64] = {
-    // ERROR: Cannot return slice type
+func make_arena(): Arena = {
+    return arena(4096)
 }
 
 func fill(mut ref mem: Arena, n: i64): void = {
@@ -549,12 +549,11 @@ func fill(mut ref mem: Arena, n: i64): void = {
 }
 ```
 - Arena parameters must use `ref` (read-only) or `mut ref` (for allocation)
-- Cannot return Arena type from functions
+- Arena can be returned from functions (like structs, via constructor or function call)
 
 **Restrictions**:
 - Arena is not copyable (like structs)
 - Arena cannot be a field in value or struct types
-- Arena cannot be returned from functions
 - Arena parameters must use `ref` or `mut ref`
 
 ### Control Flow

@@ -695,10 +695,10 @@ typedef enum {
     TYPE_F64,
     TYPE_BOOL,
     TYPE_VOID,
+    TYPE_ARENA,
     /* Comptime types (literals only) */
     TYPE_COMPTIME_INT,
     TYPE_COMPTIME_FLOAT,
-    TYPE_ARENA,
     /* User-defined value types start at this offset */
     TYPE_VALUE_BASE = 16,
     /* Array types start at this offset */
@@ -2342,7 +2342,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, or bool)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, or Arena)");
             parser_synchronize(parser);
             return NULL;
         }
@@ -2350,7 +2350,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, or bool)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, or Arena)");
             parser_synchronize(parser);
             return NULL;
         }
@@ -2653,7 +2653,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
                        parser->previous.column, "void is not valid as parameter type");
         } else {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, or bool)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, or Arena)");
         }
         return false;
     }
@@ -2825,7 +2825,7 @@ static Ast *parser_parse_function(Parser *parser) {
     Type return_type = parser_parse_type(parser, true);
     if (return_type == TYPE_UNKNOWN) {
         diagnostic(ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
-                   parser->current.column, "Expected return type (i64, f64, bool, or void)");
+                   parser->current.column, "Expected return type (i64, i32, u8, u32, f64, bool, Arena, or void)");
         if (params) free(params);
         parser_synchronize(parser);
         return NULL;
@@ -4474,7 +4474,7 @@ static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc lo
                type_name(init_type), type_name(declared));
 }
 
-/* Emit S043 if a struct-typed initializer is not a constructor or function call */
+/* Emit S043 if a non-copyable type is initialized from a copy (not a constructor, call, or arena) */
 static void typecheck_struct_copy(Type type, Ast *init) {
     if (type_is_struct(type) &&
         init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL &&
@@ -5746,7 +5746,9 @@ static bool type_elem_dep_emitted(Type elem_type, const bool *emitted,
 static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "#include <stdlib.h>\n");
-    fprintf(out, "#include <stdint.h>\n\n");
+    fprintf(out, "#include <stdint.h>\n");
+    if (g_has_arena) fprintf(out, "#include <string.h>\n");
+    fprintf(out, "\n");
 
     if (ast->kind != AST_PROGRAM) {
         panic(ERR_I002_INTERNAL_ERROR, "codegen_emit_ir expects AST_PROGRAM");
@@ -5767,7 +5769,6 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
 
     /* Emit Arena runtime if arena is used */
     if (g_has_arena) {
-        fprintf(out, "#include <string.h>\n\n");
         fprintf(out, "typedef struct { uint8_t *data; size_t capacity; size_t offset; } ni_Arena;\n\n");
         fprintf(out, "static ni_Arena ni_arena_new(int64_t capacity) {\n");
         fprintf(out, "    ni_Arena a;\n");
