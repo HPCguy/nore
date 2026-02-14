@@ -37,6 +37,7 @@ val y: i64 = 10
 - `void` - No return value (functions only)
 - `[T; N]` - Fixed-size array (see Arrays)
 - `[T]` - Slice (see Slices)
+- `Arena` - Heap memory arena (see Arenas)
 - User-defined `value` types (see Value Types)
 - User-defined `struct` types (see Struct Types)
 
@@ -290,8 +291,8 @@ struct Player { pos: Vec2, score: i64 }
 - Keyword: `struct`
 - Must be declared before use (textual order)
 - Fields are comma-separated with type annotations (`name: Type`)
-- Field types can be any concrete type (`i64`, `f64`, `bool`), arrays, or value types
-- Cannot embed other struct types as fields
+- Field types can be any concrete type (`i64`, `f64`, `bool`), arrays, slices, or value types
+- Cannot embed other struct types or Arena as fields
 
 **Constructors**:
 ```nore
@@ -494,9 +495,67 @@ data[i] = 42                 // element assignment (mut ref only)
 - Same syntax as arrays
 - Runtime bounds checking (exits with error code 2 on out-of-bounds)
 
+**Slice Local Variables** (via Arena):
+```nore
+mut mem: Arena = arena(4096)
+val data: [i64] = alloc(mut ref mem, 10)
+mut pts: [Vec2] = alloc(mut ref mem, 100)
+```
+- Slice locals require initialization via `alloc()` from an Arena
+- Cannot create slice locals without an Arena
+
+**Slice Struct Fields**:
+```nore
+struct Mesh { vertices: [f64], count: i64 }
+```
+- Slices are allowed as fields in `struct` types
+- Slices are NOT allowed as fields in `value` types
+
 **Restrictions** (current):
-- Slices are parameter-only — no local slice variables, return types, or fields
-- These restrictions will lift when arenas are introduced
+- Cannot return slice types from functions
+- Slice parameters must use `ref` or `mut ref`
+
+### Arenas
+
+Arenas provide heap allocation for slices. An Arena is a contiguous block of memory from which slices can be allocated sequentially.
+
+**Creating an Arena**:
+```nore
+mut mem: Arena = arena(4096)    // 4096-byte arena
+```
+- `arena(capacity)` creates a new arena with the given byte capacity
+- Arena variables must be `mut` (allocation mutates internal state)
+
+**Allocating Slices**:
+```nore
+val data: [i64] = alloc(mut ref mem, 10)       // 10 zero-initialized i64s
+mut pts: [Vec2] = alloc(mut ref mem, 100)      // 100 zero-initialized Vec2s
+```
+- `alloc(mut ref arena, count)` allocates `count` elements from the arena
+- Element type is inferred from the declaration type
+- Memory is zero-initialized
+- Arena argument must be `mut ref` (allocation mutates the arena)
+- Aborts at runtime if arena runs out of memory
+
+**Passing Arenas to Functions**:
+```nore
+func allocate(mut ref mem: Arena): [i64] = {
+    // ERROR: Cannot return slice type
+}
+
+func fill(mut ref mem: Arena, n: i64): void = {
+    mut data: [i64] = alloc(mut ref mem, n)
+    data[0] = 42
+}
+```
+- Arena parameters must use `ref` (read-only) or `mut ref` (for allocation)
+- Cannot return Arena type from functions
+
+**Restrictions**:
+- Arena is not copyable (like structs)
+- Arena cannot be a field in value or struct types
+- Arena cannot be returned from functions
+- Arena parameters must use `ref` or `mut ref`
 
 ### Control Flow
 
@@ -633,6 +692,7 @@ func main(): void = {
 - `func` - Function declaration
 - `value` - Value type declaration
 - `struct` - Struct type declaration
+- `Arena` - Arena type (heap memory)
 - `ref` - Reference parameter/argument
 - `val` - Immutable variable
 - `mut` - Mutable variable/reference

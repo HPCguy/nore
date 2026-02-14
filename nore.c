@@ -134,6 +134,8 @@ typedef enum {
     ERR_S048_SLICE_RETURN          = ERR_GROUP_SEMANTIC + 48,
     ERR_S049_SLICE_NO_REF          = ERR_GROUP_SEMANTIC + 49,
     ERR_S050_LITERAL_OUT_OF_RANGE  = ERR_GROUP_SEMANTIC + 50,
+    ERR_S051_ARENA_ALLOC_TYPE      = ERR_GROUP_SEMANTIC + 51,
+    ERR_S052_ARENA_IMMUTABLE       = ERR_GROUP_SEMANTIC + 52,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -315,6 +317,7 @@ typedef enum {
     TOKEN_VALUE,
     TOKEN_STRUCT,
     TOKEN_REF,
+    TOKEN_ARENA,
 
     TOKEN_PLUS,
     TOKEN_MINUS,
@@ -381,6 +384,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_VALUE:         return "VALUE";
         case TOKEN_STRUCT:        return "STRUCT";
         case TOKEN_REF:           return "REF";
+        case TOKEN_ARENA:         return "ARENA";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
@@ -554,6 +558,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "break", 5) == 0) return TOKEN_BREAK;
             if (memcmp(start, "false", 5) == 0) return TOKEN_FALSE;
             if (memcmp(start, "value", 5) == 0) return TOKEN_VALUE;
+            if (memcmp(start, "Arena", 5) == 0) return TOKEN_ARENA;
             break;
         case 6:
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
@@ -693,6 +698,7 @@ typedef enum {
     /* Comptime types (literals only) */
     TYPE_COMPTIME_INT,
     TYPE_COMPTIME_FLOAT,
+    TYPE_ARENA,
     /* User-defined value types start at this offset */
     TYPE_VALUE_BASE = 16,
     /* Array types start at this offset */
@@ -723,6 +729,10 @@ static bool type_is_integer(Type type) {
 
 static bool type_is_unsigned(Type type) {
     return type == TYPE_U8 || type == TYPE_U32;
+}
+
+static bool type_is_arena(Type type) {
+    return type == TYPE_ARENA;
 }
 
 static bool type_is_value(Type type) {
@@ -898,6 +908,7 @@ static ValueTypeEntry *value_table_get(Type type) {
 }
 
 static bool type_is_struct(Type type) {
+    if (type == TYPE_ARENA) return true;
     ValueTypeEntry *vt = value_table_get(type);
     return vt && vt->is_struct;
 }
@@ -973,6 +984,7 @@ typedef struct {
 } SliceTypeTable;
 
 static SliceTypeTable *g_slice_table = NULL;
+static bool g_has_arena = false;
 
 static SliceTypeTable *slice_table_create(void) {
     SliceTypeTable *table = malloc(sizeof(SliceTypeTable));
@@ -1062,6 +1074,7 @@ static const char *type_name(Type type) {
         case TYPE_VOID:          return "void";
         case TYPE_COMPTIME_INT:  return "comptime_int";
         case TYPE_COMPTIME_FLOAT: return "comptime_float";
+        case TYPE_ARENA:         return "Arena";
         default: {
             /* Rotating buffers: safe when called multiple times in one printf */
             static char bufs[4][64];
@@ -1115,6 +1128,8 @@ typedef enum {
     AST_FIELD_ACCESS,
     AST_ARRAY_LITERAL,
     AST_INDEX_ACCESS,
+    AST_ARENA_NEW,
+    AST_ARENA_ALLOC,
     AST_PROGRAM
 } AstKind;
 
@@ -1270,6 +1285,15 @@ typedef struct Ast {
             struct Ast *object;
             struct Ast *index;
         } index_access;
+
+        struct {
+            struct Ast *capacity;
+        } arena_new;
+
+        struct {
+            struct Ast *arena;
+            struct Ast *count;
+        } arena_alloc;
 
         struct {
             struct Ast **statements;
@@ -1636,6 +1660,25 @@ static Ast *ast_make_index_access(Ast *object, Ast *index, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_arena_new(Ast *capacity, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ARENA_NEW;
+    node->loc = loc;
+    node->as.arena_new.capacity = capacity;
+    return node;
+}
+
+static Ast *ast_make_arena_alloc(Ast *arena, Ast *count, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ARENA_ALLOC;
+    node->loc = loc;
+    node->as.arena_alloc.arena = arena;
+    node->as.arena_alloc.count = count;
+    return node;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
 
@@ -1713,6 +1756,13 @@ static void ast_free(Ast *node) {
             ast_free(node->as.index_access.object);
             ast_free(node->as.index_access.index);
             break;
+        case AST_ARENA_NEW:
+            ast_free(node->as.arena_new.capacity);
+            break;
+        case AST_ARENA_ALLOC:
+            ast_free(node->as.arena_alloc.arena);
+            ast_free(node->as.arena_alloc.count);
+            break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
                 ast_free(node->as.program.statements[i]);
@@ -1772,6 +1822,7 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
     if (parser_match(parser, TOKEN_U32)) return TYPE_U32;
     if (parser_match(parser, TOKEN_F64)) return TYPE_F64;
     if (parser_match(parser, TOKEN_BOOL)) return TYPE_BOOL;
+    if (parser_match(parser, TOKEN_ARENA)) return TYPE_ARENA;
     if (allow_void && parser_match(parser, TOKEN_VOID)) return TYPE_VOID;
     /* Check for user-defined value types */
     if (parser_check(parser, TOKEN_IDENTIFIER)) {
@@ -1986,6 +2037,59 @@ static Ast *parser_parse_primary(Parser *parser) {
         SourceLoc loc = token_loc(&parser->previous);
         const char *name_start = parser->previous.start;
         size_t name_length = parser->previous.length;
+
+        /* arena(capacity) — built-in arena constructor */
+        if (name_length == 5 && memcmp(name_start, "arena", 5) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *capacity = parser_parse_expression(parser);
+            if (!capacity) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after arena capacity");
+                ast_free(capacity);
+                return NULL;
+            }
+            return ast_make_arena_new(capacity, loc);
+        }
+
+        /* alloc(mut ref arena, count) — built-in arena allocation */
+        if (name_length == 5 && memcmp(name_start, "alloc", 5) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            /* Expect 'mut ref' before arena argument */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before arena argument in alloc()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in alloc()");
+                return NULL;
+            }
+            Ast *arena = parser_parse_expression(parser);
+            if (!arena) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after arena argument in alloc()");
+                ast_free(arena);
+                return NULL;
+            }
+            Ast *count = parser_parse_expression(parser);
+            if (!count) { ast_free(arena); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after alloc count");
+                ast_free(arena);
+                ast_free(count);
+                return NULL;
+            }
+            return ast_make_arena_alloc(arena, count, loc);
+        }
 
         /* Check for function call: identifier followed by '(' */
         if (parser_check(parser, TOKEN_LPAREN)) {
@@ -3142,6 +3246,23 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.index_access.index, indent + 2);
             break;
 
+        case AST_ARENA_NEW:
+            printf("ARENA_NEW\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("CAPACITY:\n");
+            parser_print_ast_step(node->as.arena_new.capacity, indent + 2);
+            break;
+
+        case AST_ARENA_ALLOC:
+            printf("ARENA_ALLOC\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("ARENA:\n");
+            parser_print_ast_step(node->as.arena_alloc.arena, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("COUNT:\n");
+            parser_print_ast_step(node->as.arena_alloc.count, indent + 2);
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -4260,6 +4381,50 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return field_type;
         }
 
+        case AST_ARENA_NEW: {
+            Type cap_type = typecheck_expression(node->as.arena_new.capacity, scope, func_table);
+            if (!type_is_integer(cap_type)) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.arena_new.capacity->loc.line,
+                           node->as.arena_new.capacity->loc.column,
+                           "Arena capacity must be integer, got %s",
+                           type_name(cap_type));
+            }
+            g_has_arena = true;
+            node->expr_type = TYPE_ARENA;
+            return TYPE_ARENA;
+        }
+
+        case AST_ARENA_ALLOC: {
+            Type arena_type = typecheck_expression(node->as.arena_alloc.arena, scope, func_table);
+            if (!type_is_arena(arena_type)) {
+                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.arena_alloc.arena->loc.line,
+                           node->as.arena_alloc.arena->loc.column,
+                           "alloc() requires Arena, got %s",
+                           type_name(arena_type));
+            }
+            /* Check arena is mutable */
+            if (node->as.arena_alloc.arena->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.arena_alloc.arena->as.identifier.start,
+                    node->as.arena_alloc.arena->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(ERR_S052_ARENA_IMMUTABLE, node->as.arena_alloc.arena->loc.line,
+                               node->as.arena_alloc.arena->loc.column,
+                               "Cannot alloc from immutable Arena, use 'mut'");
+                }
+            }
+            Type count_type = typecheck_expression(node->as.arena_alloc.count, scope, func_table);
+            if (!type_is_integer(count_type)) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.arena_alloc.count->loc.line,
+                           node->as.arena_alloc.count->loc.column,
+                           "alloc() count must be integer, got %s",
+                           type_name(count_type));
+            }
+            /* expr_type set to TYPE_UNKNOWN — propagated from declaration context */
+            node->expr_type = TYPE_UNKNOWN;
+            return TYPE_UNKNOWN;
+        }
+
         default:
             break;
     }
@@ -4312,9 +4477,10 @@ static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc lo
 /* Emit S043 if a struct-typed initializer is not a constructor or function call */
 static void typecheck_struct_copy(Type type, Ast *init) {
     if (type_is_struct(type) &&
-        init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL) {
+        init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL &&
+        init->kind != AST_ARENA_NEW) {
         diagnostic(ERR_S043_STRUCT_COPY, init->loc.line, init->loc.column,
-                   "Cannot copy struct (only constructor or function return allowed)");
+                   "Cannot copy %s (not copyable)", type_name(type));
     }
 }
 
@@ -4324,10 +4490,20 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
             Type declared = node->as.val_decl.type;
 
+            /* Slice local via arena alloc — propagate declared type */
+            if (type_is_slice(declared) &&
+                node->as.val_decl.initializer->kind == AST_ARENA_ALLOC) {
+                node->as.val_decl.initializer->expr_type = declared;
+                scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                break;
+            }
+
+            /* Slice locals only allowed via alloc */
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
-                           "Slice type not allowed as local variable (use fixed-size array)");
+                           "Slice type not allowed as local variable (use alloc)");
             }
 
             if (declared == TYPE_UNKNOWN) {
@@ -4382,10 +4558,20 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope, func_table);
             Type declared = node->as.mut_decl.type;
 
+            /* Slice local via arena alloc — propagate declared type */
+            if (type_is_slice(declared) &&
+                node->as.mut_decl.initializer->kind == AST_ARENA_ALLOC) {
+                node->as.mut_decl.initializer->expr_type = declared;
+                scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                break;
+            }
+
+            /* Slice locals only allowed via alloc */
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
-                           "Slice type not allowed as local variable (use fixed-size array)");
+                           "Slice type not allowed as local variable (use alloc)");
             }
 
             if (!type_can_coerce(init_type, declared)) {
@@ -4450,7 +4636,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (target->kind == AST_IDENTIFIER && type_is_struct(target_type)) {
                 diagnostic(ERR_S043_STRUCT_COPY, node->loc.line,
                            node->loc.column,
-                           "Cannot assign to struct variable (structs are not copyable)");
+                           "Cannot assign to %s variable (not copyable)",
+                           type_name(target_type));
             }
 
             Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
@@ -4614,11 +4801,12 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
                        (int)param->name_length, param->name_start);
         }
 
-        /* Struct parameters must use ref or mut ref */
+        /* Struct/Arena parameters must use ref or mut ref */
         if (type_is_struct(param->type) && !param->is_ref) {
             diagnostic(ERR_S044_STRUCT_BY_VALUE, func_decl->loc.line,
                        func_decl->loc.column,
-                       "Struct parameter '%.*s' must use 'ref' or 'mut ref'",
+                       "%s parameter '%.*s' must use 'ref' or 'mut ref'",
+                       type_name(param->type),
                        (int)param->name_length, param->name_start);
         }
 
@@ -4712,8 +4900,8 @@ static void typecheck_program(Ast *program) {
                                (int)node->as.value_decl.name_length,
                                node->as.value_decl.name_start);
                 }
-                /* Reject slice types as fields */
-                if (type_is_slice(fields[f].type)) {
+                /* Reject slice types as fields in value types (allowed in structs) */
+                if (type_is_slice(fields[f].type) && !node->as.value_decl.is_struct) {
                     diagnostic(ERR_S047_SLICE_AS_FIELD, node->loc.line,
                                node->loc.column,
                                "Slice type not allowed as field '%.*s' in %s type '%.*s'",
@@ -5051,6 +5239,26 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
         }
 
+        case AST_ARENA_NEW:
+            fprintf(out, "ni_arena_new(");
+            codegen_emit_expression(out, node->as.arena_new.capacity);
+            fprintf(out, ")");
+            break;
+
+        case AST_ARENA_ALLOC: {
+            Type slice_type = node->expr_type;
+            Type elem_type = type_element_type(slice_type);
+            fprintf(out, "(%s){.data = (%s *)ni_arena_alloc(&",
+                    codegen_type_to_c(slice_type), codegen_type_to_c(elem_type));
+            codegen_emit_lvalue(out, node->as.arena_alloc.arena);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.arena_alloc.count);
+            fprintf(out, ", sizeof(%s)), .len = ", codegen_type_to_c(elem_type));
+            codegen_emit_expression(out, node->as.arena_alloc.count);
+            fprintf(out, "}");
+            break;
+        }
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -5086,6 +5294,7 @@ static const char *codegen_type_to_c(Type type) {
         case TYPE_VOID:          return "void";
         case TYPE_COMPTIME_INT:  return "int64_t";   /* default */
         case TYPE_COMPTIME_FLOAT: return "double"; /* default */
+        case TYPE_ARENA:         return "ni_Arena";
         default: {
             static char bufs[4][80];
             static int buf_idx = 0;
@@ -5554,6 +5763,30 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "#define NI_BOUNDS_CHECK(idx, size, file, line, col) \\\n");
         fprintf(out, "    ((uint64_t)(idx) >= (uint64_t)(size) \\\n");
         fprintf(out, "     ? (ni_bounds_fail((int64_t)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
+    }
+
+    /* Emit Arena runtime if arena is used */
+    if (g_has_arena) {
+        fprintf(out, "#include <string.h>\n\n");
+        fprintf(out, "typedef struct { uint8_t *data; size_t capacity; size_t offset; } ni_Arena;\n\n");
+        fprintf(out, "static ni_Arena ni_arena_new(int64_t capacity) {\n");
+        fprintf(out, "    ni_Arena a;\n");
+        fprintf(out, "    a.data = (uint8_t *)malloc((size_t)capacity);\n");
+        fprintf(out, "    if (!a.data) { fprintf(stderr, \"Arena allocation failed\\n\"); exit(1); }\n");
+        fprintf(out, "    a.capacity = (size_t)capacity;\n");
+        fprintf(out, "    a.offset = 0;\n");
+        fprintf(out, "    return a;\n");
+        fprintf(out, "}\n\n");
+        fprintf(out, "static void *ni_arena_alloc(ni_Arena *a, int64_t count, size_t elem_size) {\n");
+        fprintf(out, "    size_t bytes = (size_t)count * elem_size;\n");
+        fprintf(out, "    if (a->offset + bytes > a->capacity) {\n");
+        fprintf(out, "        fprintf(stderr, \"Arena out of memory\\n\"); exit(1);\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    void *ptr = a->data + a->offset;\n");
+        fprintf(out, "    memset(ptr, 0, bytes);\n");
+        fprintf(out, "    a->offset += bytes;\n");
+        fprintf(out, "    return ptr;\n");
+        fprintf(out, "}\n\n");
     }
 
     /* Emit type typedefs in dependency order (topological sort).

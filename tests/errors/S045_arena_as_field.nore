@@ -1,0 +1,4 @@
+value Foo { mem: Arena }
+
+func main(): void = {
+}

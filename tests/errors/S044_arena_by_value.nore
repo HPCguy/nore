@@ -1,0 +1,5 @@
+func bad(a: Arena): void = {
+}
+
+func main(): void = {
+}

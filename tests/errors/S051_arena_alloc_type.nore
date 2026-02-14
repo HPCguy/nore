@@ -1,0 +1,4 @@
+func main(): void = {
+    mut x: i64 = 42
+    mut data: [i64] = alloc(mut ref x, 10)
+}

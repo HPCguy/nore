@@ -1,0 +1,4 @@
+func main(): void = {
+    mut mem: Arena = arena(1024)
+    mut mem2: Arena = mem
+}
