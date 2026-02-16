@@ -551,6 +551,17 @@ func fill(mut ref mem: Arena, n: i64): void = {
 - Arena parameters must use `ref` (read-only) or `mut ref` (for allocation)
 - Arena can be returned from functions (like structs, via constructor or function call)
 
+**Automatic Cleanup**:
+- Arena memory is automatically freed when the arena goes out of scope
+- On `return`, all local arenas in the function scope chain are freed before returning
+- On `break`/`continue`, arenas declared inside the loop body are freed
+- Arena ref parameters are NOT freed by the callee (the caller owns them)
+
+**Lifetime Safety**:
+- Slices allocated from a local arena cannot escape via a returned struct (error S053)
+- Slices allocated from a ref-param arena are safe to return (the arena lives in the caller's scope)
+- Known limitation: indirect escape via function calls returning structs with local-arena slices is not caught
+
 **Restrictions**:
 - Arena is not copyable (like structs)
 - Arena cannot be a field in value or struct types

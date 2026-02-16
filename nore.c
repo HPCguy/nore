@@ -136,6 +136,7 @@ typedef enum {
     ERR_S050_LITERAL_OUT_OF_RANGE  = ERR_GROUP_SEMANTIC + 50,
     ERR_S051_ARENA_ALLOC_TYPE      = ERR_GROUP_SEMANTIC + 51,
     ERR_S052_ARENA_IMMUTABLE       = ERR_GROUP_SEMANTIC + 52,
+    ERR_S053_SLICE_ESCAPES_ARENA   = ERR_GROUP_SEMANTIC + 53,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -3292,6 +3293,8 @@ struct Variable {
         long int_value;
         double float_value;
     } comptime_value;
+    int scope_depth;
+    bool arena_is_local;  /* for slices: true if arena is a local (not ref param) */
 };
 typedef struct Variable Variable;
 
@@ -3301,6 +3304,7 @@ struct Scope {
     size_t capacity;
     struct Scope *parent;
     int loop_depth;
+    int depth;  /* 0 = function scope, +1 for each nested block */
 };
 typedef struct Scope Scope;
 
@@ -3318,6 +3322,7 @@ static Scope *scope_create(Scope *parent) {
     scope->capacity = 8;
     scope->parent = parent;
     scope->loop_depth = parent ? parent->loop_depth : 0;
+    scope->depth = parent ? parent->depth + 1 : 0;
     return scope;
 }
 
@@ -3379,6 +3384,8 @@ static Variable *scope_add(Scope *scope, const char *name_start,
     v->is_ref = false;
     v->type = type;
     v->is_comptime = false;
+    v->scope_depth = scope->depth;
+    v->arena_is_local = false;
     scope->count++;
     return v;
 }
@@ -4494,8 +4501,16 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (type_is_slice(declared) &&
                 node->as.val_decl.initializer->kind == AST_ARENA_ALLOC) {
                 node->as.val_decl.initializer->expr_type = declared;
-                scope_add(*scope, node->as.val_decl.name_start,
+                Variable *sv = scope_add(*scope, node->as.val_decl.name_start,
                           node->as.val_decl.name_length, false, declared, node->loc);
+                if (sv) {
+                    Ast *arena_node = node->as.val_decl.initializer->as.arena_alloc.arena;
+                    if (arena_node->kind == AST_IDENTIFIER) {
+                        Variable *av = scope_lookup(*scope, arena_node->as.identifier.start,
+                                                    arena_node->as.identifier.length);
+                        if (av) sv->arena_is_local = !av->is_ref;
+                    }
+                }
                 break;
             }
 
@@ -4562,8 +4577,16 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (type_is_slice(declared) &&
                 node->as.mut_decl.initializer->kind == AST_ARENA_ALLOC) {
                 node->as.mut_decl.initializer->expr_type = declared;
-                scope_add(*scope, node->as.mut_decl.name_start,
+                Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
                           node->as.mut_decl.name_length, true, declared, node->loc);
+                if (sv) {
+                    Ast *arena_node = node->as.mut_decl.initializer->as.arena_alloc.arena;
+                    if (arena_node->kind == AST_IDENTIFIER) {
+                        Variable *av = scope_lookup(*scope, arena_node->as.identifier.start,
+                                                    arena_node->as.identifier.length);
+                        if (av) sv->arena_is_local = !av->is_ref;
+                    }
+                }
                 break;
             }
 
@@ -4680,6 +4703,33 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                     }
                     if (value_type == TYPE_COMPTIME_INT && type_is_integer(return_type)) {
                         typecheck_comptime_range(value, return_type, *scope);
+                    }
+                    /* Check for slices escaping local arena in returned struct */
+                    if (type_is_struct(return_type) && return_type != TYPE_ARENA &&
+                        value->kind == AST_VALUE_CONSTRUCTOR) {
+                        ValueTypeEntry *vt = value_table_get(return_type);
+                        if (vt) {
+                            FieldInit *fi = value->as.value_constructor.fields;
+                            size_t fc = value->as.value_constructor.field_count;
+                            for (size_t i = 0; i < fc; i++) {
+                                int fidx = value_table_find_field(vt, fi[i].name_start,
+                                                                   fi[i].name_length);
+                                if (fidx >= 0 && type_is_slice(vt->fields[fidx].type) &&
+                                    fi[i].value->kind == AST_IDENTIFIER) {
+                                    Variable *sv = scope_lookup(*scope,
+                                        fi[i].value->as.identifier.start,
+                                        fi[i].value->as.identifier.length);
+                                    if (sv && sv->arena_is_local) {
+                                        diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+                                                   fi[i].value->loc.line,
+                                                   fi[i].value->loc.column,
+                                                   "Slice '%.*s' in returned struct escapes local arena",
+                                                   (int)fi[i].value->as.identifier.length,
+                                                   fi[i].value->as.identifier.start);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -5386,6 +5436,18 @@ static void codegen_emit_target_bounds_checks(FILE *out, Ast *node, int indent) 
     }
 }
 
+/* Emit free() for all local (non-ref) arenas in a scope */
+static void codegen_emit_arena_frees(FILE *out, Scope *scope, int indent) {
+    for (size_t i = 0; i < scope->count; i++) {
+        if (scope->vars[i].type == TYPE_ARENA && !scope->vars[i].is_ref) {
+            codegen_indent(out, indent);
+            fprintf(out, "free(ni_%.*s.data);\n",
+                    (int)scope->vars[i].name_length,
+                    scope->vars[i].name_start);
+        }
+    }
+}
+
 /* Emit block statements with scoped variable management.
  * Creates a child scope, emits statements, then restores parent scope. */
 static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
@@ -5397,6 +5459,8 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
     for (size_t i = 0; i < block->as.block.count; i++) {
         codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
     }
+
+    codegen_emit_arena_frees(out, *scope, indent);
 
     Scope *old = *scope;
     *scope = old->parent;
@@ -5429,6 +5493,7 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
         codegen_emit_expression(out, block->as.block.value_expr);
         fprintf(out, ";\n");
     }
+    codegen_emit_arena_frees(out, *scope, indent);
     Scope *old = *scope;
     *scope = old->parent;
     g_codegen_scope = *scope;
@@ -5529,7 +5594,13 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
                                   scope, indent);
             break;
 
-        case AST_RETURN:
+        case AST_RETURN: {
+            /* Free all local arenas in the scope chain before returning */
+            Scope *s = *scope;
+            while (s) {
+                codegen_emit_arena_frees(out, s, indent);
+                s = s->parent;
+            }
             codegen_indent(out, indent);
             if (node->as.return_stmt.value) {
                 fprintf(out, "return ");
@@ -5539,6 +5610,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
                 fprintf(out, "return;\n");
             }
             break;
+        }
 
         case AST_ASSIGNMENT:
             if (codegen_target_has_index(node->as.assignment.target)) {
@@ -5604,25 +5676,41 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             break;
         }
 
-        case AST_BREAK:
+        case AST_BREAK: {
             if ((*scope)->loop_depth == 0) {
                 diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'break' outside of loop");
                 break;  /* Skip code generation */
             }
+            /* Free local arenas up to and including the loop body scope */
+            Scope *s = *scope;
+            while (s) {
+                codegen_emit_arena_frees(out, s, indent);
+                if (s->parent && s->loop_depth > s->parent->loop_depth) break;
+                s = s->parent;
+            }
             codegen_indent(out, indent);
             fprintf(out, "break;\n");
             break;
+        }
 
-        case AST_CONTINUE:
+        case AST_CONTINUE: {
             if ((*scope)->loop_depth == 0) {
                 diagnostic(ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'continue' outside of loop");
                 break;  /* Skip code generation */
             }
+            /* Free local arenas up to and including the loop body scope */
+            Scope *s = *scope;
+            while (s) {
+                codegen_emit_arena_frees(out, s, indent);
+                if (s->parent && s->loop_depth > s->parent->loop_depth) break;
+                s = s->parent;
+            }
             codegen_indent(out, indent);
             fprintf(out, "continue;\n");
             break;
+        }
 
         case AST_BLOCK:
             codegen_indent(out, indent);
@@ -5715,6 +5803,9 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         codegen_emit_expression(out, body->as.block.value_expr);
         fprintf(out, ";\n");
     }
+
+    /* Free local arenas at end of function (for void functions with no explicit return) */
+    codegen_emit_arena_frees(out, scope, 1);
 
     g_codegen_scope = NULL;
     scope_destroy(scope);

@@ -1,0 +1,9 @@
+struct Mesh { vertices: [f64], count: i64 }
+
+func bad(): Mesh = {
+    mut mem: Arena = arena(4096)
+    mut v: [f64] = alloc(mut ref mem, 10)
+    return Mesh { vertices: v, count: 10 }
+}
+
+func main(): void = {}
