@@ -37,6 +37,7 @@ val y: i64 = 10
 - `void` - No return value (functions only)
 - `[T; N]` - Fixed-size array (see Arrays)
 - `[T]` - Slice (see Slices)
+- `str` - String type (byte slice, see Strings)
 - `Arena` - Heap memory arena (see Arenas)
 - User-defined `value` types (see Value Types)
 - User-defined `struct` types (see Struct Types)
@@ -58,6 +59,15 @@ val y: i64 = 10
 3.14    // comptime_float, coerces to f64 only
 0.5     // decimal required before and after dot
 ```
+
+**String literals**:
+```nore
+"hello"         // string literal (type: str / [u8])
+"hello\nworld"  // with escape sequences
+""              // empty string
+```
+
+Supported escape sequences: `\n` (newline), `\t` (tab), `\r` (carriage return), `\\` (backslash), `\"` (double quote), `\0` (null byte).
 
 **Boolean literals**:
 ```nore
@@ -567,6 +577,53 @@ func fill(mut ref mem: Arena, n: i64): void = {
 - Arena cannot be a field in value or struct types
 - Arena parameters must use `ref` or `mut ref`
 
+### Strings
+
+The `str` type is syntactic sugar for `[u8]` (a byte slice). String literals create fat pointers pointing to static C string data at zero cost.
+
+**Declaration**:
+```nore
+val greeting: str = "hello"
+val empty: str = ""
+val escaped: str = "line1\nline2"
+```
+- `str` is equivalent to `[u8]`
+- String literals must be bound with `val` (immutable) — `mut` is an error (S054)
+- `.len` gives the byte count (excludes null terminator)
+
+**Indexing**:
+```nore
+val s: str = "hello"
+val h: u8 = s[0]       // 104 (ASCII 'h')
+assert s.len == 5
+```
+- Same indexing and bounds checking as slices
+
+**Passing to Functions** (ref required):
+```nore
+func length(ref s: str): i64 = {
+    return s.len
+}
+
+val msg: str = "hello"
+assert length(ref msg) == 5
+```
+- `str` parameters follow slice rules: must use `ref` or `mut ref`
+- `str` and `[u8]` are interchangeable
+
+**Escape Sequences**:
+- `\n` — newline
+- `\t` — tab
+- `\r` — carriage return
+- `\\` — backslash
+- `\"` — double quote
+- `\0` — null byte
+
+**Restrictions** (current):
+- String literals cannot be mutable (`mut` binding is error S054)
+- String literals as direct function arguments are not yet supported
+- Multiline strings are not yet supported
+
 ### Control Flow
 
 **Conditional Statements**:
@@ -702,6 +759,7 @@ func main(): void = {
 - `func` - Function declaration
 - `value` - Value type declaration
 - `struct` - Struct type declaration
+- `str` - String type (byte slice `[u8]`)
 - `Arena` - Arena type (heap memory)
 - `ref` - Reference parameter/argument
 - `val` - Immutable variable
@@ -733,6 +791,7 @@ func main(): void = {
 - `(` `)` - Parentheses (parameters, grouping, conditions)
 - `{` `}` - Braces (blocks, function bodies, value type declarations, constructors)
 - `[` `]` - Brackets (array types, array literals, indexing)
+- `"` - String literal delimiter
 - `:` - Type annotation separator
 - `;` - Array type size separator (`[T; N]`)
 - `,` - Parameter/field/element separator
@@ -763,7 +822,9 @@ func main(): void = {
 ## Future Extensions
 
 **Not yet implemented**:
-- String and character literals
+- Character literals
+- Multiline strings
+- String literals as direct function arguments
 - Additional types (`f32`)
 - Module system
 - While as expressions

@@ -1,0 +1,3 @@
+func main(): void = {
+    mut s: str = "hello"
+}

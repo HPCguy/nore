@@ -43,6 +43,8 @@ typedef enum {
     /* Lexer errors: L001-L099 */
     ERR_L001_INVALID_CHAR        = ERR_GROUP_LEXER + 1,
     ERR_L002_UNTERMINATED_COMMENT = ERR_GROUP_LEXER + 2,
+    ERR_L003_UNTERMINATED_STRING  = ERR_GROUP_LEXER + 3,
+    ERR_L004_INVALID_ESCAPE       = ERR_GROUP_LEXER + 4,
 
     /* Parser errors: P001-P099 */
     ERR_P001_EXPECTED_EXPRESSION   = ERR_GROUP_PARSER + 1,
@@ -137,6 +139,7 @@ typedef enum {
     ERR_S051_ARENA_ALLOC_TYPE      = ERR_GROUP_SEMANTIC + 51,
     ERR_S052_ARENA_IMMUTABLE       = ERR_GROUP_SEMANTIC + 52,
     ERR_S053_SLICE_ESCAPES_ARENA   = ERR_GROUP_SEMANTIC + 53,
+    ERR_S054_STRING_LITERAL_MUT    = ERR_GROUP_SEMANTIC + 54,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -319,6 +322,8 @@ typedef enum {
     TOKEN_STRUCT,
     TOKEN_REF,
     TOKEN_ARENA,
+    TOKEN_STR,
+    TOKEN_STRING,
 
     TOKEN_PLUS,
     TOKEN_MINUS,
@@ -386,6 +391,8 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_STRUCT:        return "STRUCT";
         case TOKEN_REF:           return "REF";
         case TOKEN_ARENA:         return "ARENA";
+        case TOKEN_STR:           return "STR";
+        case TOKEN_STRING:        return "STRING";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
@@ -546,6 +553,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "i32", 3) == 0) return TOKEN_I32;
             if (memcmp(start, "u32", 3) == 0) return TOKEN_U32;
             if (memcmp(start, "f64", 3) == 0) return TOKEN_F64;
+            if (memcmp(start, "str", 3) == 0) return TOKEN_STR;
             break;
         case 4:
             if (memcmp(start, "func", 4) == 0) return TOKEN_FUNC;
@@ -571,6 +579,30 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             break;
     }
     return TOKEN_IDENTIFIER;
+}
+
+static Token lexer_scan_string(Lexer *lexer) {
+    size_t start_line = lexer->line;
+    size_t start_col = lexer->column - 1;  /* opening quote already consumed */
+    while (lexer_peek(lexer) != '"') {
+        if (lexer_peek(lexer) == '\0' || lexer_peek(lexer) == '\n') {
+            diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
+                       "Unterminated string literal");
+            return lexer_make_token(lexer, TOKEN_STRING);
+        }
+        if (lexer_peek(lexer) == '\\') {
+            lexer_advance(lexer);  /* consume backslash */
+            char esc = lexer_peek(lexer);
+            if (esc != 'n' && esc != 't' && esc != 'r' && esc != '\\' &&
+                esc != '"' && esc != '0') {
+                diagnostic(ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
+                           "Invalid escape sequence '\\%c'", esc);
+            }
+        }
+        lexer_advance(lexer);
+    }
+    lexer_advance(lexer);  /* consume closing quote */
+    return lexer_make_token(lexer, TOKEN_STRING);
 }
 
 static Token lexer_scan_identifier(Lexer *lexer) {
@@ -604,6 +636,7 @@ Token lexer_next_token(Lexer *lexer) {
     }
 
     switch (c) {
+        case '"': return lexer_scan_string(lexer);
         case '(': return lexer_make_token(lexer, TOKEN_LPAREN);
         case ')': return lexer_make_token(lexer, TOKEN_RPAREN);
         case '{': return lexer_make_token(lexer, TOKEN_LBRACE);
@@ -666,7 +699,7 @@ static void lexer_print_tokens(Lexer *lexer, const char *source) {
         token = lexer_next_token(lexer);
         printf("%-20s", token_kind_name(token.kind));
         if (token.kind == TOKEN_NUMBER || token.kind == TOKEN_FLOAT ||
-            token.kind == TOKEN_IDENTIFIER) {
+            token.kind == TOKEN_IDENTIFIER || token.kind == TOKEN_STRING) {
             printf(" '%.*s'", (int)token.length, token.start);
         }
         printf("\n");
@@ -1131,6 +1164,7 @@ typedef enum {
     AST_INDEX_ACCESS,
     AST_ARENA_NEW,
     AST_ARENA_ALLOC,
+    AST_STRING_LITERAL,
     AST_PROGRAM
 } AstKind;
 
@@ -1295,6 +1329,12 @@ typedef struct Ast {
             struct Ast *arena;
             struct Ast *count;
         } arena_alloc;
+
+        struct {
+            const char *start;    /* first char after opening quote */
+            size_t raw_length;    /* raw source length between quotes */
+            size_t byte_length;   /* actual byte count after escape processing */
+        } string_literal;
 
         struct {
             struct Ast **statements;
@@ -1680,6 +1720,29 @@ static Ast *ast_make_arena_alloc(Ast *arena, Ast *count, SourceLoc loc) {
     return node;
 }
 
+static size_t compute_string_byte_length(const char *start, size_t raw_len) {
+    size_t count = 0;
+    for (size_t i = 0; i < raw_len; i++) {
+        if (start[i] == '\\' && i + 1 < raw_len) {
+            i++;  /* skip escape pair */
+        }
+        count++;
+    }
+    return count;
+}
+
+static Ast *ast_make_string_literal(const char *start, size_t raw_length,
+                                     size_t byte_length, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_STRING_LITERAL;
+    node->loc = loc;
+    node->as.string_literal.start = start;
+    node->as.string_literal.raw_length = raw_length;
+    node->as.string_literal.byte_length = byte_length;
+    return node;
+}
+
 static void ast_free(Ast *node) {
     if (!node) return;
 
@@ -1824,6 +1887,7 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
     if (parser_match(parser, TOKEN_F64)) return TYPE_F64;
     if (parser_match(parser, TOKEN_BOOL)) return TYPE_BOOL;
     if (parser_match(parser, TOKEN_ARENA)) return TYPE_ARENA;
+    if (parser_match(parser, TOKEN_STR)) return slice_table_intern(TYPE_U8);
     if (allow_void && parser_match(parser, TOKEN_VOID)) return TYPE_VOID;
     /* Check for user-defined value types */
     if (parser_check(parser, TOKEN_IDENTIFIER)) {
@@ -2032,6 +2096,15 @@ static Ast *parser_parse_primary(Parser *parser) {
     if (parser_match(parser, TOKEN_FALSE)) {
         SourceLoc loc = token_loc(&parser->previous);
         return ast_make_boolean(false, loc);
+    }
+
+    if (parser_match(parser, TOKEN_STRING)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        /* Token spans from opening " to closing " inclusive */
+        const char *content = parser->previous.start + 1;  /* skip opening quote */
+        size_t raw_length = parser->previous.length - 2;   /* exclude both quotes */
+        size_t byte_length = compute_string_byte_length(content, raw_length);
+        return ast_make_string_literal(content, raw_length, byte_length, loc);
     }
 
     if (parser_match(parser, TOKEN_IDENTIFIER)) {
@@ -2343,7 +2416,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, or Arena)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)");
             parser_synchronize(parser);
             return NULL;
         }
@@ -2351,7 +2424,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, or Arena)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)");
             parser_synchronize(parser);
             return NULL;
         }
@@ -2654,7 +2727,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
                        parser->previous.column, "void is not valid as parameter type");
         } else {
             diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
-                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, or Arena)");
+                       parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)");
         }
         return false;
     }
@@ -2826,7 +2899,7 @@ static Ast *parser_parse_function(Parser *parser) {
     Type return_type = parser_parse_type(parser, true);
     if (return_type == TYPE_UNKNOWN) {
         diagnostic(ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
-                   parser->current.column, "Expected return type (i64, i32, u8, u32, f64, bool, Arena, or void)");
+                   parser->current.column, "Expected return type (i64, i32, u8, u32, f64, bool, str, Arena, or void)");
         if (params) free(params);
         parser_synchronize(parser);
         return NULL;
@@ -3245,6 +3318,12 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("INDEX:\n");
             parser_print_ast_step(node->as.index_access.index, indent + 2);
+            break;
+
+        case AST_STRING_LITERAL:
+            printf("STRING_LITERAL(\"%.*s\")\n",
+                   (int)node->as.string_literal.raw_length,
+                   node->as.string_literal.start);
             break;
 
         case AST_ARENA_NEW:
@@ -4384,6 +4463,12 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return field_type;
         }
 
+        case AST_STRING_LITERAL: {
+            Type str_type = slice_table_intern(TYPE_U8);
+            node->expr_type = str_type;
+            return str_type;
+        }
+
         case AST_ARENA_NEW: {
             Type cap_type = typecheck_expression(node->as.arena_new.capacity, scope, func_table);
             if (!type_is_integer(cap_type)) {
@@ -4537,6 +4622,15 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 break;
             }
 
+            /* String literal exemption: val s: str = "..." */
+            if (type_is_slice(declared) && type_element_type(declared) == TYPE_U8 &&
+                node->as.val_decl.initializer->kind == AST_STRING_LITERAL) {
+                node->as.val_decl.initializer->expr_type = declared;
+                scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                break;
+            }
+
             /* Slice locals only allowed via alloc */
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
@@ -4603,6 +4697,18 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
                           node->as.mut_decl.name_length, true, declared, node->loc);
                 typecheck_mark_arena_locality(sv, node->as.mut_decl.initializer, *scope);
+                break;
+            }
+
+            /* String literal with mut is an error — mutating static memory is UB */
+            if (type_is_slice(declared) && type_element_type(declared) == TYPE_U8 &&
+                node->as.mut_decl.initializer->kind == AST_STRING_LITERAL) {
+                diagnostic(ERR_S054_STRING_LITERAL_MUT, node->loc.line,
+                           node->loc.column,
+                           "String literals cannot be mutable (use 'val')");
+                /* Still add to scope for error recovery */
+                scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
                 break;
             }
 
@@ -5278,6 +5384,14 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             }
             break;
         }
+
+        case AST_STRING_LITERAL:
+            fprintf(out, "(%s){.data = (uint8_t *)\"%.*s\", .len = %zuL}",
+                    codegen_type_to_c(node->expr_type),
+                    (int)node->as.string_literal.raw_length,
+                    node->as.string_literal.start,
+                    node->as.string_literal.byte_length);
+            break;
 
         case AST_ARENA_NEW:
             fprintf(out, "ni_arena_new(");
