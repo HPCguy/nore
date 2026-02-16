@@ -584,13 +584,14 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
 static Token lexer_scan_string(Lexer *lexer) {
     size_t start_line = lexer->line;
     size_t start_col = lexer->column - 1;  /* opening quote already consumed */
-    while (lexer_peek(lexer) != '"') {
-        if (lexer_peek(lexer) == '\0' || lexer_peek(lexer) == '\n') {
+    char c;
+    while ((c = lexer_peek(lexer)) != '"') {
+        if (c == '\0' || c == '\n') {
             diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
                        "Unterminated string literal");
             return lexer_make_token(lexer, TOKEN_STRING);
         }
-        if (lexer_peek(lexer) == '\\') {
+        if (c == '\\') {
             lexer_advance(lexer);  /* consume backslash */
             char esc = lexer_peek(lexer);
             if (esc != 'n' && esc != 't' && esc != 'r' && esc != '\\' &&
@@ -1071,6 +1072,10 @@ static Type type_element_type(Type type) {
         return se ? se->element_type : TYPE_UNKNOWN;
     }
     return TYPE_UNKNOWN;
+}
+
+static bool type_is_str(Type type) {
+    return type_is_slice(type) && type_element_type(type) == TYPE_U8;
 }
 
 static bool type_can_coerce(Type from, Type to) {
@@ -4463,11 +4468,9 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return field_type;
         }
 
-        case AST_STRING_LITERAL: {
-            Type str_type = slice_table_intern(TYPE_U8);
-            node->expr_type = str_type;
-            return str_type;
-        }
+        case AST_STRING_LITERAL:
+            node->expr_type = slice_table_intern(TYPE_U8);
+            return node->expr_type;
 
         case AST_ARENA_NEW: {
             Type cap_type = typecheck_expression(node->as.arena_new.capacity, scope, func_table);
@@ -4623,7 +4626,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             }
 
             /* String literal exemption: val s: str = "..." */
-            if (type_is_slice(declared) && type_element_type(declared) == TYPE_U8 &&
+            if (type_is_str(declared) &&
                 node->as.val_decl.initializer->kind == AST_STRING_LITERAL) {
                 node->as.val_decl.initializer->expr_type = declared;
                 scope_add(*scope, node->as.val_decl.name_start,
@@ -4701,7 +4704,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             }
 
             /* String literal with mut is an error — mutating static memory is UB */
-            if (type_is_slice(declared) && type_element_type(declared) == TYPE_U8 &&
+            if (type_is_str(declared) &&
                 node->as.mut_decl.initializer->kind == AST_STRING_LITERAL) {
                 diagnostic(ERR_S054_STRING_LITERAL_MUT, node->loc.line,
                            node->loc.column,
