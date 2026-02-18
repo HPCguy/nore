@@ -567,6 +567,16 @@ func fill(mut ref mem: Arena, n: i64): void = {
 - On `break`/`continue`, arenas declared inside the loop body are freed
 - Arena ref parameters are NOT freed by the callee (the caller owns them)
 
+**Arena Reset**:
+```nore
+reset(mut ref mem)
+```
+- `reset(mut ref arena)` reclaims all arena memory at once (resets offset to zero)
+- Arena argument must be `mut ref` (reset mutates the arena)
+- All slices previously allocated from the arena are **invalidated** — using them after reset is a compile-time error (S056)
+- After reset, new slices can be allocated from the arena with fresh variables
+- Invalidation is conservative: once a slice is invalidated, it stays invalidated for its entire scope
+
 **Lifetime Safety**:
 - Slices allocated from a local arena cannot escape via a returned struct (error S053)
 - Slices allocated from a ref-param arena are safe to return (the arena lives in the caller's scope)

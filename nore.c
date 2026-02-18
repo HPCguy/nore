@@ -140,6 +140,8 @@ typedef enum {
     ERR_S052_ARENA_IMMUTABLE       = ERR_GROUP_SEMANTIC + 52,
     ERR_S053_SLICE_ESCAPES_ARENA   = ERR_GROUP_SEMANTIC + 53,
     ERR_S054_STRING_LITERAL_MUT    = ERR_GROUP_SEMANTIC + 54,
+    ERR_S055_ARENA_RESET_IMMUTABLE = ERR_GROUP_SEMANTIC + 55,
+    ERR_S056_SLICE_INVALIDATED     = ERR_GROUP_SEMANTIC + 56,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -1169,6 +1171,7 @@ typedef enum {
     AST_INDEX_ACCESS,
     AST_ARENA_NEW,
     AST_ARENA_ALLOC,
+    AST_ARENA_RESET,
     AST_STRING_LITERAL,
     AST_PROGRAM
 } AstKind;
@@ -1334,6 +1337,10 @@ typedef struct Ast {
             struct Ast *arena;
             struct Ast *count;
         } arena_alloc;
+
+        struct {
+            struct Ast *arena;
+        } arena_reset;
 
         struct {
             const char *start;    /* first char after opening quote */
@@ -1725,6 +1732,15 @@ static Ast *ast_make_arena_alloc(Ast *arena, Ast *count, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_arena_reset(Ast *arena, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ARENA_RESET;
+    node->loc = loc;
+    node->as.arena_reset.arena = arena;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -1831,6 +1847,9 @@ static void ast_free(Ast *node) {
         case AST_ARENA_ALLOC:
             ast_free(node->as.arena_alloc.arena);
             ast_free(node->as.arena_alloc.count);
+            break;
+        case AST_ARENA_RESET:
+            ast_free(node->as.arena_reset.arena);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -2168,6 +2187,34 @@ static Ast *parser_parse_primary(Parser *parser) {
                 return NULL;
             }
             return ast_make_arena_alloc(arena, count, loc);
+        }
+
+        /* reset(mut ref arena) — built-in arena reset */
+        if (name_length == 5 && memcmp(name_start, "reset", 5) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            /* Expect 'mut ref' before arena argument */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before arena argument in reset()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in reset()");
+                return NULL;
+            }
+            Ast *arena = parser_parse_expression(parser);
+            if (!arena) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after reset arena");
+                ast_free(arena);
+                return NULL;
+            }
+            return ast_make_arena_reset(arena, loc);
         }
 
         /* Check for function call: identifier followed by '(' */
@@ -2567,8 +2614,9 @@ static Ast *parser_parse_block(Parser *parser) {
                     } else {
                         ast_free(expr);
                     }
-                } else if (expr->kind == AST_FUNC_CALL) {
-                    /* Bare function call as statement */
+                } else if (expr->kind == AST_FUNC_CALL ||
+                           expr->kind == AST_ARENA_RESET) {
+                    /* Bare function call or arena reset as statement */
                     ast_block_add_statement(block, expr);
                 } else {
                     /* Expression not at end of block */
@@ -3348,6 +3396,13 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.arena_alloc.count, indent + 2);
             break;
 
+        case AST_ARENA_RESET:
+            printf("ARENA_RESET\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("ARENA:\n");
+            parser_print_ast_step(node->as.arena_reset.arena, indent + 2);
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -3378,6 +3433,9 @@ struct Variable {
         double float_value;
     } comptime_value;
     bool arena_is_local;  /* for slices: true if arena is a local (not ref param) */
+    const char *arena_source_start;   /* name of arena this slice was allocated from */
+    size_t arena_source_length;       /* length of arena name */
+    bool is_invalidated;              /* set to true after arena reset */
 };
 typedef struct Variable Variable;
 
@@ -3466,6 +3524,9 @@ static Variable *scope_add(Scope *scope, const char *name_start,
     v->type = type;
     v->is_comptime = false;
     v->arena_is_local = false;
+    v->arena_source_start = NULL;
+    v->arena_source_length = 0;
+    v->is_invalidated = false;
     scope->count++;
     return v;
 }
@@ -3932,6 +3993,7 @@ static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
 static void typecheck_comptime_range(Ast *init, Type target, Scope *scope);
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
+static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
     switch (node->kind) {
@@ -3957,6 +4019,13 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                            node->as.identifier.start);
                 node->expr_type = TYPE_I64;  /* Default to prevent cascading */
                 return TYPE_I64;
+            }
+            if (v->is_invalidated) {
+                diagnostic(ERR_S056_SLICE_INVALIDATED, node->loc.line,
+                           node->loc.column,
+                           "Use of slice '%.*s' after arena reset",
+                           (int)node->as.identifier.length,
+                           node->as.identifier.start);
             }
             node->expr_type = v->type;
             return v->type;
@@ -4516,6 +4585,36 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_UNKNOWN;
         }
 
+        case AST_ARENA_RESET: {
+            Type arena_type = typecheck_expression(node->as.arena_reset.arena, scope, func_table);
+            if (!type_is_arena(arena_type)) {
+                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.arena_reset.arena->loc.line,
+                           node->as.arena_reset.arena->loc.column,
+                           "reset() requires Arena, got %s",
+                           type_name(arena_type));
+            }
+            /* Check arena is mutable */
+            if (node->as.arena_reset.arena->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.arena_reset.arena->as.identifier.start,
+                    node->as.arena_reset.arena->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(ERR_S055_ARENA_RESET_IMMUTABLE,
+                               node->as.arena_reset.arena->loc.line,
+                               node->as.arena_reset.arena->loc.column,
+                               "Cannot reset immutable Arena, use 'mut'");
+                }
+                /* Invalidate all slices from this arena */
+                if (v) {
+                    typecheck_invalidate_arena_slices(scope,
+                        node->as.arena_reset.arena->as.identifier.start,
+                        node->as.arena_reset.arena->as.identifier.length);
+                }
+            }
+            node->expr_type = TYPE_VOID;
+            return TYPE_VOID;
+        }
+
         default:
             break;
     }
@@ -4575,6 +4674,24 @@ static void typecheck_struct_copy(Type type, Ast *init) {
     }
 }
 
+/* Invalidate all slices allocated from a given arena across the entire scope chain */
+static void typecheck_invalidate_arena_slices(Scope *scope,
+                                               const char *arena_start,
+                                               size_t arena_length) {
+    while (scope != NULL) {
+        for (size_t i = 0; i < scope->count; i++) {
+            Variable *v = &scope->vars[i];
+            if (type_is_slice(v->type) &&
+                v->arena_source_start != NULL &&
+                v->arena_source_length == arena_length &&
+                memcmp(v->arena_source_start, arena_start, arena_length) == 0) {
+                v->is_invalidated = true;
+            }
+        }
+        scope = scope->parent;
+    }
+}
+
 /* Track whether a slice variable was allocated from a local (non-ref) arena */
 static void typecheck_mark_arena_locality(Variable *sv, Ast *alloc_node, Scope *scope) {
     if (!sv) return;
@@ -4582,7 +4699,11 @@ static void typecheck_mark_arena_locality(Variable *sv, Ast *alloc_node, Scope *
     if (arena_node->kind != AST_IDENTIFIER) return;
     Variable *av = scope_lookup(scope, arena_node->as.identifier.start,
                                 arena_node->as.identifier.length);
-    if (av) sv->arena_is_local = !av->is_ref;
+    if (av) {
+        sv->arena_is_local = !av->is_ref;
+        sv->arena_source_start = arena_node->as.identifier.start;
+        sv->arena_source_length = arena_node->as.identifier.length;
+    }
 }
 
 /* Check if a returned struct constructor contains slices that escape a local arena */
@@ -4919,6 +5040,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         }
 
         case AST_FUNC_CALL:
+        case AST_ARENA_RESET:
             typecheck_expression(node, *scope, func_table);
             break;
 
@@ -5416,6 +5538,12 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
         }
 
+        case AST_ARENA_RESET:
+            fprintf(out, "ni_arena_reset(&");
+            codegen_emit_lvalue(out, node->as.arena_reset.arena);
+            fprintf(out, ")");
+            break;
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -5830,6 +5958,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             break;
 
         case AST_FUNC_CALL:
+        case AST_ARENA_RESET:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
             fprintf(out, ";\n");
@@ -5984,6 +6113,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "    a->offset += bytes;\n");
         fprintf(out, "    return ptr;\n");
         fprintf(out, "}\n\n");
+        fprintf(out, "static void ni_arena_reset(ni_Arena *a) { a->offset = 0; }\n\n");
     }
 
     /* Emit type typedefs in dependency order (topological sort).
