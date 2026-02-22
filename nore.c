@@ -1023,6 +1023,63 @@ typedef struct {
 static SliceTypeTable *g_slice_table = NULL;
 static bool g_has_arena = false;
 
+/* Deferred arena escape checks — processed after all functions are typechecked */
+typedef struct {
+    SourceLoc loc;
+    const char *callee_name_start;
+    size_t callee_name_length;
+    const char *arena_name_start;
+    size_t arena_name_length;
+} DeferredArenaCheck;
+
+static DeferredArenaCheck *g_deferred_arena_checks = NULL;
+static size_t g_deferred_arena_count = 0;
+static size_t g_deferred_arena_capacity = 0;
+
+static void deferred_arena_check_add(SourceLoc loc,
+                                     const char *callee_start, size_t callee_len,
+                                     const char *arena_start, size_t arena_len) {
+    if (g_deferred_arena_count >= g_deferred_arena_capacity) {
+        g_deferred_arena_capacity = g_deferred_arena_capacity ? g_deferred_arena_capacity * 2 : 8;
+        g_deferred_arena_checks = realloc(g_deferred_arena_checks,
+                                          g_deferred_arena_capacity * sizeof(DeferredArenaCheck));
+        if (!g_deferred_arena_checks) panic(ERR_I001_OUT_OF_MEMORY, "growing deferred arena checks");
+    }
+    DeferredArenaCheck *c = &g_deferred_arena_checks[g_deferred_arena_count++];
+    c->loc = loc;
+    c->callee_name_start = callee_start;
+    c->callee_name_length = callee_len;
+    c->arena_name_start = arena_start;
+    c->arena_name_length = arena_len;
+}
+
+/* Dependency records for transitive returns_arena_slices propagation */
+typedef struct {
+    const char *func_name_start;
+    size_t func_name_length;
+    const char *callee_name_start;
+    size_t callee_name_length;
+} ArenaDependency;
+
+static ArenaDependency *g_arena_deps = NULL;
+static size_t g_arena_dep_count = 0;
+static size_t g_arena_dep_capacity = 0;
+
+static void arena_dep_add(const char *func_start, size_t func_len,
+                           const char *callee_start, size_t callee_len) {
+    if (g_arena_dep_count >= g_arena_dep_capacity) {
+        g_arena_dep_capacity = g_arena_dep_capacity ? g_arena_dep_capacity * 2 : 8;
+        g_arena_deps = realloc(g_arena_deps,
+                               g_arena_dep_capacity * sizeof(ArenaDependency));
+        if (!g_arena_deps) panic(ERR_I001_OUT_OF_MEMORY, "growing arena dependencies");
+    }
+    ArenaDependency *d = &g_arena_deps[g_arena_dep_count++];
+    d->func_name_start = func_start;
+    d->func_name_length = func_len;
+    d->callee_name_start = callee_start;
+    d->callee_name_length = callee_len;
+}
+
 static SliceTypeTable *slice_table_create(void) {
     SliceTypeTable *table = malloc(sizeof(SliceTypeTable));
     if (!table) panic(ERR_I001_OUT_OF_MEMORY, "Failed to allocate slice type table");
@@ -3432,10 +3489,10 @@ struct Variable {
         long int_value;
         double float_value;
     } comptime_value;
-    bool arena_is_local;  /* for slices: true if arena is a local (not ref param) */
-    const char *arena_source_start;   /* name of arena this slice was allocated from */
-    size_t arena_source_length;       /* length of arena name */
-    bool is_invalidated;              /* set to true after arena reset */
+    bool arena_is_local;              /* for slices: true if arena is local (not ref param) */
+    const char *arena_source_start;   /* for slices: name of source arena */
+    size_t arena_source_length;
+    bool is_invalidated;              /* for slices: true after source arena reset */
 };
 typedef struct Variable Variable;
 
@@ -3564,6 +3621,7 @@ typedef struct {
     bool *param_is_mut_ref;
     size_t param_count;
     SourceLoc loc;
+    bool returns_arena_slices;
 } FunctionEntry;
 
 typedef struct {
@@ -3631,6 +3689,7 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
     entry->name_length = name_length;
     entry->return_type = func_decl->as.func_decl.return_type;
     entry->loc = func_decl->loc;
+    entry->returns_arena_slices = false;
 
     /* Store parameter types and ref flags */
     size_t param_count = func_decl->as.func_decl.param_count;
@@ -3653,6 +3712,9 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
         entry->param_is_mut_ref = NULL;
     }
 }
+
+/* Current function entry for escape analysis (set during typecheck_function) */
+static FunctionEntry *g_current_func_entry = NULL;
 
 /* ============================= Constant Folding ============================ */
 
@@ -3994,6 +4056,7 @@ static void typecheck_comptime_range(Ast *init, Type target, Scope *scope);
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
 static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
+static bool type_return_has_slices(Type type);
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
     switch (node->kind) {
@@ -4586,29 +4649,28 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_ARENA_RESET: {
-            Type arena_type = typecheck_expression(node->as.arena_reset.arena, scope, func_table);
+            Ast *arena_node = node->as.arena_reset.arena;
+            Type arena_type = typecheck_expression(arena_node, scope, func_table);
             if (!type_is_arena(arena_type)) {
-                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.arena_reset.arena->loc.line,
-                           node->as.arena_reset.arena->loc.column,
+                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, arena_node->loc.line,
+                           arena_node->loc.column,
                            "reset() requires Arena, got %s",
                            type_name(arena_type));
             }
-            /* Check arena is mutable */
-            if (node->as.arena_reset.arena->kind == AST_IDENTIFIER) {
+            /* Check arena is mutable and invalidate its slices */
+            if (arena_node->kind == AST_IDENTIFIER) {
                 Variable *v = scope_lookup(scope,
-                    node->as.arena_reset.arena->as.identifier.start,
-                    node->as.arena_reset.arena->as.identifier.length);
+                    arena_node->as.identifier.start,
+                    arena_node->as.identifier.length);
                 if (v && !v->is_mutable) {
                     diagnostic(ERR_S055_ARENA_RESET_IMMUTABLE,
-                               node->as.arena_reset.arena->loc.line,
-                               node->as.arena_reset.arena->loc.column,
+                               arena_node->loc.line, arena_node->loc.column,
                                "Cannot reset immutable Arena, use 'mut'");
                 }
-                /* Invalidate all slices from this arena */
                 if (v) {
                     typecheck_invalidate_arena_slices(scope,
-                        node->as.arena_reset.arena->as.identifier.start,
-                        node->as.arena_reset.arena->as.identifier.length);
+                        arena_node->as.identifier.start,
+                        arena_node->as.identifier.length);
                 }
             }
             node->expr_type = TYPE_VOID;
@@ -4706,26 +4768,91 @@ static void typecheck_mark_arena_locality(Variable *sv, Ast *alloc_node, Scope *
     }
 }
 
+/* Check if a return type contains slices (bare slice, or struct with slice fields) */
+static bool type_return_has_slices(Type type) {
+    if (type_is_slice(type)) return true;
+    if (!type_is_struct(type) || type == TYPE_ARENA) return false;
+    ValueTypeEntry *vt = value_table_get(type);
+    if (!vt) return false;
+    for (size_t i = 0; i < vt->field_count; i++) {
+        if (type_is_slice(vt->fields[i].type)) return true;
+    }
+    return false;
+}
+
 /* Check if a returned struct constructor contains slices that escape a local arena */
-static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope) {
+static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope,
+                                   FunctionTable *func_table) {
+    /* Bare slice return */
+    if (type_is_slice(return_type) && value->kind == AST_IDENTIFIER) {
+        Variable *sv = scope_lookup(scope, value->as.identifier.start,
+                                    value->as.identifier.length);
+        if (sv && sv->arena_source_start) {
+            if (sv->arena_is_local) {
+                diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+                           value->loc.line, value->loc.column,
+                           "Slice '%.*s' escapes local arena",
+                           (int)value->as.identifier.length,
+                           value->as.identifier.start);
+            } else if (g_current_func_entry) {
+                g_current_func_entry->returns_arena_slices = true;
+            }
+        }
+    }
+
+    /* Return via function call — check arena args for escape/dependency */
+    if (value->kind == AST_FUNC_CALL &&
+        (type_is_slice(return_type) || type_return_has_slices(return_type))) {
+        FunctionEntry *callee = func_table_lookup(func_table,
+            value->as.func_call.name_start, value->as.func_call.name_length);
+        if (callee) {
+            for (size_t i = 0; i < callee->param_count && i < value->as.func_call.arg_count; i++) {
+                if (callee->param_types[i] != TYPE_ARENA || !callee->param_is_ref[i])
+                    continue;
+                Ast *arg = value->as.func_call.arguments[i];
+                Ast *root = ast_root_target(arg);
+                if (root->kind != AST_IDENTIFIER) continue;
+                Variable *av = scope_lookup(scope, root->as.identifier.start,
+                                            root->as.identifier.length);
+                if (!av) continue;
+                if (!av->is_ref) {
+                    /* Local arena — defer check (callee may not be analyzed yet) */
+                    deferred_arena_check_add(value->loc,
+                        callee->name_start, callee->name_length,
+                        root->as.identifier.start, root->as.identifier.length);
+                } else if (g_current_func_entry) {
+                    /* Ref-param arena — record transitive dependency */
+                    arena_dep_add(g_current_func_entry->name_start,
+                                  g_current_func_entry->name_length,
+                                  callee->name_start, callee->name_length);
+                }
+                break;
+            }
+        }
+    }
+
+    /* Struct constructor return — check slice fields */
     if (!type_is_struct(return_type) || return_type == TYPE_ARENA) return;
-    if (value->kind != AST_VALUE_CONSTRUCTOR) return;
-    ValueTypeEntry *vt = value_table_get(return_type);
-    if (!vt) return;
-    FieldInit *fi = value->as.value_constructor.fields;
-    size_t fc = value->as.value_constructor.field_count;
-    for (size_t i = 0; i < fc; i++) {
-        int fidx = value_table_find_field(vt, fi[i].name_start, fi[i].name_length);
-        if (fidx < 0 || !type_is_slice(vt->fields[fidx].type)) continue;
-        if (fi[i].value->kind != AST_IDENTIFIER) continue;
-        Variable *sv = scope_lookup(scope, fi[i].value->as.identifier.start,
-                                    fi[i].value->as.identifier.length);
-        if (sv && sv->arena_is_local) {
-            diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
-                       fi[i].value->loc.line, fi[i].value->loc.column,
-                       "Slice '%.*s' in returned struct escapes local arena",
-                       (int)fi[i].value->as.identifier.length,
-                       fi[i].value->as.identifier.start);
+    if (value->kind == AST_VALUE_CONSTRUCTOR) {
+        ValueTypeEntry *vt = value_table_get(return_type);
+        if (!vt) return;
+        FieldInit *fi = value->as.value_constructor.fields;
+        size_t fc = value->as.value_constructor.field_count;
+        for (size_t i = 0; i < fc; i++) {
+            int fidx = value_table_find_field(vt, fi[i].name_start, fi[i].name_length);
+            if (fidx < 0 || !type_is_slice(vt->fields[fidx].type)) continue;
+            if (fi[i].value->kind != AST_IDENTIFIER) continue;
+            Variable *sv = scope_lookup(scope, fi[i].value->as.identifier.start,
+                                        fi[i].value->as.identifier.length);
+            if (sv && sv->arena_is_local) {
+                diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+                           fi[i].value->loc.line, fi[i].value->loc.column,
+                           "Slice '%.*s' in returned struct escapes local arena",
+                           (int)fi[i].value->as.identifier.length,
+                           fi[i].value->as.identifier.start);
+            } else if (sv && sv->arena_source_start && g_current_func_entry) {
+                g_current_func_entry->returns_arena_slices = true;
+            }
         }
     }
 }
@@ -4755,7 +4882,15 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 break;
             }
 
-            /* Slice locals only allowed via alloc */
+            /* Slice local via function call — allowed (escape checked at call site) */
+            if (type_is_slice(declared) &&
+                node->as.val_decl.initializer->kind == AST_FUNC_CALL) {
+                scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                break;
+            }
+
+            /* Slice locals only allowed via alloc or function call */
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
@@ -4836,7 +4971,15 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 break;
             }
 
-            /* Slice locals only allowed via alloc */
+            /* Slice local via function call — allowed (escape checked at call site) */
+            if (type_is_slice(declared) &&
+                node->as.mut_decl.initializer->kind == AST_FUNC_CALL) {
+                scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                break;
+            }
+
+            /* Slice locals only allowed via alloc or function call */
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
@@ -4950,7 +5093,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                     if (value_type == TYPE_COMPTIME_INT && type_is_integer(return_type)) {
                         typecheck_comptime_range(value, return_type, *scope);
                     }
-                    typecheck_slice_escape(value, return_type, *scope);
+                    typecheck_slice_escape(value, return_type, *scope, func_table);
                 }
             }
             break;
@@ -5051,12 +5194,10 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
 /* Type check a function declaration */
 static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
-    /* Reject slice return types */
-    if (type_is_slice(func_decl->as.func_decl.return_type)) {
-        diagnostic(ERR_S048_SLICE_RETURN, func_decl->loc.line,
-                   func_decl->loc.column,
-                   "Cannot return slice type");
-    }
+    /* Set current function entry for escape analysis */
+    g_current_func_entry = func_table_lookup(func_table,
+        func_decl->as.func_decl.name_start,
+        func_decl->as.func_decl.name_length);
 
     /* Create scope with parameters */
     Scope *scope = scope_create(NULL);
@@ -5110,6 +5251,7 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
     }
 
     scope_destroy(scope);
+    g_current_func_entry = NULL;
 }
 
 /* Forward declaration: codegen needs access to the function table */
@@ -5220,6 +5362,51 @@ static void typecheck_program(Ast *program) {
         if (node->kind == AST_FUNC_DECL) {
             typecheck_function(node, func_table);
         }
+    }
+
+    /* Third pass: propagate returns_arena_slices transitively, then check deferred */
+    {
+        /* Fixpoint propagation */
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (size_t i = 0; i < g_arena_dep_count; i++) {
+                ArenaDependency *d = &g_arena_deps[i];
+                FunctionEntry *callee = func_table_lookup(func_table,
+                    d->callee_name_start, d->callee_name_length);
+                if (!callee || !callee->returns_arena_slices) continue;
+                FunctionEntry *func = func_table_lookup(func_table,
+                    d->func_name_start, d->func_name_length);
+                if (func && !func->returns_arena_slices) {
+                    func->returns_arena_slices = true;
+                    changed = true;
+                }
+            }
+        }
+
+        /* Process deferred arena escape checks */
+        for (size_t i = 0; i < g_deferred_arena_count; i++) {
+            DeferredArenaCheck *c = &g_deferred_arena_checks[i];
+            FunctionEntry *callee = func_table_lookup(func_table,
+                c->callee_name_start, c->callee_name_length);
+            if (callee && callee->returns_arena_slices) {
+                diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+                           c->loc.line, c->loc.column,
+                           "Return value of '%.*s' contains slices that escape local arena '%.*s'",
+                           (int)c->callee_name_length, c->callee_name_start,
+                           (int)c->arena_name_length, c->arena_name_start);
+            }
+        }
+
+        /* Cleanup */
+        free(g_deferred_arena_checks);
+        g_deferred_arena_checks = NULL;
+        g_deferred_arena_count = 0;
+        g_deferred_arena_capacity = 0;
+        free(g_arena_deps);
+        g_arena_deps = NULL;
+        g_arena_dep_count = 0;
+        g_arena_dep_capacity = 0;
     }
 
     /* Keep func_table alive for codegen (slice call-site needs param types) */
@@ -6190,7 +6377,7 @@ static void codegen_print_ir(Ast *ast) {
 static void codegen_compile_with_clang(const char *c_source_path, const char *binary_path) {
     char command[1024];
     int written = snprintf(command, sizeof(command),
-                          "clang -std=c99 -O2 -o '%s' '%s' 2>&1",
+                          "clang -std=c99 -O2 -fwrapv -o '%s' '%s' 2>&1",
                           binary_path, c_source_path);
 
     if (written < 0 || written >= (int)sizeof(command)) {

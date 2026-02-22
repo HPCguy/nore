@@ -1,0 +1,13 @@
+struct Result { items: [i64] }
+
+func build(mut ref mem: Arena): Result = {
+    mut items: [i64] = alloc(mut ref mem, 10)
+    return Result { items: items }
+}
+
+func bad(): Result = {
+    mut mem: Arena = arena(1024)
+    return build(mut ref mem)
+}
+
+func main(): void = {}

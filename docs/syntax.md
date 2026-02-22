@@ -522,8 +522,8 @@ struct Mesh { vertices: [f64], count: i64 }
 - Slices are NOT allowed as fields in `value` types
 
 **Restrictions** (current):
-- Cannot return slice types from functions
 - Slice parameters must use `ref` or `mut ref`
+- Slice local variables must be initialized via `alloc()` or from a function call returning a slice
 
 ### Arenas
 
@@ -578,9 +578,10 @@ reset(mut ref mem)
 - Invalidation is conservative: once a slice is invalidated, it stays invalidated for its entire scope
 
 **Lifetime Safety**:
-- Slices allocated from a local arena cannot escape via a returned struct (error S053)
+- Slices allocated from a local arena cannot escape the function — neither directly via return nor indirectly through a function call (error S053)
 - Slices allocated from a ref-param arena are safe to return (the arena lives in the caller's scope)
-- Known limitation: indirect escape via function calls returning structs with local-arena slices is not caught
+- Escape analysis propagates transitively through call chains
+- Known limitation: functions with multiple arena parameters may produce false positives (the analysis uses a single per-function flag, not per-parameter tracking)
 
 **Restrictions**:
 - Arena is not copyable (like structs)
