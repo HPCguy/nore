@@ -22,7 +22,7 @@ val y: i64 = 10
 ```
 
 - Single-line: `//` to end of line
-- Multi-line: `/*` to `*/`
+- Multi-line: `/*` to `*/` (do not nest)
 - Comments are skipped by the lexer (no tokens produced)
 
 ### Types
@@ -172,6 +172,7 @@ func greet(): void = {
 
 func scale(mut ref v: Vec2, factor: f64): void = {
     v.x = v.x * factor
+    v.y = v.y * factor
 }
 ```
 
@@ -324,11 +325,11 @@ e.health = 50
 **No Copy Semantics**:
 ```nore
 val a: Entity = Entity { x: 1.0, y: 2.0, health: 100 }
-val b: Entity = a    // ERROR: Cannot copy struct
-b = a                // ERROR: Cannot assign to struct variable
+val b: Entity = a    // ERROR: Cannot copy struct (S043)
 ```
 - Structs can only be initialized from constructors or function return values
-- Cannot assign one struct variable to another
+- Cannot copy a struct variable to another
+- Struct variables cannot be reassigned after initialization (even from a new constructor)
 
 **Ref-Only Passing**:
 ```nore
@@ -386,7 +387,7 @@ val y: i64 = arr[i]
 val z: i64 = grid[1][0]   // nested indexing
 ```
 - Index must be integer type (`i64`, `i32`, `u8`, `u32`, or `comptime_int`)
-- Bounds checking at runtime (exits with error code 2 on out-of-bounds)
+- Bounds checking at runtime (error R002, exits with code 2 on out-of-bounds)
 - Chains with field access: `v.data[i]`
 
 **Element Assignment**:
@@ -503,16 +504,16 @@ val x: i64 = data[0]         // indexing
 data[i] = 42                 // element assignment (mut ref only)
 ```
 - Same syntax as arrays
-- Runtime bounds checking (exits with error code 2 on out-of-bounds)
+- Runtime bounds checking (error R002, exits with code 2 on out-of-bounds)
 
-**Slice Local Variables** (via Arena):
+**Slice Local Variables**:
 ```nore
 mut mem: Arena = arena(4096)
 val data: [i64] = alloc(mut ref mem, 10)
 mut pts: [Vec2] = alloc(mut ref mem, 100)
+val result: [i64] = get_data(mut ref mem, 5)   // from function call
 ```
-- Slice locals require initialization via `alloc()` from an Arena
-- Cannot create slice locals without an Arena
+- Slice locals must be initialized via `alloc()` or from a function call returning a slice
 
 **Slice Struct Fields**:
 ```nore
@@ -525,9 +526,9 @@ struct Mesh { vertices: [f64], count: i64 }
 ```nore
 mut mem: Arena = arena(4096)
 val a: [i64] = alloc(mut ref mem, 10)
-val b: [i64] = a    // ERROR: cannot copy slice (S046)
+val b: [i64] = a    // ERROR: slice local must use alloc or function call (S046)
 ```
-- Slices cannot be assigned from another slice variable
+- Slice locals can only be initialized via `alloc()` or a function call returning a slice
 - To share access, pass slices by `ref` or `mut ref`
 
 **Restrictions** (current):
@@ -543,7 +544,7 @@ Arenas provide heap allocation for slices. An Arena is a contiguous block of mem
 mut mem: Arena = arena(4096)    // 4096-byte arena
 ```
 - `arena(capacity)` creates a new arena with the given byte capacity
-- Arena variables must be `mut` (allocation mutates internal state)
+- Arena variables should be `mut` since `alloc()` and `reset()` require mutability
 
 **Allocating Slices**:
 ```nore
@@ -641,7 +642,6 @@ assert length(ref msg) == 5
 
 **Restrictions** (current):
 - String literals cannot be mutable (`mut` binding is error S054)
-- String literals as direct function arguments are not yet supported
 - Multiline strings are not yet supported
 
 ### Control Flow
@@ -730,7 +730,7 @@ Works with all numeric types (i64, i32, u8, u32, f64) and comptime types. Both o
 - `>` Greater than
 - `>=` Greater than or equal
 
-Both operands must be the same concrete type (after coercion).
+Both operands must be the same concrete numeric type (after coercion). Comparison of `bool` values is not supported.
 
 **Logical** (bool operands, bool result):
 - `&&` Logical AND
@@ -749,7 +749,7 @@ Both operands must be the same concrete type (after coercion).
 - `expr[index] = expr` - Array element assignment (root variable must be mutable)
 - `name(args...)` - Bare function call statement
 - `return expr` - Return from function
-- `assert expr` - Runtime assertion (bool expr, exits with code 2 on failure)
+- `assert expr` - Runtime assertion (bool expr, error R001, exits with code 2 on failure)
 - `break` - Exit innermost loop
 - `continue` - Skip to next loop iteration
 
@@ -807,15 +807,21 @@ func main(): void = {
 - `&&` `||` `!` - Logical
 - `=` - Assignment
 
+### Built-in Functions
+- `arena(capacity)` - Create a new Arena with the given byte capacity
+- `alloc(mut ref arena, count)` - Allocate a slice of `count` elements from an Arena
+- `reset(mut ref arena)` - Reclaim all arena memory (invalidates existing slices)
+
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)
 - `{` `}` - Braces (blocks, function bodies, value type declarations, constructors)
 - `[` `]` - Brackets (array types, array literals, indexing)
-- `"` - String literal delimiter
 - `:` - Type annotation separator
 - `;` - Array type size separator (`[T; N]`)
 - `,` - Parameter/field/element separator
 - `.` - Field access
+
+Note: `"` delimits string literals but is consumed by the lexer during scanning, not emitted as a standalone token.
 
 ## Design Decisions
 
@@ -829,10 +835,11 @@ func main(): void = {
 - `mut` makes mutability explicit and visible
 - Similar to Kotlin/Scala conventions
 
-### Why explicit types for all variables?
-- Clear, predictable code
+### Why explicit types for runtime variables?
+- Clear, predictable code at runtime boundaries
 - No type inference surprises
 - Easier to read and maintain
+- Exception: `val x = 42` infers comptime types for compile-time constants
 
 ### Why `=` before function body?
 - Functions are values (Scala/Kotlin style)
@@ -844,7 +851,6 @@ func main(): void = {
 **Not yet implemented**:
 - Character literals
 - Multiline strings
-- String literals as direct function arguments
 - Additional types (`f32`)
 - Module system
 - While as expressions
