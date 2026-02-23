@@ -1,0 +1,8 @@
+func foo(): i64 = {
+    return 42
+}
+
+val x: i64 = foo()
+
+func main(): void = {
+}

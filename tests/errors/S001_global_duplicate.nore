@@ -1,0 +1,5 @@
+val x: i64 = 1
+val x: i64 = 2
+
+func main(): void = {
+}

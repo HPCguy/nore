@@ -142,6 +142,7 @@ typedef enum {
     ERR_S054_STRING_LITERAL_MUT    = ERR_GROUP_SEMANTIC + 54,
     ERR_S055_ARENA_RESET_IMMUTABLE = ERR_GROUP_SEMANTIC + 55,
     ERR_S056_SLICE_INVALIDATED     = ERR_GROUP_SEMANTIC + 56,
+    ERR_S057_GLOBAL_NOT_CONSTANT   = ERR_GROUP_SEMANTIC + 57,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -3182,6 +3183,13 @@ static Ast *parser_parse_program(Parser *parser) {
             if (decl) {
                 ast_program_add_statement(program, decl);
             }
+        } else if (parser_match(parser, TOKEN_VAL) ||
+                   parser_match(parser, TOKEN_MUT)) {
+            bool is_mutable = parser->previous.kind == TOKEN_MUT;
+            Ast *var = parser_parse_var_declaration(parser, is_mutable);
+            if (var) {
+                ast_program_add_statement(program, var);
+            }
         } else {
             diagnostic(ERR_P016_EXPECTED_FUNC, parser->current.line,
                        parser->current.column,
@@ -3190,6 +3198,8 @@ static Ast *parser_parse_program(Parser *parser) {
             while (!parser_check(parser, TOKEN_FUNC) &&
                    !parser_check(parser, TOKEN_VALUE) &&
                    !parser_check(parser, TOKEN_STRUCT) &&
+                   !parser_check(parser, TOKEN_VAL) &&
+                   !parser_check(parser, TOKEN_MUT) &&
                    !parser_check(parser, TOKEN_EOF)) {
                 parser_advance(parser);
             }
@@ -3489,6 +3499,7 @@ struct Variable {
         long int_value;
         double float_value;
     } comptime_value;
+    bool is_global;                   /* true for global variables */
     bool arena_is_local;              /* for slices: true if arena is local (not ref param) */
     const char *arena_source_start;   /* for slices: name of source arena */
     size_t arena_source_length;
@@ -3580,6 +3591,7 @@ static Variable *scope_add(Scope *scope, const char *name_start,
     v->is_ref = false;
     v->type = type;
     v->is_comptime = false;
+    v->is_global = false;
     v->arena_is_local = false;
     v->arena_source_start = NULL;
     v->arena_source_length = 0;
@@ -4761,7 +4773,7 @@ static void typecheck_mark_arena_locality(Variable *sv, Ast *alloc_node, Scope *
     Variable *av = scope_lookup(scope, arena_node->as.identifier.start,
                                 arena_node->as.identifier.length);
     if (av) {
-        sv->arena_is_local = !av->is_ref;
+        sv->arena_is_local = !av->is_ref && !av->is_global;
         sv->arena_source_start = arena_node->as.identifier.start;
         sv->arena_source_length = arena_node->as.identifier.length;
     }
@@ -5190,15 +5202,191 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
     }
 }
 
+/* Check if an expression is valid as a global variable initializer.
+ * Allowed: literals, comptime constants, value constructors with constant fields,
+ * array literals with constant elements, arena() constructor, string literals.
+ * NOT allowed: function calls, alloc(), runtime expressions. */
+static bool is_global_initializer(Ast *node, Scope *scope) {
+    switch (node->kind) {
+        case AST_NUMBER:
+        case AST_FLOAT:
+        case AST_BOOLEAN:
+        case AST_STRING_LITERAL:
+        case AST_ARENA_NEW:
+            return true;
+        case AST_IDENTIFIER: {
+            Variable *v = scope_lookup(scope, node->as.identifier.start,
+                                       node->as.identifier.length);
+            return v != NULL && v->is_comptime;
+        }
+        case AST_UNARY: {
+            return is_global_initializer(node->as.unary.operand, scope);
+        }
+        case AST_BINARY: {
+            return is_global_initializer(node->as.binary.left, scope) &&
+                   is_global_initializer(node->as.binary.right, scope);
+        }
+        case AST_VALUE_CONSTRUCTOR: {
+            for (size_t i = 0; i < node->as.value_constructor.field_count; i++) {
+                if (!is_global_initializer(node->as.value_constructor.fields[i].value, scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        case AST_ARRAY_LITERAL: {
+            for (size_t i = 0; i < node->as.array_literal.element_count; i++) {
+                if (!is_global_initializer(node->as.array_literal.elements[i], scope)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        default:
+            return false;
+    }
+}
+
+/* Type check a global variable declaration */
+static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_table) {
+    if (node->kind == AST_VAL_DECL) {
+        Type init_type = typecheck_expression(node->as.val_decl.initializer, scope, func_table);
+        Type declared = node->as.val_decl.type;
+
+        /* String literal exemption: val s: str = "..." */
+        if (type_is_str(declared) &&
+            node->as.val_decl.initializer->kind == AST_STRING_LITERAL) {
+            node->as.val_decl.initializer->expr_type = declared;
+            Variable *v = scope_add(scope, node->as.val_decl.name_start,
+                      node->as.val_decl.name_length, false, declared, node->loc);
+            if (v) v->is_global = true;
+            return;
+        }
+
+        /* Check initializer is a constant expression */
+        if (!is_global_initializer(node->as.val_decl.initializer, scope)) {
+            diagnostic(ERR_S057_GLOBAL_NOT_CONSTANT, node->loc.line, node->loc.column,
+                       "Global variable initializer must be a constant expression");
+        }
+
+        /* Reject slice globals (except string literals handled above) */
+        if (type_is_slice(declared)) {
+            diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line, node->loc.column,
+                       "Slice type not allowed as global variable");
+        }
+
+        if (declared == TYPE_UNKNOWN) {
+            if (!type_is_comptime(init_type)) {
+                diagnostic(ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
+                           "Type annotation required (expression is not compile-time constant)");
+                declared = TYPE_I64;
+            } else {
+                declared = init_type;
+            }
+            node->as.val_decl.type = declared;
+        } else {
+            if (!type_can_coerce(init_type, declared)) {
+                typecheck_coercion_error(init_type, declared,
+                                         node->as.val_decl.initializer->loc);
+            }
+            if (init_type == TYPE_COMPTIME_INT && type_is_integer(declared)) {
+                typecheck_comptime_range(node->as.val_decl.initializer, declared, scope);
+            }
+            if (type_is_array(init_type) && type_is_array(declared) &&
+                init_type != declared) {
+                node->as.val_decl.initializer->expr_type = declared;
+            }
+        }
+
+        /* Reject struct/arena copy */
+        typecheck_struct_copy(declared, node->as.val_decl.initializer);
+
+        if (type_is_comptime(declared) && is_comptime_constant(node->as.val_decl.initializer, scope)) {
+            if (declared == TYPE_COMPTIME_INT) {
+                scope_add_comptime_int(scope, node->as.val_decl.name_start,
+                                       node->as.val_decl.name_length,
+                                       get_comptime_int(node->as.val_decl.initializer, scope),
+                                       node->loc);
+            } else {
+                scope_add_comptime_float(scope, node->as.val_decl.name_start,
+                                         node->as.val_decl.name_length,
+                                         get_comptime_float(node->as.val_decl.initializer, scope),
+                                         node->loc);
+            }
+            /* comptime globals don't need is_global since they are inlined */
+        } else {
+            Variable *v = scope_add(scope, node->as.val_decl.name_start,
+                      node->as.val_decl.name_length, false, declared, node->loc);
+            if (v) v->is_global = true;
+        }
+    } else if (node->kind == AST_MUT_DECL) {
+        Type init_type = typecheck_expression(node->as.mut_decl.initializer, scope, func_table);
+        Type declared = node->as.mut_decl.type;
+
+        /* Arena constructor: mut mem: Arena = arena(N) */
+        if (declared == TYPE_ARENA &&
+            node->as.mut_decl.initializer->kind == AST_ARENA_NEW) {
+            g_has_arena = true;
+            Variable *v = scope_add(scope, node->as.mut_decl.name_start,
+                      node->as.mut_decl.name_length, true, declared, node->loc);
+            if (v) v->is_global = true;
+            return;
+        }
+
+        /* String literal with mut is an error */
+        if (type_is_str(declared) &&
+            node->as.mut_decl.initializer->kind == AST_STRING_LITERAL) {
+            diagnostic(ERR_S054_STRING_LITERAL_MUT, node->loc.line,
+                       node->loc.column,
+                       "String literals cannot be mutable (use 'val')");
+            Variable *v = scope_add(scope, node->as.mut_decl.name_start,
+                      node->as.mut_decl.name_length, true, declared, node->loc);
+            if (v) v->is_global = true;
+            return;
+        }
+
+        /* Check initializer is a constant expression (arena() handled above) */
+        if (!is_global_initializer(node->as.mut_decl.initializer, scope)) {
+            diagnostic(ERR_S057_GLOBAL_NOT_CONSTANT, node->loc.line, node->loc.column,
+                       "Global variable initializer must be a constant expression (or arena constructor)");
+        }
+
+        /* Reject slice globals */
+        if (type_is_slice(declared)) {
+            diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line, node->loc.column,
+                       "Slice type not allowed as global variable");
+        }
+
+        if (!type_can_coerce(init_type, declared)) {
+            typecheck_coercion_error(init_type, declared,
+                                     node->as.mut_decl.initializer->loc);
+        }
+        if (init_type == TYPE_COMPTIME_INT && type_is_integer(declared)) {
+            typecheck_comptime_range(node->as.mut_decl.initializer, declared, scope);
+        }
+        if (type_is_array(init_type) && type_is_array(declared) &&
+            init_type != declared) {
+            node->as.mut_decl.initializer->expr_type = declared;
+        }
+
+        typecheck_struct_copy(declared, node->as.mut_decl.initializer);
+
+        Variable *v = scope_add(scope, node->as.mut_decl.name_start,
+                  node->as.mut_decl.name_length, true, declared, node->loc);
+        if (v) v->is_global = true;
+    }
+}
+
 /* Type check a function declaration */
-static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
+static void typecheck_function(Ast *func_decl, FunctionTable *func_table,
+                               Scope *global_scope) {
     /* Set current function entry for escape analysis */
     g_current_func_entry = func_table_lookup(func_table,
         func_decl->as.func_decl.name_start,
         func_decl->as.func_decl.name_length);
 
-    /* Create scope with parameters */
-    Scope *scope = scope_create(NULL);
+    /* Create scope with parameters (global scope as parent) */
+    Scope *scope = scope_create(global_scope);
 
     /* Add parameters to scope, check for duplicates */
     for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
@@ -5255,9 +5443,15 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table) {
 /* Forward declaration: codegen needs access to the function table */
 static FunctionTable *g_codegen_func_table = NULL;
 
+static Scope *g_global_scope = NULL;  /* global scope for codegen access */
+
 static void typecheck_program(Ast *program) {
     FunctionTable *func_table = func_table_create();
     bool has_main = false;
+
+    /* Create global scope for top-level variables */
+    Scope *global_scope = scope_create(NULL);
+    g_global_scope = global_scope;
 
     /* Validate value/struct type declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
@@ -5354,11 +5548,19 @@ static void typecheck_program(Ast *program) {
         diagnostic(ERR_S009_MISSING_MAIN, 1, 1, "No 'main' function defined");
     }
 
+    /* Global variable pass: typecheck top-level val/mut declarations */
+    for (size_t i = 0; i < program->as.program.count; i++) {
+        Ast *node = program->as.program.statements[i];
+        if (node->kind == AST_VAL_DECL || node->kind == AST_MUT_DECL) {
+            typecheck_global_decl(node, global_scope, func_table);
+        }
+    }
+
     /* Second pass: type check each function */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
         if (node->kind == AST_FUNC_DECL) {
-            typecheck_function(node, func_table);
+            typecheck_function(node, func_table, global_scope);
         }
     }
 
@@ -5416,6 +5618,7 @@ static void typecheck_program(Ast *program) {
 static const char *codegen_type_to_c(Type type);  /* forward declaration */
 static int codegen_temp_counter = 0;
 static Scope *g_codegen_scope = NULL;  /* current codegen scope for ref lookups */
+static Scope *g_global_codegen_scope = NULL;  /* global scope for codegen */
 
 /* Check if a block can be emitted as a simple expression (no hoisting needed) */
 static bool codegen_is_simple_block(Ast *block) {
@@ -5452,6 +5655,18 @@ static bool codegen_is_ref(const char *name_start, size_t name_length) {
 
 /* Emit a ref-aware identifier: (*ni_X) for ref params, ni_X otherwise */
 static void codegen_emit_identifier(FILE *out, const char *name_start, size_t name_length) {
+    /* Inline comptime values (they have no C variable) */
+    if (g_codegen_scope) {
+        Variable *v = scope_lookup(g_codegen_scope, name_start, name_length);
+        if (v && v->is_comptime) {
+            if (v->type == TYPE_COMPTIME_INT) {
+                fprintf(out, "%ldL", v->comptime_value.int_value);
+            } else {
+                fprintf(out, "%g", v->comptime_value.float_value);
+            }
+            return;
+        }
+    }
     if (codegen_is_ref(name_start, name_length)) {
         fprintf(out, "(*ni_%.*s)", (int)name_length, name_start);
     } else {
@@ -5859,7 +6074,8 @@ static void codegen_emit_target_bounds_checks(FILE *out, Ast *node, int indent) 
 /* Emit free() for all local (non-ref) arenas in a scope */
 static void codegen_emit_arena_frees(FILE *out, Scope *scope, int indent) {
     for (size_t i = 0; i < scope->count; i++) {
-        if (scope->vars[i].type == TYPE_ARENA && !scope->vars[i].is_ref) {
+        if (scope->vars[i].type == TYPE_ARENA && !scope->vars[i].is_ref &&
+            !scope->vars[i].is_global) {
             codegen_indent(out, indent);
             fprintf(out, "free(ni_%.*s.data);\n",
                     (int)scope->vars[i].name_length,
@@ -6154,6 +6370,116 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
     }
 }
 
+static void codegen_emit_global_decl(FILE *out, Ast *node) {
+    if (node->kind == AST_VAL_DECL) {
+        Type type = node->as.val_decl.type;
+        const char *name_start = node->as.val_decl.name_start;
+        size_t name_length = node->as.val_decl.name_length;
+        Ast *init = node->as.val_decl.initializer;
+
+        /* Comptime vals: skip C emission (inlined at use sites) */
+        if (type_is_comptime(type)) return;
+
+        /* String literal: use brace initializer (not compound literal) */
+        if (type_is_str(type)) {
+            fprintf(out, "const %s ni_%.*s = {.data = (uint8_t *)\"%.*s\", .len = %zuL};\n",
+                    codegen_type_to_c(type),
+                    (int)name_length, name_start,
+                    (int)init->as.string_literal.raw_length,
+                    init->as.string_literal.start,
+                    init->as.string_literal.byte_length);
+            return;
+        }
+
+        /* Value constructor: brace initializer */
+        if (type_is_value(type) && init->kind == AST_VALUE_CONSTRUCTOR) {
+            fprintf(out, "const %s ni_%.*s = {",
+                    codegen_type_to_c(type),
+                    (int)name_length, name_start);
+            for (size_t i = 0; i < init->as.value_constructor.field_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                FieldInit *fi = &init->as.value_constructor.fields[i];
+                fprintf(out, ".ni_%.*s = ", (int)fi->name_length, fi->name_start);
+                codegen_emit_expression(out, fi->value);
+            }
+            fprintf(out, "};\n");
+            return;
+        }
+
+        /* Array literal: brace initializer */
+        if (type_is_array(type) && init->kind == AST_ARRAY_LITERAL) {
+            Type concrete = codegen_concrete_array_type(init->expr_type);
+            fprintf(out, "const %s ni_%.*s = {{",
+                    codegen_type_to_c(concrete),
+                    (int)name_length, name_start);
+            for (size_t i = 0; i < init->as.array_literal.element_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                codegen_emit_expression(out, init->as.array_literal.elements[i]);
+            }
+            fprintf(out, "}};\n");
+            return;
+        }
+
+        /* Scalar val */
+        fprintf(out, "const %s ni_%.*s = ",
+                codegen_type_to_c(type), (int)name_length, name_start);
+        codegen_emit_expression(out, init);
+        fprintf(out, ";\n");
+
+    } else if (node->kind == AST_MUT_DECL) {
+        Type type = node->as.mut_decl.type;
+        const char *name_start = node->as.mut_decl.name_start;
+        size_t name_length = node->as.mut_decl.name_length;
+        Ast *init = node->as.mut_decl.initializer;
+
+        /* Arena: declaration only — init deferred to main */
+        if (type == TYPE_ARENA) {
+            fprintf(out, "ni_Arena ni_%.*s;\n", (int)name_length, name_start);
+            /* Also emit a constant for the capacity so main can use it */
+            fprintf(out, "static const int64_t ni_%.*s_cap = ",
+                    (int)name_length, name_start);
+            codegen_emit_expression(out, init->as.arena_new.capacity);
+            fprintf(out, ";\n");
+            return;
+        }
+
+        /* Value constructor: brace initializer */
+        if (type_is_value(type) && init->kind == AST_VALUE_CONSTRUCTOR) {
+            fprintf(out, "%s ni_%.*s = {",
+                    codegen_type_to_c(type),
+                    (int)name_length, name_start);
+            for (size_t i = 0; i < init->as.value_constructor.field_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                FieldInit *fi = &init->as.value_constructor.fields[i];
+                fprintf(out, ".ni_%.*s = ", (int)fi->name_length, fi->name_start);
+                codegen_emit_expression(out, fi->value);
+            }
+            fprintf(out, "};\n");
+            return;
+        }
+
+        /* Array literal: brace initializer */
+        if (type_is_array(type) && init->kind == AST_ARRAY_LITERAL) {
+            Type concrete = codegen_concrete_array_type(init->expr_type);
+            fprintf(out, "%s ni_%.*s = {{",
+                    codegen_type_to_c(concrete),
+                    (int)name_length, name_start);
+            for (size_t i = 0; i < init->as.array_literal.element_count; i++) {
+                if (i > 0) fprintf(out, ", ");
+                codegen_emit_expression(out, init->as.array_literal.elements[i]);
+            }
+            fprintf(out, "}};\n");
+            return;
+        }
+
+        /* Scalar mut */
+        fprintf(out, "%s ni_%.*s = ",
+                codegen_type_to_c(type), (int)name_length, name_start);
+        codegen_emit_expression(out, init);
+        fprintf(out, ";\n");
+    }
+}
+
 static void codegen_emit_function(FILE *out, Ast *func_decl) {
     const char *name_start = func_decl->as.func_decl.name_start;
     size_t name_length = func_decl->as.func_decl.name_length;
@@ -6195,8 +6521,8 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
 
     fprintf(out, ") {\n");
 
-    /* Create scope with parameters (tracking ref flags for codegen) */
-    Scope *scope = scope_create(NULL);
+    /* Create scope with parameters (global scope as parent for codegen) */
+    Scope *scope = scope_create(g_global_codegen_scope);
     for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
         Parameter *param = &func_decl->as.func_decl.params[i];
         bool is_mutable = param->is_mut_ref;
@@ -6210,6 +6536,19 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
 
     /* Set global codegen scope */
     g_codegen_scope = scope;
+
+    /* For main: emit global arena initializations */
+    if (is_main && g_global_codegen_scope) {
+        Scope *gs = g_global_codegen_scope;
+        for (size_t i = 0; i < gs->count; i++) {
+            if (gs->vars[i].type == TYPE_ARENA && gs->vars[i].is_global) {
+                codegen_indent(out, 1);
+                fprintf(out, "ni_%.*s = ni_arena_new(ni_%.*s_cap);\n",
+                        (int)gs->vars[i].name_length, gs->vars[i].name_start,
+                        (int)gs->vars[i].name_length, gs->vars[i].name_start);
+            }
+        }
+    }
 
     /* Emit body */
     Ast *body = func_decl->as.func_decl.body;
@@ -6225,6 +6564,18 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
 
     /* Free local arenas at end of function (for void functions with no explicit return) */
     codegen_emit_arena_frees(out, scope, 1);
+
+    /* For main: free global arenas */
+    if (is_main && g_global_codegen_scope) {
+        Scope *gs = g_global_codegen_scope;
+        for (size_t i = 0; i < gs->count; i++) {
+            if (gs->vars[i].type == TYPE_ARENA && gs->vars[i].is_global) {
+                codegen_indent(out, 1);
+                fprintf(out, "free(ni_%.*s.data);\n",
+                        (int)gs->vars[i].name_length, gs->vars[i].name_start);
+            }
+        }
+    }
 
     g_codegen_scope = NULL;
     scope_destroy(scope);
@@ -6357,6 +6708,54 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "\n");
     }
 
+    /* Create global codegen scope and populate it first (comptime values need
+     * to be available before any global decl is emitted) */
+    Scope *global_codegen_scope = scope_create(NULL);
+    g_global_codegen_scope = global_codegen_scope;
+    g_codegen_scope = global_codegen_scope;
+
+    for (size_t i = 0; i < ast->as.program.count; i++) {
+        Ast *node = ast->as.program.statements[i];
+        if (node->kind == AST_VAL_DECL) {
+            Type type = node->as.val_decl.type;
+            if (type_is_comptime(type) &&
+                is_comptime_constant(node->as.val_decl.initializer, global_codegen_scope)) {
+                if (type == TYPE_COMPTIME_INT) {
+                    scope_add_comptime_int(global_codegen_scope,
+                        node->as.val_decl.name_start, node->as.val_decl.name_length,
+                        get_comptime_int(node->as.val_decl.initializer, global_codegen_scope),
+                        node->loc);
+                } else {
+                    scope_add_comptime_float(global_codegen_scope,
+                        node->as.val_decl.name_start, node->as.val_decl.name_length,
+                        get_comptime_float(node->as.val_decl.initializer, global_codegen_scope),
+                        node->loc);
+                }
+            } else {
+                Variable *v = scope_add(global_codegen_scope,
+                    node->as.val_decl.name_start, node->as.val_decl.name_length,
+                    false, type, node->loc);
+                if (v) v->is_global = true;
+            }
+        } else if (node->kind == AST_MUT_DECL) {
+            Variable *v = scope_add(global_codegen_scope,
+                node->as.mut_decl.name_start, node->as.mut_decl.name_length,
+                true, node->as.mut_decl.type, node->loc);
+            if (v) v->is_global = true;
+        }
+    }
+
+    /* Emit global declarations */
+    for (size_t i = 0; i < ast->as.program.count; i++) {
+        Ast *node = ast->as.program.statements[i];
+        if (node->kind == AST_VAL_DECL || node->kind == AST_MUT_DECL) {
+            codegen_emit_global_decl(out, node);
+        }
+    }
+
+    g_codegen_scope = NULL;
+    fprintf(out, "\n");
+
     /* Emit all functions */
     for (size_t i = 0; i < ast->as.program.count; i++) {
         Ast *node = ast->as.program.statements[i];
@@ -6364,6 +6763,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
             codegen_emit_function(out, node);
         }
     }
+
+    scope_destroy(global_codegen_scope);
+    g_global_codegen_scope = NULL;
 }
 
 static void codegen_print_ir(Ast *ast) {

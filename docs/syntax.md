@@ -145,6 +145,54 @@ counter = counter + 1
 - Explicit type required: Must specify type with `:` annotation
 - Can be reassigned after initialization
 
+### Global Variables
+
+Variables declared at the top level (outside any function) have program lifetime. They are visible to all functions.
+
+**Global constants**:
+```nore
+val PI = 3.14159              // comptime constant (inlined)
+val MAX_SIZE: i64 = 1024      // typed constant
+val GREETING: str = "hello"   // string constant
+val IS_DEBUG: bool = false     // boolean constant
+```
+
+**Global mutable variables**:
+```nore
+mut counter: i64 = 0          // mutable global
+mut total: f64 = 0.0          // mutable global
+```
+
+**Global value types and arrays**:
+```nore
+value Vec2 { x: f64, y: f64 }
+
+val origin: Vec2 = Vec2 { x: 0.0, y: 0.0 }
+val data: [i64; 3] = [10, 20, 30]
+mut pos: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+```
+
+**Global arenas**:
+```nore
+mut mem: Arena = arena(4096)
+
+func main(): void = {
+    // Arena is initialized at the start of main
+    // and freed at the end of main
+    mut data: [i64] = alloc(mut ref mem, 10)
+    data[0] = 42
+}
+```
+- Arena globals must be `mut`
+- The arena is automatically initialized at the start of `main` and freed at the end
+
+**Restrictions**:
+- Global initializers must be constant expressions (literals, comptime constants, value constructors with constant fields, array literals with constant elements)
+- `arena()` is the only non-constant initializer allowed (for arena globals)
+- Function calls and `alloc()` are not allowed as global initializers (error S057)
+- Slice globals are not allowed (except string literals via `val`)
+- Slices allocated from a global arena never "escape" (global arenas have program lifetime)
+
 ### Functions
 
 ```nore
