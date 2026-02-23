@@ -423,7 +423,7 @@ assert a[0] == 1           // a is unchanged
 
 ### Slices
 
-Slices are views into existing fixed-size arrays. A slice is a fat pointer containing a data pointer and length, allowing functions to operate on arrays of any size.
+A slice is a fat pointer (data pointer + length) that can be backed by either a fixed-size array on the stack or heap memory allocated from an Arena. Slices allow functions to operate on sequences of any size regardless of the backing storage.
 
 **Type Syntax**:
 ```nore
