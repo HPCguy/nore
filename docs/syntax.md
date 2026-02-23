@@ -521,6 +521,15 @@ struct Mesh { vertices: [f64], count: i64 }
 - Slices are allowed as fields in `struct` types
 - Slices are NOT allowed as fields in `value` types
 
+**No Copy Semantics**:
+```nore
+mut mem: Arena = arena(4096)
+val a: [i64] = alloc(mut ref mem, 10)
+val b: [i64] = a    // ERROR: cannot copy slice (S046)
+```
+- Slices cannot be assigned from another slice variable
+- To share access, pass slices by `ref` or `mut ref`
+
 **Restrictions** (current):
 - Slice parameters must use `ref` or `mut ref`
 - Slice local variables must be initialized via `alloc()` or from a function call returning a slice
