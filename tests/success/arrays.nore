@@ -1,0 +1,45 @@
+// Test fixed-size arrays
+
+func main(): void = {
+    // Array declaration and indexing
+    val arr: [i64; 3] = [10, 20, 30]
+    assert arr[0] == 10
+    assert arr[1] == 20
+    assert arr[2] == 30
+
+    // Mutable array
+    mut nums: [i64; 4] = [1, 2, 3, 4]
+    nums[0] = 99
+    assert nums[0] == 99
+    assert nums[1] == 2
+
+    // Array with different types
+    val bools: [bool; 3] = [true, false, true]
+    assert bools[0]
+    val b1: bool = bools[1]
+    assert !b1
+    assert bools[2]
+
+    val floats: [f64; 2] = [1.5, 2.5]
+    assert floats[0] == 1.5
+    assert floats[1] == 2.5
+
+    val bytes: [u8; 3] = [10, 20, 30]
+    assert bytes[0] == 10
+
+    // Array value semantics
+    val a: [i64; 3] = [1, 2, 3]
+    mut b: [i64; 3] = a
+    b[0] = 99
+    assert a[0] == 1
+
+    // Loop over array
+    val data: [i64; 5] = [2, 4, 6, 8, 10]
+    mut sum: i64 = 0
+    mut i: i64 = 0
+    while (i < 5) {
+        sum = sum + data[i]
+        i = i + 1
+    }
+    assert sum == 30
+}

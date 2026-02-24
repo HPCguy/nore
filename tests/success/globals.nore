@@ -1,0 +1,41 @@
+// Test global variables
+
+val PI = 3.14159
+val MAX: i64 = 100
+val GREETING: str = "hello"
+
+mut counter: i64 = 0
+
+value Point { x: f64, y: f64 }
+val ORIGIN: Point = Point { x: 0.0, y: 0.0 }
+
+func increment(): void = {
+    counter = counter + 1
+}
+
+func get_counter(): i64 = {
+    return counter
+}
+
+func main(): void = {
+    // Comptime globals
+    assert PI == 3.14159
+
+    // Typed globals
+    assert MAX == 100
+
+    // String globals
+    assert GREETING.len == 5
+
+    // Mutable globals
+    assert counter == 0
+    increment()
+    increment()
+    increment()
+    assert counter == 3
+    assert get_counter() == 3
+
+    // Value type globals
+    assert ORIGIN.x == 0.0
+    assert ORIGIN.y == 0.0
+}

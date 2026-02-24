@@ -1,0 +1,44 @@
+// Test variable declarations and mutability
+
+func main(): void = {
+    // Immutable variables with explicit types
+    val x: i64 = 42
+    assert x == 42
+
+    val pi: f64 = 3.14
+    assert pi == 3.14
+
+    val flag: bool = true
+    assert flag
+
+    // Comptime variables (no type annotation)
+    val a = 10
+    val b = a + 5
+    assert b == 15
+
+    // Mutable variables
+    mut counter: i64 = 0
+    assert counter == 0
+    counter = counter + 1
+    assert counter == 1
+    counter = 100
+    assert counter == 100
+
+    // Variable shadowing in blocks
+    val y: i64 = 1
+    {
+        val y: i64 = 2
+        assert y == 2
+    }
+    assert y == 1
+
+    // Multiple types
+    val signed: i32 = -42
+    assert signed == -42
+
+    val byte: u8 = 255
+    assert byte == 255
+
+    val unsigned: u32 = 42
+    assert unsigned == 42
+}

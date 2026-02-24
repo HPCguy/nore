@@ -6794,6 +6794,7 @@ typedef struct {
     int print_tokens;
     int print_ast;
     int print_ir;
+    int run;
 } CompilerFlags;
 
 /* =================================== Main ================================= */
@@ -6801,7 +6802,7 @@ typedef struct {
 int main(int argc, char **argv) {
     if (argc < 2) {
         error(ERR_D001_NO_INPUT_FILE,
-                     "Usage: %s <file.nore> [--lexer] [--parser] [--codegen] [-o output]",
+                     "Usage: %s <file.nore> [--run] [--lexer] [--parser] [--codegen] [-o output]",
                      argv[0]);
     }
 
@@ -6817,6 +6818,8 @@ int main(int argc, char **argv) {
             flags.print_ast = 1;
         } else if (strcmp(argv[i], "--codegen") == 0) {
             flags.print_ir = 1;
+        } else if (strcmp(argv[i], "--run") == 0) {
+            flags.run = 1;
         } else if (strcmp(argv[i], "-o") == 0) {
             if (i + 1 >= argc) {
                 error(ERR_D004_MISSING_OUTPUT_PATH,
@@ -6896,9 +6899,34 @@ int main(int argc, char **argv) {
     /* Skip compilation if any debug flag is set */
     int skip_compilation = flags.print_tokens || flags.print_ast || flags.print_ir;
 
+    int run_exit_code = 0;
+
     if (!skip_compilation) {
-        /* Generate and compile */
-        codegen_compile(ast, output_path);
+        if (flags.run) {
+            /* Compile to temp binary, run it, clean up */
+            char temp_bin[] = "/tmp/nore_run_XXXXXX";
+            int fd = mkstemp(temp_bin);
+            if (fd == -1) {
+                panic(ERR_I002_INTERNAL_ERROR,
+                      "failed to create temporary file: %s", strerror(errno));
+            }
+            close(fd);
+
+            codegen_compile(ast, temp_bin);
+
+            if (!g_had_error) {
+                int status = system(temp_bin);
+                if (WIFEXITED(status)) {
+                    run_exit_code = WEXITSTATUS(status);
+                } else {
+                    run_exit_code = 1;
+                }
+            }
+            unlink(temp_bin);
+        } else {
+            /* Generate and compile */
+            codegen_compile(ast, output_path);
+        }
     }
 
     /* Cleanup */
@@ -6912,6 +6940,6 @@ int main(int argc, char **argv) {
     /* Report any collected errors (exits with non-zero) */
     if (g_had_error) report_errors_and_exit();
 
-    return 0;
+    return run_exit_code;
 }
 

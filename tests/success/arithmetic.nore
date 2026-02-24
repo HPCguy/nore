@@ -1,0 +1,53 @@
+// Test arithmetic operations and comparisons
+
+func main(): void = {
+    // Integer arithmetic
+    assert 2 + 3 == 5
+    assert 10 - 4 == 6
+    assert 3 * 7 == 21
+    assert 20 / 4 == 5
+
+    // Typed arithmetic
+    val a: i64 = 10
+    val b: i64 = 3
+    assert a + b == 13
+    assert a - b == 7
+    assert a * b == 30
+    assert a / b == 3
+
+    // Negative numbers
+    val neg: i64 = -5
+    assert neg + 10 == 5
+    assert neg * -2 == 10
+
+    // Float arithmetic
+    val x: f64 = 3.0
+    val y: f64 = 1.5
+    assert x + y == 4.5
+    assert x - y == 1.5
+    assert x * y == 4.5
+    assert x / y == 2.0
+
+    // i32 arithmetic
+    val c: i32 = 100
+    val d: i32 = 25
+    assert c + d == 125
+    assert c - d == 75
+
+    // u8 arithmetic
+    val e: u8 = 200
+    val f: u8 = 55
+    assert e + f == 255
+
+    // u32 arithmetic
+    val g: u32 = 1000
+    val h: u32 = 500
+    assert g + h == 1500
+
+    // Comparisons
+    assert 5 > 3
+    assert 3 < 5
+    assert 5 >= 5
+    assert 5 <= 5
+    assert 5 != 3
+}

@@ -1,0 +1,46 @@
+// Test slices and arenas
+
+func sum(ref data: [i64]): i64 = {
+    mut total: i64 = 0
+    mut i: i64 = 0
+    while (i < data.len) {
+        total = total + data[i]
+        i = i + 1
+    }
+    return total
+}
+
+func fill(mut ref data: [i64], val_to_set: i64): void = {
+    mut i: i64 = 0
+    while (i < data.len) {
+        data[i] = val_to_set
+        i = i + 1
+    }
+}
+
+func main(): void = {
+    // Array to slice coercion
+    val arr: [i64; 3] = [1, 2, 3]
+    assert sum(ref arr) == 6
+
+    val arr2: [i64; 5] = [10, 20, 30, 40, 50]
+    assert sum(ref arr2) == 150
+
+    // Mutable slice via array coercion
+    mut nums: [i64; 4] = [0, 0, 0, 0]
+    fill(mut ref nums, 7)
+    assert nums[0] == 7
+    assert nums[3] == 7
+
+    // Arena-allocated slices
+    mut mem: Arena = arena(4096)
+    val data: [i64] = alloc(mut ref mem, 5)
+    assert data.len == 5
+    assert data[0] == 0
+
+    mut buf: [i64] = alloc(mut ref mem, 3)
+    buf[0] = 10
+    buf[1] = 20
+    buf[2] = 30
+    assert sum(ref buf) == 60
+}

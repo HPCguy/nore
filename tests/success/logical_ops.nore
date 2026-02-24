@@ -1,0 +1,31 @@
+// Test logical operators
+
+func main(): void = {
+    // Logical AND
+    assert true && true
+    assert !(true && false)
+    assert !(false && true)
+    assert !(false && false)
+
+    // Logical OR
+    assert true || true
+    assert true || false
+    assert false || true
+    assert !(false || false)
+
+    // Logical NOT
+    assert !false
+    assert !!true
+
+    // Combined
+    val a: i64 = 5
+    val b: i64 = 10
+    assert a < b && b > 0
+    assert a == 5 || b == 5
+    assert !(a > b)
+
+    // Short-circuit (while doesn't change semantics, ensures no crash)
+    val x: i64 = 0
+    assert x == 0 || x > 100
+    assert !(x != 0 && x < 100)
+}

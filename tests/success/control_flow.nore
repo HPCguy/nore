@@ -1,0 +1,71 @@
+// Test if/else, while, break, and continue
+
+func main(): void = {
+    // Basic if
+    mut x: i64 = 0
+    if (true) {
+        x = 1
+    }
+    assert x == 1
+
+    // If/else
+    mut y: i64 = 0
+    if (false) {
+        y = 1
+    } else {
+        y = 2
+    }
+    assert y == 2
+
+    // If expression
+    val z: i64 = if (true) { 10 } else { 20 }
+    assert z == 10
+
+    val w: i64 = if (false) { 10 } else { 20 }
+    assert w == 20
+
+    // While loop
+    mut sum: i64 = 0
+    mut i: i64 = 1
+    while (i <= 10) {
+        sum = sum + i
+        i = i + 1
+    }
+    assert sum == 55
+
+    // While with break
+    mut count: i64 = 0
+    while (true) {
+        count = count + 1
+        if (count == 5) {
+            break
+        }
+    }
+    assert count == 5
+
+    // While with continue
+    mut evens: i64 = 0
+    mut j: i64 = 0
+    while (j < 10) {
+        j = j + 1
+        if (j / 2 * 2 != j) {
+            continue
+        }
+        evens = evens + 1
+    }
+    assert evens == 5
+
+    // Nested if
+    val a: i64 = 10
+    mut result: i64 = 0
+    if (a > 5) {
+        if (a > 8) {
+            result = 3
+        } else {
+            result = 2
+        }
+    } else {
+        result = 1
+    }
+    assert result == 3
+}

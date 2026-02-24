@@ -1,0 +1,30 @@
+// Test string type and operations
+
+func str_len(ref s: str): i64 = {
+    return s.len
+}
+
+func main(): void = {
+    // String literals
+    val hello: str = "hello"
+    assert hello.len == 5
+
+    // Empty string
+    val empty: str = ""
+    assert empty.len == 0
+
+    // String indexing (byte access)
+    val s: str = "abc"
+    assert s[0] == 97
+    assert s[1] == 98
+    assert s[2] == 99
+
+    // String with escapes
+    val escaped: str = "a\nb"
+    assert escaped.len == 3
+    assert escaped[1] == 10
+
+    // Passing strings by ref
+    val msg: str = "world"
+    assert str_len(ref msg) == 5
+}

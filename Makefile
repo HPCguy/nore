@@ -41,5 +41,17 @@ test-errors: $(TARGET)
 	@chmod +x tests/run_error_tests.sh
 	@./tests/run_error_tests.sh
 
+# Run success tests
+test-success: $(TARGET)
+	@chmod +x tests/run_success_tests.sh
+	@./tests/run_success_tests.sh
+
+# Run all tests
+test: $(TARGET)
+	@chmod +x tests/run_error_tests.sh tests/run_success_tests.sh
+	@./tests/run_error_tests.sh
+	@echo ""
+	@./tests/run_success_tests.sh
+
 # Phony targets
-.PHONY: all debug clean test-errors
+.PHONY: all debug clean test-errors test-success test

@@ -1,0 +1,34 @@
+#!/bin/bash
+# Success test runner for Nore compiler
+# Tests that programs compile, run, and exit successfully (exit code 0)
+
+PASS=0
+FAIL=0
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+NORE="${SCRIPT_DIR}/../nore"
+
+# Check if nore binary exists
+if [ ! -x "$NORE" ]; then
+    echo "Error: nore binary not found at $NORE"
+    echo "Run 'make' first to build the compiler"
+    exit 1
+fi
+
+for f in "$SCRIPT_DIR"/success/*.nore; do
+    # Run compiler with --run and capture output
+    output=$("$NORE" --run "$f" 2>&1)
+    exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        echo "PASS: $(basename "$f")"
+        ((PASS++))
+    else
+        echo "FAIL: $(basename "$f") (exit code $exit_code)"
+        echo "  Output: $output"
+        ((FAIL++))
+    fi
+done
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit $FAIL

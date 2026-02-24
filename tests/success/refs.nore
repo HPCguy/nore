@@ -1,0 +1,39 @@
+// Test ref and mut ref parameters
+
+value Vec2 { x: f64, y: f64 }
+
+func length_sq(ref v: Vec2): f64 = {
+    return v.x * v.x + v.y * v.y
+}
+
+func scale(mut ref v: Vec2, factor: f64): void = {
+    v.x = v.x * factor
+    v.y = v.y * factor
+}
+
+func swap_xy(mut ref v: Vec2): void = {
+    val tmp: f64 = v.x
+    v.x = v.y
+    v.y = tmp
+}
+
+func main(): void = {
+    // Read-only ref
+    val p: Vec2 = Vec2 { x: 3.0, y: 4.0 }
+    assert length_sq(ref p) == 25.0
+
+    // Mutable ref
+    mut q: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+    scale(mut ref q, 3.0)
+    assert q.x == 3.0
+    assert q.y == 6.0
+
+    // Multiple mut ref calls
+    mut v: Vec2 = Vec2 { x: 5.0, y: 10.0 }
+    swap_xy(mut ref v)
+    assert v.x == 10.0
+    assert v.y == 5.0
+    scale(mut ref v, 2.0)
+    assert v.x == 20.0
+    assert v.y == 10.0
+}
