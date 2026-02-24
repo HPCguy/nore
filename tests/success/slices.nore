@@ -34,11 +34,11 @@ func main(): void = {
 
     // Arena-allocated slices
     mut mem: Arena = arena(4096)
-    val data: [i64] = alloc(mut ref mem, 5)
+    val data: [i64] = arena_alloc(mut ref mem, 5)
     assert data.len == 5
     assert data[0] == 0
 
-    mut buf: [i64] = alloc(mut ref mem, 3)
+    mut buf: [i64] = arena_alloc(mut ref mem, 3)
     buf[0] = 10
     buf[1] = 20
     buf[2] = 30

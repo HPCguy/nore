@@ -2209,21 +2209,21 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_arena_new(capacity, loc);
         }
 
-        /* alloc(mut ref arena, count) — built-in arena allocation */
-        if (name_length == 5 && memcmp(name_start, "alloc", 5) == 0 &&
+        /* arena_alloc(mut ref arena, count) — built-in arena allocation */
+        if (name_length == 11 && memcmp(name_start, "arena_alloc", 11) == 0 &&
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             /* Expect 'mut ref' before arena argument */
             if (!parser_match(parser, TOKEN_MUT)) {
                 diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
-                           "Expected 'mut ref' before arena argument in alloc()");
+                           "Expected 'mut ref' before arena argument in arena_alloc()");
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
                 diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
-                           "Expected 'ref' after 'mut' in alloc()");
+                           "Expected 'ref' after 'mut' in arena_alloc()");
                 return NULL;
             }
             Ast *arena = parser_parse_expression(parser);
@@ -2231,7 +2231,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             if (!parser_match(parser, TOKEN_COMMA)) {
                 diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
-                           "Expected ',' after arena argument in alloc()");
+                           "Expected ',' after arena argument in arena_alloc()");
                 ast_free(arena);
                 return NULL;
             }
@@ -2239,7 +2239,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             if (!count) { ast_free(arena); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
                 diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
-                           parser->current.column, "Expected ')' after alloc count");
+                           parser->current.column, "Expected ')' after arena_alloc count");
                 ast_free(arena);
                 ast_free(count);
                 return NULL;
@@ -2247,28 +2247,28 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_arena_alloc(arena, count, loc);
         }
 
-        /* reset(mut ref arena) — built-in arena reset */
-        if (name_length == 5 && memcmp(name_start, "reset", 5) == 0 &&
+        /* arena_reset(mut ref arena) — built-in arena reset */
+        if (name_length == 11 && memcmp(name_start, "arena_reset", 11) == 0 &&
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             /* Expect 'mut ref' before arena argument */
             if (!parser_match(parser, TOKEN_MUT)) {
                 diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
-                           "Expected 'mut ref' before arena argument in reset()");
+                           "Expected 'mut ref' before arena argument in arena_reset()");
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
                 diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
-                           "Expected 'ref' after 'mut' in reset()");
+                           "Expected 'ref' after 'mut' in arena_reset()");
                 return NULL;
             }
             Ast *arena = parser_parse_expression(parser);
             if (!arena) return NULL;
             if (!parser_match(parser, TOKEN_RPAREN)) {
                 diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
-                           parser->current.column, "Expected ')' after reset arena");
+                           parser->current.column, "Expected ')' after arena_reset arena");
                 ast_free(arena);
                 return NULL;
             }
@@ -4633,7 +4633,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             if (!type_is_arena(arena_type)) {
                 diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.arena_alloc.arena->loc.line,
                            node->as.arena_alloc.arena->loc.column,
-                           "alloc() requires Arena, got %s",
+                           "arena_alloc() requires Arena, got %s",
                            type_name(arena_type));
             }
             /* Check arena is mutable */
@@ -4644,14 +4644,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 if (v && !v->is_mutable) {
                     diagnostic(ERR_S052_ARENA_IMMUTABLE, node->as.arena_alloc.arena->loc.line,
                                node->as.arena_alloc.arena->loc.column,
-                               "Cannot alloc from immutable Arena, use 'mut'");
+                               "Cannot arena_alloc from immutable Arena, use 'mut'");
                 }
             }
             Type count_type = typecheck_expression(node->as.arena_alloc.count, scope, func_table);
             if (!type_is_integer(count_type)) {
                 diagnostic(ERR_S006_TYPE_MISMATCH, node->as.arena_alloc.count->loc.line,
                            node->as.arena_alloc.count->loc.column,
-                           "alloc() count must be integer, got %s",
+                           "arena_alloc() count must be integer, got %s",
                            type_name(count_type));
             }
             /* expr_type set to TYPE_UNKNOWN — propagated from declaration context */
@@ -4665,7 +4665,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             if (!type_is_arena(arena_type)) {
                 diagnostic(ERR_S051_ARENA_ALLOC_TYPE, arena_node->loc.line,
                            arena_node->loc.column,
-                           "reset() requires Arena, got %s",
+                           "arena_reset() requires Arena, got %s",
                            type_name(arena_type));
             }
             /* Check arena is mutable and invalidate its slices */
@@ -4676,7 +4676,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 if (v && !v->is_mutable) {
                     diagnostic(ERR_S055_ARENA_RESET_IMMUTABLE,
                                arena_node->loc.line, arena_node->loc.column,
-                               "Cannot reset immutable Arena, use 'mut'");
+                               "Cannot arena_reset immutable Arena, use 'mut'");
                 }
                 if (v) {
                     typecheck_invalidate_arena_slices(scope,
@@ -4904,7 +4904,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
-                           "Slice type not allowed as local variable (use alloc)");
+                           "Slice type not allowed as local variable (use arena_alloc)");
             }
 
             if (declared == TYPE_UNKNOWN) {
@@ -4993,7 +4993,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (type_is_slice(declared)) {
                 diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
-                           "Slice type not allowed as local variable (use alloc)");
+                           "Slice type not allowed as local variable (use arena_alloc)");
             }
 
             if (!type_can_coerce(init_type, declared)) {
@@ -5205,7 +5205,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 /* Check if an expression is valid as a global variable initializer.
  * Allowed: literals, comptime constants, value constructors with constant fields,
  * array literals with constant elements, arena() constructor, string literals.
- * NOT allowed: function calls, alloc(), runtime expressions. */
+ * NOT allowed: function calls, arena_alloc(), runtime expressions. */
 static bool is_global_initializer(Ast *node, Scope *scope) {
     switch (node->kind) {
         case AST_NUMBER:

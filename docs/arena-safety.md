@@ -22,7 +22,7 @@ S053 only catches **direct** escape — a return statement with a struct constru
 
 ```nore
 func build(mut ref mem: Arena): Result = {
-    mut items: [i64] = alloc(mut ref mem, 10)
+    mut items: [i64] = arena_alloc(mut ref mem, 10)
     return Result { items: items }   // OK — mem is ref param, safe to return
 }
 
@@ -90,7 +90,7 @@ A function may not directly return an `alloc` result but instead return the resu
 
 ```nore
 func level2(mut ref mem: Arena): [i64] = {
-    return alloc(mut ref mem, 10)       // direct → returns_arena_slices = true
+    return arena_alloc(mut ref mem, 10)       // direct → returns_arena_slices = true
 }
 
 func level1(mut ref mem: Arena): [i64] = {
@@ -163,7 +163,7 @@ A simple dynamic array of pending checks, processed after all functions are type
 
 ### 5. Reset invalidation (no change needed)
 
-The existing reset invalidation (S056) is per-function and flow-sensitive. The cross-function limitation (resetting a ref-param arena doesn't invalidate slices in the caller) is the same class of problem but less critical — the caller would need to use `reset()` on its own local arena, which invalidates its own slices correctly. A callee resetting a ref-param arena is an unusual pattern and can remain a documented limitation.
+The existing reset invalidation (S056) is per-function and flow-sensitive. The cross-function limitation (resetting a ref-param arena doesn't invalidate slices in the caller) is the same class of problem but less critical — the caller would need to use `arena_reset()` on its own local arena, which invalidates its own slices correctly. A callee resetting a ref-param arena is an unusual pattern and can remain a documented limitation.
 
 ---
 
@@ -173,13 +173,13 @@ The existing reset invalidation (S056) is per-function and flow-sensitive. The c
 
 ```nore
 func get_data(mut ref mem: Arena, n: i64): [i64] = {
-    mut data: [i64] = alloc(mut ref mem, n)
+    mut data: [i64] = arena_alloc(mut ref mem, n)
     return data   // OK — mem is ref param
 }
 
 func bad(): [i64] = {
     mut mem: Arena = arena(1024)
-    mut data: [i64] = alloc(mut ref mem, 10)
+    mut data: [i64] = arena_alloc(mut ref mem, 10)
     return data   // ERROR — mem is local, slice escapes
 }
 ```
@@ -188,7 +188,7 @@ func bad(): [i64] = {
 
 ```nore
 func build(mut ref mem: Arena): Table = {
-    mut keys: [i64] = alloc(mut ref mem, 100)
+    mut keys: [i64] = arena_alloc(mut ref mem, 100)
     return Table { keys: keys }   // → marks build as returns_arena_slices=true
 }
 
@@ -206,7 +206,7 @@ func bad(): Table = {
 
 ```nore
 func level2(mut ref mem: Arena): [i64] = {
-    return alloc(mut ref mem, 10)           // direct: returns_arena_slices = true
+    return arena_alloc(mut ref mem, 10)           // direct: returns_arena_slices = true
 }
 
 func level1(mut ref mem: Arena): [i64] = {
@@ -223,14 +223,14 @@ func bad(): [i64] = {
 
 ```nore
 func analyze(mut ref mem: Arena, ref data: [f64]): Stats = {
-    mut tmp: [f64] = alloc(mut ref mem, 100)  // scratch, not returned
+    mut tmp: [f64] = arena_alloc(mut ref mem, 100)  // scratch, not returned
     return Stats { samples: data, count: 50 } // slices from data, not mem
 }
 
 func main(): void = {
     mut mem: Arena = arena(8192)
     mut big: Arena = arena(65536)
-    mut raw: [f64] = alloc(mut ref big, 1000)
+    mut raw: [f64] = arena_alloc(mut ref big, 1000)
     val s = analyze(mut ref mem, ref raw)     // OK — analyze.returns_arena_slices=false
 }
 ```
@@ -243,8 +243,8 @@ With a single boolean per function, the analysis cannot distinguish *which* aren
 
 ```nore
 func build(mut ref scratch: Arena, mut ref storage: Arena): Table = {
-    mut tmp: [i64] = alloc(mut ref scratch, 100)    // scratch only, not returned
-    mut keys: [i64] = alloc(mut ref storage, 100)   // returned
+    mut tmp: [i64] = arena_alloc(mut ref scratch, 100)    // scratch only, not returned
+    mut keys: [i64] = arena_alloc(mut ref storage, 100)   // returned
     return Table { keys: keys }
 }
 
@@ -272,7 +272,7 @@ With this spec fully implemented, Nore is **memory-safe for arena-scoped allocat
 | Dangling slices (reset) | Flow-sensitive invalidation, S056 | Compile time |
 | Buffer overflows | Bounds checking, R002 | Runtime |
 | Double free | Arena auto-cleanup, no manual free | By design |
-| Null pointers | Slices always from `alloc`, no null concept | By design |
+| Null pointers | Slices always from `arena_alloc`, no null concept | By design |
 | Uninitialized memory | Arena allocs are zero-initialized, variables require initializers | By design |
 | Reference escape | Refs exist only as function params, cannot be stored | By design |
 | Integer overflow | `-fwrapv` flag — two's complement wrapping guaranteed | By design |
@@ -283,7 +283,7 @@ With this spec fully implemented, Nore is **memory-safe for arena-scoped allocat
 
 ```nore
 func process(mut ref mem: Arena, ref data: [i64]): void = {
-    reset(mut ref mem)   // invalidates data — compiler doesn't know
+    arena_reset(mut ref mem)   // invalidates data — compiler doesn't know
     val x = data[0]      // use-after-free
 }
 ```

@@ -1,4 +1,4 @@
 func main(): void = {
     mut x: i64 = 42
-    mut data: [i64] = alloc(mut ref x, 10)
+    mut data: [i64] = arena_alloc(mut ref x, 10)
 }

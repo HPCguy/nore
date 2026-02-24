@@ -265,7 +265,7 @@ String literals live in static memory for the program's lifetime. No arena neede
 
 ```
 val mem: Arena = arena(4096)
-val name: str = mem.alloc_str("hello world")
+val name: str = arena_alloc_str(mut ref mem, "hello world")
 ```
 
 The developer always sees where string data comes from. No hidden heap allocation.
@@ -362,11 +362,11 @@ No other cases exist. No nested ownership. No lifetime chains.
 val scratch: Arena = arena(4096)
 
 # Allocate dynamic data from it
-val name: str = scratch.alloc_str("hello world")
-val points: []f64 = scratch.alloc_slice(100)
+val name: str = arena_alloc_str(mut ref scratch, "hello world")
+val points: []f64 = arena_alloc_slice(mut ref scratch, 100)
 
 # Free everything at once
-scratch.reset()
+arena_reset(mut ref scratch)
 ```
 
 Every slice knows which arena it came from. There is no global heap, no invisible `malloc`.
@@ -382,7 +382,7 @@ This is **not** a full borrow checker. There are no per-reference lifetimes, no 
 ```
 func process(): void = {
     val scratch: Arena = arena(4096)
-    val s: str = scratch.alloc_str("hello")
+    val s: str = arena_alloc_str(mut ref scratch, "hello")
     # s is valid here — scratch is alive
 }   # scratch dies, s dies — compiler enforces this
 ```
@@ -392,7 +392,7 @@ func process(): void = {
 ```
 func bad(): str = {
     val tmp: Arena = arena(256)
-    return tmp.alloc_str("oops")    # error: slice outlives arena 'tmp'
+    return arena_alloc_str(mut ref tmp, "oops")    # error: slice outlives arena 'tmp'
 }
 ```
 
@@ -402,7 +402,7 @@ A function receives an arena by `ref` (because arenas are structs). Slices alloc
 
 ```
 func build_greeting(ref a: Arena, name: str): str = {
-    return a.alloc_str("hello " + name)
+    return arena_alloc_str(mut ref a, "hello " + name)
 }
 
 func main(): void = {
@@ -424,24 +424,24 @@ val level_mem: Arena = arena(1024 * 1024)
 val name_mem: Arena = arena(4096)
 
 func load_level(): void = {
-    val geometry: []f64 = level_mem.alloc_slice(10000)
+    val geometry: []f64 = arena_alloc_slice(mut ref level_mem, 10000)
     # geometry valid for the program — level_mem is global
 }
 ```
 
 ### Arena Reset Invalidation
 
-When `reset()` is called on an arena, the compiler treats all slices from that arena as invalid from that point forward:
+When `arena_reset()` is called on an arena, the compiler treats all slices from that arena as invalid from that point forward:
 
 ```
 val a: Arena = arena(1024)
-val s: str = a.alloc_str("hello")
+val s: str = arena_alloc_str(mut ref a, "hello")
 print(s)          # ok
-a.reset()
+arena_reset(mut ref a)
 print(s)          # error: slice 's' invalidated by arena reset
 ```
 
-This is a flow-sensitive check: the compiler tracks `reset()` calls and rejects use of any slice sourced from that arena after the reset.
+This is a flow-sensitive check: the compiler tracks `arena_reset()` calls and rejects use of any slice sourced from that arena after the reset.
 
 ### Tables and Arenas
 
@@ -472,9 +472,9 @@ val name_mem: Arena = arena(4096)
 func game_loop(): void = {
     # Local: per-frame temporary data
     val frame_mem: Arena = arena(8192)
-    val debug_label: str = frame_mem.alloc_str("frame 42")
+    val debug_label: str = arena_alloc_str(mut ref frame_mem, "frame 42")
     # ... process ...
-    frame_mem.reset()
+    arena_reset(mut ref frame_mem)
     # using debug_label here → compile error: arena was reset
 }
 ```

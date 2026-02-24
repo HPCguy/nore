@@ -201,16 +201,16 @@ Errors use numeric codes with phase prefixes for stable testing:
 - **S043**: Cannot copy struct/Arena variable (not copyable)
 - **S044**: Struct/Arena parameter must use 'ref' or 'mut ref'
 - **S045**: Cannot embed struct/Arena type as field
-- **S046**: Slice type not allowed as local variable (use alloc or function call)
+- **S046**: Slice type not allowed as local variable (use arena_alloc or function call)
 - **S047**: Slice type not allowed as field (value types only; allowed in structs)
 - **S048**: (no longer emitted — replaced by S053 escape analysis)
 - **S049**: Slice parameter must use 'ref' or 'mut ref'
 - **S050**: Literal out of range for target type / integer overflow in constant expression
-- **S051**: alloc() requires Arena type
-- **S052**: Cannot alloc from immutable Arena (use 'mut')
+- **S051**: arena_alloc() requires Arena type
+- **S052**: Cannot arena_alloc from immutable Arena (use 'mut')
 - **S053**: Slice escapes local arena (direct, indirect via struct, or transitive via function call)
 - **S054**: String literals cannot be mutable (use 'val')
-- **S055**: Cannot reset immutable Arena (use 'mut')
+- **S055**: Cannot arena_reset immutable Arena (use 'mut')
 - **S056**: Use of slice invalidated by arena reset
 - **S057**: Global variable initializer must be a constant expression (or arena constructor)
 - **R001**: Assertion failed

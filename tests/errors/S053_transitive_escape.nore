@@ -1,5 +1,5 @@
 func level2(mut ref mem: Arena): [i64] = {
-    mut data: [i64] = alloc(mut ref mem, 10)
+    mut data: [i64] = arena_alloc(mut ref mem, 10)
     return data
 }
 

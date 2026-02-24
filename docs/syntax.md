@@ -179,7 +179,7 @@ mut mem: Arena = arena(4096)
 func main(): void = {
     // Arena is initialized at the start of main
     // and freed at the end of main
-    mut data: [i64] = alloc(mut ref mem, 10)
+    mut data: [i64] = arena_alloc(mut ref mem, 10)
     data[0] = 42
 }
 ```
@@ -189,7 +189,7 @@ func main(): void = {
 **Restrictions**:
 - Global initializers must be constant expressions (literals, comptime constants, value constructors with constant fields, array literals with constant elements)
 - `arena()` is the only non-constant initializer allowed (for arena globals)
-- Function calls and `alloc()` are not allowed as global initializers (error S057)
+- Function calls and `arena_alloc()` are not allowed as global initializers (error S057)
 - Slice globals are not allowed (except string literals via `val`)
 - Slices allocated from a global arena never "escape" (global arenas have program lifetime)
 
@@ -557,11 +557,11 @@ data[i] = 42                 // element assignment (mut ref only)
 **Slice Local Variables**:
 ```nore
 mut mem: Arena = arena(4096)
-val data: [i64] = alloc(mut ref mem, 10)
-mut pts: [Vec2] = alloc(mut ref mem, 100)
+val data: [i64] = arena_alloc(mut ref mem, 10)
+mut pts: [Vec2] = arena_alloc(mut ref mem, 100)
 val result: [i64] = get_data(mut ref mem, 5)   // from function call
 ```
-- Slice locals must be initialized via `alloc()` or from a function call returning a slice
+- Slice locals must be initialized via `arena_alloc()` or from a function call returning a slice
 
 **Slice Struct Fields**:
 ```nore
@@ -573,15 +573,15 @@ struct Mesh { vertices: [f64], count: i64 }
 **No Copy Semantics**:
 ```nore
 mut mem: Arena = arena(4096)
-val a: [i64] = alloc(mut ref mem, 10)
-val b: [i64] = a    // ERROR: slice local must use alloc or function call (S046)
+val a: [i64] = arena_alloc(mut ref mem, 10)
+val b: [i64] = a    // ERROR: slice local must use arena_alloc or function call (S046)
 ```
-- Slice locals can only be initialized via `alloc()` or a function call returning a slice
+- Slice locals can only be initialized via `arena_alloc()` or a function call returning a slice
 - To share access, pass slices by `ref` or `mut ref`
 
 **Restrictions** (current):
 - Slice parameters must use `ref` or `mut ref`
-- Slice local variables must be initialized via `alloc()` or from a function call returning a slice
+- Slice local variables must be initialized via `arena_alloc()` or from a function call returning a slice
 
 ### Arenas
 
@@ -592,14 +592,14 @@ Arenas provide heap allocation for slices. An Arena is a contiguous block of mem
 mut mem: Arena = arena(4096)    // 4096-byte arena
 ```
 - `arena(capacity)` creates a new arena with the given byte capacity
-- Arena variables should be `mut` since `alloc()` and `reset()` require mutability
+- Arena variables should be `mut` since `arena_alloc()` and `arena_reset()` require mutability
 
 **Allocating Slices**:
 ```nore
-val data: [i64] = alloc(mut ref mem, 10)       // 10 zero-initialized i64s
-mut pts: [Vec2] = alloc(mut ref mem, 100)      // 100 zero-initialized Vec2s
+val data: [i64] = arena_alloc(mut ref mem, 10)       // 10 zero-initialized i64s
+mut pts: [Vec2] = arena_alloc(mut ref mem, 100)      // 100 zero-initialized Vec2s
 ```
-- `alloc(mut ref arena, count)` allocates `count` elements from the arena
+- `arena_alloc(mut ref arena, count)` allocates `count` elements from the arena
 - Element type is inferred from the declaration type
 - Memory is zero-initialized
 - Arena argument must be `mut ref` (allocation mutates the arena)
@@ -612,7 +612,7 @@ func make_arena(): Arena = {
 }
 
 func fill(mut ref mem: Arena, n: i64): void = {
-    mut data: [i64] = alloc(mut ref mem, n)
+    mut data: [i64] = arena_alloc(mut ref mem, n)
     data[0] = 42
 }
 ```
@@ -627,9 +627,9 @@ func fill(mut ref mem: Arena, n: i64): void = {
 
 **Arena Reset**:
 ```nore
-reset(mut ref mem)
+arena_reset(mut ref mem)
 ```
-- `reset(mut ref arena)` reclaims all arena memory at once (resets offset to zero)
+- `arena_reset(mut ref arena)` reclaims all arena memory at once (resets offset to zero)
 - Arena argument must be `mut ref` (reset mutates the arena)
 - All slices previously allocated from the arena are **invalidated** — using them after reset is a compile-time error (S056)
 - After reset, new slices can be allocated from the arena with fresh variables
@@ -857,8 +857,8 @@ func main(): void = {
 
 ### Built-in Functions
 - `arena(capacity)` - Create a new Arena with the given byte capacity
-- `alloc(mut ref arena, count)` - Allocate a slice of `count` elements from an Arena
-- `reset(mut ref arena)` - Reclaim all arena memory (invalidates existing slices)
+- `arena_alloc(mut ref arena, count)` - Allocate a slice of `count` elements from an Arena
+- `arena_reset(mut ref arena)` - Reclaim all arena memory (invalidates existing slices)
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)

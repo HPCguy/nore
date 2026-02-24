@@ -1,5 +1,5 @@
 mut mem: Arena = arena(4096)
-mut data: [i64] = alloc(mut ref mem, 5)
+mut data: [i64] = arena_alloc(mut ref mem, 5)
 
 func main(): void = {
 }

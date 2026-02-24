@@ -1,4 +1,4 @@
 func main(): void = {
     val mem: Arena = arena(1024)
-    reset(mut ref mem)
+    arena_reset(mut ref mem)
 }

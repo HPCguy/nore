@@ -1,7 +1,7 @@
 struct Result { items: [i64] }
 
 func build(mut ref mem: Arena): Result = {
-    mut items: [i64] = alloc(mut ref mem, 10)
+    mut items: [i64] = arena_alloc(mut ref mem, 10)
     return Result { items: items }
 }
 
