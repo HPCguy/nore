@@ -156,6 +156,9 @@ Errors use numeric codes with phase prefixes for stable testing:
 - **P035**: Expected ']' to close array literal
 - **P036**: Expected 'ref' after 'mut' in parameter
 - **P037**: Expected 'ref' after 'mut' in argument
+- **P038**: Expected 'in' after loop variable in for-loop
+- **P039**: Expected '..' in for-loop range
+- **P040**: Expected '{' for for-loop body
 - **S001**: Duplicate variable declaration
 - **S002**: Undeclared variable
 - **S003**: Cannot assign to immutable variable
@@ -213,6 +216,7 @@ Errors use numeric codes with phase prefixes for stable testing:
 - **S055**: Cannot arena_reset immutable Arena (use 'mut')
 - **S056**: Use of slice invalidated by arena reset
 - **S057**: Global variable initializer must be a constant expression (or arena constructor)
+- **S058**: For-loop range bound must be integer type
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 

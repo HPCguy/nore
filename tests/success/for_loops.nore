@@ -1,0 +1,100 @@
+// For-loop tests
+
+func main(): void = {
+    // Basic sum: 0+1+2+3+4 = 10
+    mut sum: i64 = 0
+    for i in 0..5 {
+        sum = sum + i
+    }
+    assert sum == 10
+
+    // Variable end bound
+    val n: i64 = 10
+    mut s: i64 = 0
+    for i in 0..n {
+        s = s + i
+    }
+    assert s == 45
+
+    // Non-zero start: 3+4+5+6 = 18
+    mut s2: i64 = 0
+    for i in 3..7 {
+        s2 = s2 + i
+    }
+    assert s2 == 18
+
+    // Empty range (start == end)
+    mut count: i64 = 0
+    for i in 5..5 {
+        count = count + 1
+    }
+    assert count == 0
+
+    // Empty range (start > end)
+    mut count2: i64 = 0
+    for i in 10..3 {
+        count2 = count2 + 1
+    }
+    assert count2 == 0
+
+    // Break
+    mut total: i64 = 0
+    for i in 0..100 {
+        if (i == 3) {
+            break
+        }
+        total = total + i
+    }
+    assert total == 3
+
+    // Continue (skip odd numbers)
+    mut even_sum: i64 = 0
+    for i in 0..6 {
+        if (i == 1) { continue }
+        if (i == 3) { continue }
+        if (i == 5) { continue }
+        even_sum = even_sum + i
+    }
+    assert even_sum == 6
+
+    // Nested for loops
+    mut cells: i64 = 0
+    for row in 0..3 {
+        for col in 0..4 {
+            cells = cells + 1
+        }
+    }
+    assert cells == 12
+
+    // Expression bounds (comptime)
+    val size = 2 + 3
+    mut s3: i64 = 0
+    for i in 0..size {
+        s3 = s3 + i
+    }
+    assert s3 == 10
+
+    // End evaluated once (mutate limit var inside loop)
+    mut limit: i64 = 5
+    mut s4: i64 = 0
+    for i in 0..limit {
+        limit = 100
+        s4 = s4 + i
+    }
+    assert s4 == 10
+
+    // Loop variable not visible after loop
+    mut last: i64 = 0
+    for x in 0..3 {
+        last = x
+    }
+    assert last == 2
+
+    // Small integer end bound
+    val small: i32 = 4
+    mut s5: i64 = 0
+    for i in 0..small {
+        s5 = s5 + i
+    }
+    assert s5 == 6
+}

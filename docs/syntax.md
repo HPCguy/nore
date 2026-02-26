@@ -735,6 +735,20 @@ while (condition) {
 - `break` exits the loop
 - `continue` skips to next iteration
 
+**For Loops** (range-based):
+```nore
+for i in 0..n {
+    // loop body — i goes from 0 to n-1
+}
+```
+- Exclusive upper bound (`0..5` iterates 0, 1, 2, 3, 4)
+- Loop variable is implicit `val i64` (immutable, cannot be reassigned)
+- Range bounds must be integer types (`i64`, `i32`, `u8`, `u32`, or `comptime_int`)
+- End expression is evaluated once before the loop starts
+- Empty ranges (start >= end) simply skip the loop body
+- `break` exits the loop
+- `continue` skips to next iteration
+
 **Blocks**:
 ```nore
 {
@@ -836,7 +850,9 @@ func main(): void = {
 - `assert` - Runtime assertion
 - `if` - Conditional
 - `else` - Else branch
-- `while` - Loop
+- `while` - While loop
+- `for` - For loop (range-based)
+- `in` - For-loop range keyword
 - `break` - Exit loop
 - `continue` - Next iteration
 - `true` - Boolean true
@@ -868,6 +884,7 @@ func main(): void = {
 - `;` - Array type size separator (`[T; N]`)
 - `,` - Parameter/field/element separator
 - `.` - Field access
+- `..` - Range operator (for loops)
 
 Note: `"` delimits string literals but is consumed by the lexer during scanning, not emitted as a standalone token.
 

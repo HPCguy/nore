@@ -84,6 +84,9 @@ typedef enum {
     ERR_P035_EXPECTED_RBRACKET_LITERAL = ERR_GROUP_PARSER + 35,
     ERR_P036_EXPECTED_REF_PARAM    = ERR_GROUP_PARSER + 36,
     ERR_P037_EXPECTED_REF_ARG      = ERR_GROUP_PARSER + 37,
+    ERR_P038_EXPECTED_IN_FOR       = ERR_GROUP_PARSER + 38,
+    ERR_P039_EXPECTED_DOTDOT       = ERR_GROUP_PARSER + 39,
+    ERR_P040_EXPECTED_LBRACE_FOR   = ERR_GROUP_PARSER + 40,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -143,6 +146,7 @@ typedef enum {
     ERR_S055_ARENA_RESET_IMMUTABLE = ERR_GROUP_SEMANTIC + 55,
     ERR_S056_SLICE_INVALIDATED     = ERR_GROUP_SEMANTIC + 56,
     ERR_S057_GLOBAL_NOT_CONSTANT   = ERR_GROUP_SEMANTIC + 57,
+    ERR_S058_FOR_RANGE_NOT_INTEGER = ERR_GROUP_SEMANTIC + 58,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -310,6 +314,8 @@ typedef enum {
     TOKEN_IF,
     TOKEN_ELSE,
     TOKEN_WHILE,
+    TOKEN_FOR,
+    TOKEN_IN,
     TOKEN_BREAK,
     TOKEN_CONTINUE,
     TOKEN_VOID,
@@ -353,6 +359,7 @@ typedef enum {
     TOKEN_LBRACKET,
     TOKEN_RBRACKET,
     TOKEN_SEMICOLON,
+    TOKEN_DOTDOT,
 
     TOKEN_EOF,
     TOKEN_ERROR
@@ -379,6 +386,8 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_IF:            return "IF";
         case TOKEN_ELSE:          return "ELSE";
         case TOKEN_WHILE:         return "WHILE";
+        case TOKEN_FOR:           return "FOR";
+        case TOKEN_IN:            return "IN";
         case TOKEN_BREAK:         return "BREAK";
         case TOKEN_CONTINUE:      return "CONTINUE";
         case TOKEN_VOID:          return "VOID";
@@ -420,6 +429,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_LBRACKET:      return "LBRACKET";
         case TOKEN_RBRACKET:      return "RBRACKET";
         case TOKEN_SEMICOLON:     return "SEMICOLON";
+        case TOKEN_DOTDOT:        return "DOTDOT";
         case TOKEN_EOF:           return "EOF";
         case TOKEN_ERROR:         return "ERROR";
         default:                  return "UNKNOWN";
@@ -546,12 +556,14 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
     switch (length) {
         case 2:
             if (memcmp(start, "if", 2) == 0) return TOKEN_IF;
+            if (memcmp(start, "in", 2) == 0) return TOKEN_IN;
             if (memcmp(start, "u8", 2) == 0) return TOKEN_U8;
             break;
         case 3:
             if (memcmp(start, "val", 3) == 0) return TOKEN_VAL;
             if (memcmp(start, "mut", 3) == 0) return TOKEN_MUT;
             if (memcmp(start, "ref", 3) == 0) return TOKEN_REF;
+            if (memcmp(start, "for", 3) == 0) return TOKEN_FOR;
             if (memcmp(start, "i64", 3) == 0) return TOKEN_I64;
             if (memcmp(start, "i32", 3) == 0) return TOKEN_I32;
             if (memcmp(start, "u32", 3) == 0) return TOKEN_U32;
@@ -647,7 +659,12 @@ Token lexer_next_token(Lexer *lexer) {
         case '}': return lexer_make_token(lexer, TOKEN_RBRACE);
         case ':': return lexer_make_token(lexer, TOKEN_COLON);
         case ',': return lexer_make_token(lexer, TOKEN_COMMA);
-        case '.': return lexer_make_token(lexer, TOKEN_DOT);
+        case '.':
+            if (lexer_peek(lexer) == '.') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_DOTDOT);
+            }
+            return lexer_make_token(lexer, TOKEN_DOT);
         case '[': return lexer_make_token(lexer, TOKEN_LBRACKET);
         case ']': return lexer_make_token(lexer, TOKEN_RBRACKET);
         case ';': return lexer_make_token(lexer, TOKEN_SEMICOLON);
@@ -1218,6 +1235,7 @@ typedef enum {
     AST_ASSERT,
     AST_IF,
     AST_WHILE,
+    AST_FOR,
     AST_BREAK,
     AST_CONTINUE,
     AST_BLOCK,
@@ -1339,6 +1357,14 @@ typedef struct Ast {
             struct Ast *condition;
             struct Ast *body;
         } while_stmt;
+
+        struct {
+            const char *var_start;
+            size_t var_length;
+            struct Ast *start;
+            struct Ast *end;
+            struct Ast *body;
+        } for_stmt;
 
         struct {
             struct Ast **statements;
@@ -1592,6 +1618,22 @@ static Ast *ast_make_while(Ast *condition, Ast *body, SourceLoc loc) {
     node->loc = loc;
     node->as.while_stmt.condition = condition;
     node->as.while_stmt.body = body;
+    return node;
+}
+
+static Ast *ast_make_for(const char *var_start, size_t var_length,
+                         Ast *start, Ast *end, Ast *body, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_FOR;
+    node->loc = loc;
+    node->as.for_stmt.var_start = var_start;
+    node->as.for_stmt.var_length = var_length;
+    node->as.for_stmt.start = start;
+    node->as.for_stmt.end = end;
+    node->as.for_stmt.body = body;
     return node;
 }
 
@@ -1866,6 +1908,11 @@ static void ast_free(Ast *node) {
             ast_free(node->as.while_stmt.condition);
             ast_free(node->as.while_stmt.body);
             break;
+        case AST_FOR:
+            ast_free(node->as.for_stmt.start);
+            ast_free(node->as.for_stmt.end);
+            ast_free(node->as.for_stmt.body);
+            break;
         case AST_BLOCK:
             for (size_t i = 0; i < node->as.block.count; i++) {
                 ast_free(node->as.block.statements[i]);
@@ -2053,6 +2100,7 @@ static void parser_synchronize(Parser *parser) {
             case TOKEN_ASSERT:
             case TOKEN_IF:
             case TOKEN_WHILE:
+            case TOKEN_FOR:
             case TOKEN_BREAK:
             case TOKEN_CONTINUE:
             case TOKEN_RBRACE:
@@ -2643,6 +2691,7 @@ static Ast *parser_parse_block(Parser *parser) {
             parser_check(parser, TOKEN_RETURN) ||
             parser_check(parser, TOKEN_ASSERT) ||
             parser_check(parser, TOKEN_WHILE) ||
+            parser_check(parser, TOKEN_FOR) ||
             parser_check(parser, TOKEN_BREAK) ||
             parser_check(parser, TOKEN_CONTINUE) ||
             parser_check(parser, TOKEN_LBRACE) ||
@@ -2784,6 +2833,62 @@ static Ast *parser_parse_while(Parser *parser) {
     Ast *body = parser_parse_block(parser);
 
     return ast_make_while(condition, body, loc);
+}
+
+static Ast *parser_parse_for(Parser *parser) {
+    /* TOKEN_FOR already consumed - capture its location */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    /* Expect loop variable identifier */
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                   parser->current.column, "Expected loop variable after 'for'");
+        parser_synchronize(parser);
+        return NULL;
+    }
+    const char *var_start = parser->previous.start;
+    size_t var_length = parser->previous.length;
+
+    /* Expect 'in' */
+    if (!parser_match(parser, TOKEN_IN)) {
+        diagnostic(ERR_P038_EXPECTED_IN_FOR, parser->current.line,
+                   parser->current.column, "Expected 'in' after loop variable");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse start expression */
+    Ast *start = parser_parse_expression(parser);
+    if (!start) {
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect '..' */
+    if (!parser_match(parser, TOKEN_DOTDOT)) {
+        diagnostic(ERR_P039_EXPECTED_DOTDOT, parser->current.line,
+                   parser->current.column, "Expected '..' in range");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse end expression */
+    Ast *end = parser_parse_expression(parser);
+    if (!end) {
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect '{' and parse block */
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P040_EXPECTED_LBRACE_FOR, parser->current.line,
+                   parser->current.column, "Expected '{' for for-loop body");
+        parser_synchronize(parser);
+        return NULL;
+    }
+    Ast *body = parser_parse_block(parser);
+
+    return ast_make_for(var_start, var_length, start, end, body, loc);
 }
 
 static Ast *parser_parse_break(Parser *parser) {
@@ -3071,6 +3176,10 @@ static Ast *parser_parse_statement(Parser *parser) {
         return parser_parse_while(parser);
     }
 
+    if (parser_match(parser, TOKEN_FOR)) {
+        return parser_parse_for(parser);
+    }
+
     if (parser_match(parser, TOKEN_BREAK)) {
         return parser_parse_break(parser);
     }
@@ -3346,6 +3455,20 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("BODY:\n");
             parser_print_ast_step(node->as.while_stmt.body, indent + 2);
+            break;
+
+        case AST_FOR:
+            printf("FOR %.*s\n", (int)node->as.for_stmt.var_length,
+                   node->as.for_stmt.var_start);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("START:\n");
+            parser_print_ast_step(node->as.for_stmt.start, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("END:\n");
+            parser_print_ast_step(node->as.for_stmt.end, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("BODY:\n");
+            parser_print_ast_step(node->as.for_stmt.body, indent + 2);
             break;
 
         case AST_BREAK:
@@ -5169,6 +5292,36 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             break;
         }
 
+        case AST_FOR: {
+            /* Typecheck start and end — both must be integer types */
+            Type start_type = typecheck_expression(node->as.for_stmt.start, *scope, func_table);
+            if (!type_is_integer(start_type)) {
+                diagnostic(ERR_S058_FOR_RANGE_NOT_INTEGER, node->as.for_stmt.start->loc.line,
+                           node->as.for_stmt.start->loc.column,
+                           "For-loop range bound must be integer, got %s",
+                           type_name(start_type));
+            }
+            Type end_type = typecheck_expression(node->as.for_stmt.end, *scope, func_table);
+            if (!type_is_integer(end_type)) {
+                diagnostic(ERR_S058_FOR_RANGE_NOT_INTEGER, node->as.for_stmt.end->loc.line,
+                           node->as.for_stmt.end->loc.column,
+                           "For-loop range bound must be integer, got %s",
+                           type_name(end_type));
+            }
+
+            /* Typecheck body with loop variable in scope */
+            Ast *body = node->as.for_stmt.body;
+            Scope *body_scope = scope_create(*scope);
+            body_scope->loop_depth = (*scope)->loop_depth + 1;
+            scope_add(body_scope, node->as.for_stmt.var_start,
+                      node->as.for_stmt.var_length, false, TYPE_I64, node->loc);
+            for (size_t i = 0; i < body->as.block.count; i++) {
+                typecheck_statement(body->as.block.statements[i], &body_scope, return_type, func_table);
+            }
+            scope_destroy(body_scope);
+            break;
+        }
+
         case AST_BREAK:
             if ((*scope)->loop_depth == 0) {
                 diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
@@ -5947,6 +6100,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_ASSIGNMENT:
         case AST_ASSERT:
         case AST_WHILE:
+        case AST_FOR:
         case AST_BREAK:
         case AST_CONTINUE:
         case AST_FUNC_DECL:
@@ -6313,6 +6467,50 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, ") {\n");
 
             codegen_emit_block_statements(out, body, scope, indent + 1, true);
+
+            codegen_indent(out, indent);
+            fprintf(out, "}\n");
+            break;
+        }
+
+        case AST_FOR: {
+            Ast *body = node->as.for_stmt.body;
+            int end_temp = codegen_temp_counter++;
+
+            /* Evaluate end once into a temp */
+            codegen_indent(out, indent);
+            fprintf(out, "const int64_t __for_end_%d = (int64_t)", end_temp);
+            codegen_emit_expression(out, node->as.for_stmt.end);
+            fprintf(out, ";\n");
+
+            /* for (int64_t ni_var = start; ni_var < end; ni_var++) { */
+            codegen_indent(out, indent);
+            fprintf(out, "for (int64_t ni_%.*s = (int64_t)",
+                    (int)node->as.for_stmt.var_length, node->as.for_stmt.var_start);
+            codegen_emit_expression(out, node->as.for_stmt.start);
+            fprintf(out, "; ni_%.*s < __for_end_%d; ni_%.*s++) {\n",
+                    (int)node->as.for_stmt.var_length, node->as.for_stmt.var_start,
+                    end_temp,
+                    (int)node->as.for_stmt.var_length, node->as.for_stmt.var_start);
+
+            /* Manually emit body (same pattern as codegen_emit_block_statements
+               but with loop variable injected into scope) */
+            *scope = scope_create(*scope);
+            (*scope)->loop_depth++;
+            g_codegen_scope = *scope;
+            scope_add(*scope, node->as.for_stmt.var_start,
+                      node->as.for_stmt.var_length, false, TYPE_I64, node->loc);
+
+            for (size_t i = 0; i < body->as.block.count; i++) {
+                codegen_emit_statement(out, body->as.block.statements[i], scope, indent + 1);
+            }
+
+            codegen_emit_arena_frees(out, *scope, indent + 1);
+
+            Scope *old = *scope;
+            *scope = old->parent;
+            g_codegen_scope = *scope;
+            scope_destroy(old);
 
             codegen_indent(out, indent);
             fprintf(out, "}\n");
