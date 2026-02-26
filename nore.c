@@ -6475,6 +6475,8 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_FOR: {
             Ast *body = node->as.for_stmt.body;
+            const char *var = node->as.for_stmt.var_start;
+            int var_len = (int)node->as.for_stmt.var_length;
             int end_temp = codegen_temp_counter++;
 
             /* Evaluate end once into a temp */
@@ -6483,23 +6485,18 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             codegen_emit_expression(out, node->as.for_stmt.end);
             fprintf(out, ";\n");
 
-            /* for (int64_t ni_var = start; ni_var < end; ni_var++) { */
             codegen_indent(out, indent);
-            fprintf(out, "for (int64_t ni_%.*s = (int64_t)",
-                    (int)node->as.for_stmt.var_length, node->as.for_stmt.var_start);
+            fprintf(out, "for (int64_t ni_%.*s = (int64_t)", var_len, var);
             codegen_emit_expression(out, node->as.for_stmt.start);
             fprintf(out, "; ni_%.*s < __for_end_%d; ni_%.*s++) {\n",
-                    (int)node->as.for_stmt.var_length, node->as.for_stmt.var_start,
-                    end_temp,
-                    (int)node->as.for_stmt.var_length, node->as.for_stmt.var_start);
+                    var_len, var, end_temp, var_len, var);
 
-            /* Manually emit body (same pattern as codegen_emit_block_statements
-               but with loop variable injected into scope) */
+            /* Emit body with loop variable injected into scope */
             *scope = scope_create(*scope);
             (*scope)->loop_depth++;
             g_codegen_scope = *scope;
-            scope_add(*scope, node->as.for_stmt.var_start,
-                      node->as.for_stmt.var_length, false, TYPE_I64, node->loc);
+            scope_add(*scope, var, node->as.for_stmt.var_length,
+                      false, TYPE_I64, node->loc);
 
             for (size_t i = 0; i < body->as.block.count; i++) {
                 codegen_emit_statement(out, body->as.block.statements[i], scope, indent + 1);
