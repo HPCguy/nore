@@ -165,18 +165,18 @@ table Particles {
 }
 
 val mem: Arena = arena(1024 * 1024)
-val particles: Particles = Particles.new(ref mem, 1000)    # allocates 3 columns
+val particles: Particles = table_alloc(mut ref mem, Particles, 1000)    # allocates 3 columns
 
 # Column access — contiguous, cache-friendly
-for i in 0..particles.len() {
+for i in 0..table_len(ref particles) {
     particles.life[i] = particles.life[i] - 1
 }
 
 # Row access — returns Particles.Row (a value)
-val row: Particles.Row = particles.get(0)
+val row: Particles.Row = table_get(ref particles, 0)
 
 # Insert a row from a value
-particles.insert(Particles.Row { pos: Vec2 { x: 0.0, y: 0.0 }, life: 100, color: ... })
+table_insert(mut ref particles, Particles.Row { pos: Vec2 { x: 0.0, y: 0.0 }, life: 100, color: ... })
 ```
 
 ### Tables Follow Struct Rules
@@ -281,7 +281,7 @@ table Enemies {
 }
 
 # Resolve the name when needed:
-val name: str = name_table.get(enemies.name_id[i])
+val name: str = table_get(ref name_table, enemies.name_id[i])
 ```
 
 ---
@@ -454,7 +454,7 @@ table Particles {
 }
 
 val game_mem: Arena = arena(1024 * 1024)
-val particles: Particles = Particles.new(ref game_mem, 1000)
+val particles: Particles = table_alloc(mut ref game_mem, Particles, 1000)
 # particles.pos and particles.life are slices into game_mem
 ```
 
@@ -535,7 +535,7 @@ Every other construct in the language (tables, arenas, slices, function passing)
 
 ## Open Questions
 
-- Exact syntax for table operations (insert, remove, iterate, filter)
+- Table operations beyond `table_alloc`, `table_len`, `table_get`, `table_insert` (remove, iterate, filter)
 - `unsafe` pointer type design for C interop
 - Whether `value` types should support methods or only free functions
 - Small-string optimization: should `str` have an inline variant?
