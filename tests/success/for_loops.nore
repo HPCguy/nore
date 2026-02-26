@@ -90,6 +90,27 @@ func main(): void = {
     }
     assert last == 2
 
+    // Negative start to zero: -3+-2+-1 = -6
+    mut neg1: i64 = 0
+    for i in -3..0 {
+        neg1 = neg1 + i
+    }
+    assert neg1 == -6
+
+    // Negative start to positive end: -2+-1+0+1+2 = 0
+    mut neg2: i64 = 0
+    for i in -2..3 {
+        neg2 = neg2 + i
+    }
+    assert neg2 == 0
+
+    // Both negative: -5+-4+-3 = -12
+    mut neg3: i64 = 0
+    for i in -5..-2 {
+        neg3 = neg3 + i
+    }
+    assert neg3 == -12
+
     // Small integer end bound
     val small: i32 = 4
     mut s5: i64 = 0
