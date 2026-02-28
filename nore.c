@@ -967,6 +967,30 @@ static ValueTypeEntry *value_table_get(Type type) {
     return &g_value_table->types[idx];
 }
 
+/* Register a new value/struct type, copying the fields array. Returns the assigned Type. */
+static Type value_table_add(const char *name_start, size_t name_length,
+                             Parameter *fields, size_t field_count,
+                             SourceLoc loc, bool is_struct) {
+    if (g_value_table->count >= g_value_table->capacity) {
+        g_value_table->capacity *= 2;
+        g_value_table->types = realloc(g_value_table->types,
+                                        g_value_table->capacity * sizeof(ValueTypeEntry));
+        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
+    }
+    Parameter *owned_fields = malloc(field_count * sizeof(Parameter));
+    if (!owned_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying value type fields");
+    memcpy(owned_fields, fields, field_count * sizeof(Parameter));
+
+    ValueTypeEntry *entry = &g_value_table->types[g_value_table->count];
+    entry->name_start = name_start;
+    entry->name_length = name_length;
+    entry->fields = owned_fields;
+    entry->field_count = field_count;
+    entry->loc = loc;
+    entry->is_struct = is_struct;
+    return (Type)(TYPE_VALUE_BASE + (int)g_value_table->count++);
+}
+
 static bool type_is_struct(Type type) {
     if (type == TYPE_ARENA) return true;
     ValueTypeEntry *vt = value_table_get(type);
@@ -3491,27 +3515,7 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
         return NULL;
     }
 
-    /* Register type in global value table */
-    if (g_value_table->count >= g_value_table->capacity) {
-        g_value_table->capacity *= 2;
-        g_value_table->types = realloc(g_value_table->types,
-                                        g_value_table->capacity * sizeof(ValueTypeEntry));
-        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
-    }
-
-    /* Copy fields for the table entry (AST owns its own copy) */
-    Parameter *table_fields = malloc(field_count * sizeof(Parameter));
-    if (!table_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying value type fields");
-    memcpy(table_fields, fields, field_count * sizeof(Parameter));
-
-    ValueTypeEntry *entry = &g_value_table->types[g_value_table->count];
-    entry->name_start = name_start;
-    entry->name_length = name_length;
-    entry->fields = table_fields;
-    entry->field_count = field_count;
-    entry->loc = loc;
-    entry->is_struct = is_struct;
-    g_value_table->count++;
+    value_table_add(name_start, name_length, fields, field_count, loc, is_struct);
 
     return ast_make_value_decl(name_start, name_length, fields, field_count,
                                is_struct, loc);
@@ -3584,32 +3588,9 @@ static Ast *parser_parse_table_decl(Parser *parser) {
     struct_fields[field_count].is_ref = false;
     struct_fields[field_count].is_mut_ref = false;
 
-    /* Register struct in g_value_table */
-    if (g_value_table->count >= g_value_table->capacity) {
-        g_value_table->capacity *= 2;
-        g_value_table->types = realloc(g_value_table->types,
-                                        g_value_table->capacity * sizeof(ValueTypeEntry));
-        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
-    }
-    /* Copy struct fields for table entry */
-    Parameter *table_struct_fields = malloc(struct_field_count * sizeof(Parameter));
-    if (!table_struct_fields) panic(ERR_I001_OUT_OF_MEMORY, "copying table struct fields");
-    memcpy(table_struct_fields, struct_fields, struct_field_count * sizeof(Parameter));
-
-    ValueTypeEntry *struct_entry = &g_value_table->types[g_value_table->count];
-    struct_entry->name_start = name_start;
-    struct_entry->name_length = name_length;
-    struct_entry->fields = table_struct_fields;
-    struct_entry->field_count = struct_field_count;
-    struct_entry->loc = loc;
-    struct_entry->is_struct = true;
-    Type struct_type = (Type)(TYPE_VALUE_BASE + (int)g_value_table->count);
-    g_value_table->count++;
-
-    /* Build row fields: copies of original fields */
-    Parameter *row_fields = malloc(field_count * sizeof(Parameter));
-    if (!row_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "allocating row fields");
-    memcpy(row_fields, orig_fields, field_count * sizeof(Parameter));
+    /* Register struct (columnar) type in g_value_table */
+    Type struct_type = value_table_add(name_start, name_length,
+                                       struct_fields, struct_field_count, loc, true);
 
     /* Synthesize row name: NameRow */
     char *row_name = malloc(name_length + 3 + 1);
@@ -3617,38 +3598,14 @@ static Ast *parser_parse_table_decl(Parser *parser) {
     memcpy(row_name, name_start, name_length);
     memcpy(row_name + name_length, "Row", 4);  /* includes null */
 
-    /* Register row value in g_value_table */
-    if (g_value_table->count >= g_value_table->capacity) {
-        g_value_table->capacity *= 2;
-        g_value_table->types = realloc(g_value_table->types,
-                                        g_value_table->capacity * sizeof(ValueTypeEntry));
-        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
-    }
-    /* Copy row fields for table entry */
-    Parameter *table_row_fields = malloc(field_count * sizeof(Parameter));
-    if (!table_row_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying row fields");
-    memcpy(table_row_fields, row_fields, field_count * sizeof(Parameter));
+    /* Register row (value) type in g_value_table */
+    Type row_type = value_table_add(row_name, name_length + 3,
+                                     orig_fields, field_count, loc, false);
 
-    ValueTypeEntry *row_entry = &g_value_table->types[g_value_table->count];
-    row_entry->name_start = row_name;
-    row_entry->name_length = name_length + 3;
-    row_entry->fields = table_row_fields;
-    row_entry->field_count = field_count;
-    row_entry->loc = loc;
-    row_entry->is_struct = false;
-    Type row_type = (Type)(TYPE_VALUE_BASE + (int)g_value_table->count);
-    g_value_table->count++;
-
-    /* Keep a copy of original fields for the table decl entry */
-    Parameter *decl_fields = malloc(field_count * sizeof(Parameter));
-    if (!decl_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying decl fields");
-    memcpy(decl_fields, orig_fields, field_count * sizeof(Parameter));
-
-    /* Register in g_table_decls */
+    /* Register in g_table_decls (orig_fields ownership transfers here) */
     table_decl_add(name_start, name_length, row_name,
-                   struct_type, row_type, decl_fields, field_count);
+                   struct_type, row_type, orig_fields, field_count);
 
-    /* Return AST_VALUE_DECL for the struct (reuse existing node) */
     return ast_make_value_decl(name_start, name_length, struct_fields,
                                struct_field_count, true, loc);
 }
@@ -5407,10 +5364,9 @@ static void typecheck_invalidate_arena_slices(Scope *scope,
     }
 }
 
-/* Track whether a slice variable was allocated from a local (non-ref) arena */
-static void typecheck_mark_arena_locality(Variable *sv, Ast *alloc_node, Scope *scope) {
+/* Track whether a variable was allocated from a local (non-ref) arena */
+static void typecheck_mark_arena_locality(Variable *sv, Ast *arena_node, Scope *scope) {
     if (!sv) return;
-    Ast *arena_node = alloc_node->as.arena_alloc.arena;
     if (arena_node->kind != AST_IDENTIFIER) return;
     Variable *av = scope_lookup(scope, arena_node->as.identifier.start,
                                 arena_node->as.identifier.length);
@@ -5521,19 +5477,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 node->as.val_decl.initializer->expr_type = declared;
                 Variable *sv = scope_add(*scope, node->as.val_decl.name_start,
                           node->as.val_decl.name_length, false, declared, node->loc);
-                /* Mark arena locality for table variable */
-                if (sv) {
-                    Ast *arena_node = node->as.val_decl.initializer->as.table_alloc.arena;
-                    if (arena_node->kind == AST_IDENTIFIER) {
-                        Variable *av = scope_lookup(*scope, arena_node->as.identifier.start,
-                                                    arena_node->as.identifier.length);
-                        if (av) {
-                            sv->arena_is_local = !av->is_ref && !av->is_global;
-                            sv->arena_source_start = arena_node->as.identifier.start;
-                            sv->arena_source_length = arena_node->as.identifier.length;
-                        }
-                    }
-                }
+                typecheck_mark_arena_locality(sv,
+                    node->as.val_decl.initializer->as.table_alloc.arena, *scope);
                 break;
             }
 
@@ -5543,7 +5488,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 node->as.val_decl.initializer->expr_type = declared;
                 Variable *sv = scope_add(*scope, node->as.val_decl.name_start,
                           node->as.val_decl.name_length, false, declared, node->loc);
-                typecheck_mark_arena_locality(sv, node->as.val_decl.initializer, *scope);
+                typecheck_mark_arena_locality(sv,
+                    node->as.val_decl.initializer->as.arena_alloc.arena, *scope);
                 break;
             }
 
@@ -5629,19 +5575,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 node->as.mut_decl.initializer->expr_type = declared;
                 Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
                           node->as.mut_decl.name_length, true, declared, node->loc);
-                /* Mark arena locality for table variable */
-                if (sv) {
-                    Ast *arena_node = node->as.mut_decl.initializer->as.table_alloc.arena;
-                    if (arena_node->kind == AST_IDENTIFIER) {
-                        Variable *av = scope_lookup(*scope, arena_node->as.identifier.start,
-                                                    arena_node->as.identifier.length);
-                        if (av) {
-                            sv->arena_is_local = !av->is_ref && !av->is_global;
-                            sv->arena_source_start = arena_node->as.identifier.start;
-                            sv->arena_source_length = arena_node->as.identifier.length;
-                        }
-                    }
-                }
+                typecheck_mark_arena_locality(sv,
+                    node->as.mut_decl.initializer->as.table_alloc.arena, *scope);
                 break;
             }
 
@@ -5651,7 +5586,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 node->as.mut_decl.initializer->expr_type = declared;
                 Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
                           node->as.mut_decl.name_length, true, declared, node->loc);
-                typecheck_mark_arena_locality(sv, node->as.mut_decl.initializer, *scope);
+                typecheck_mark_arena_locality(sv,
+                    node->as.mut_decl.initializer->as.arena_alloc.arena, *scope);
                 break;
             }
 
