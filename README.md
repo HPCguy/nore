@@ -6,6 +6,45 @@ Nore is a systems programming language that makes data-oriented design the path 
 
 The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
 
+## A Quick Look
+
+```nore
+value Vec2 { x: f64, y: f64 }
+
+// One declaration → columnar storage (struct-of-arrays)
+table Particles {
+    pos: Vec2,
+    life: i64
+}
+
+func spawn(mut ref p: Particles, x: f64, y: f64): void = {
+    table_insert(mut ref p, ParticlesRow {
+        pos: Vec2 { x: x, y: y },
+        life: 100
+    })
+}
+
+func main(): void = {
+    // All heap memory comes from arenas — no malloc, no GC
+    mut mem: Arena = arena(65536)
+    mut p: Particles = table_alloc(mut ref mem, 1000)
+
+    spawn(mut ref p, 1.0, 2.0)
+    spawn(mut ref p, 3.0, 4.0)
+
+    // Row access (returns a value copy)
+    val r: ParticlesRow = table_get(ref p, 0)
+    assert r.pos.x == 1.0
+
+    // Direct column access (cache-friendly iteration)
+    mut total: i64 = 0
+    for i in 0..table_len(ref p) {
+        total = total + p.life[i]
+    }
+    assert total == 200
+}
+```
+
 ## What Makes Nore Different
 
 **Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access — the kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping.
@@ -20,6 +59,7 @@ The compiler is a self-contained, single-file C program that translates Nore sou
 
 - [docs/data-oriented-design.md](docs/data-oriented-design.md) — Type model, tables, arenas, and memory safety approach
 - [docs/arena-safety.md](docs/arena-safety.md) — Escape analysis, slice lifetime tracking, and safety guarantees
+- [docs/error-codes.md](docs/error-codes.md) — All compiler error codes and error handling internals
 
 ## Architecture
 
@@ -81,163 +121,11 @@ make clean
 
 See [docs/syntax.md](docs/syntax.md) for the complete language syntax reference.
 
-### Code Generation Details
-- Variables tracked in linked scope chain with mutability and type
-- `i64` generates `int64_t` in C
-- `i32` generates `int32_t` in C
-- `u8` generates `uint8_t` in C
-- `u32` generates `uint32_t` in C
-- `f64` generates `double` in C
-- `bool` generates `int` in C
-- `val` declarations generate `const` prefix
-- `true` generates `1`, `false` generates `0`
-- Integer literals generate `42L` suffix
-- Float literals generate `3.14` (no suffix)
-- Constant folding evaluates literal-only expressions at compile time
-- Type checking runs before code generation
-- All expressions and statements compile to C99 code
-
 ## Error Handling
 
-### Error Code System
-Errors use numeric codes with phase prefixes for stable testing:
+The compiler uses structured error codes (e.g., `S053`, `P014`) with source locations and collects up to 10 errors before stopping. See [docs/error-codes.md](docs/error-codes.md) for the full reference.
 
-| Prefix | Group | Description |
-|--------|-------|-------------|
-| I | Internal | Bugs, OOM (exit 101) |
-| D | Driver | CLI, files, backend (exit 1) |
-| L | Lexer | Invalid characters (exit 1) |
-| P | Parser | Syntax errors (exit 1) |
-| S | Semantic | Type/scope errors (exit 1) |
-| R | Runtime | Assertion failures (exit 2) |
-
-### Current Error Codes
-- **L001**: Invalid character
-- **L002**: Unterminated block comment
-- **L003**: Unterminated string literal
-- **L004**: Invalid escape sequence
-- **P006**: Integer literal out of range (overflow)
-- **P007**: Expected '}' to close block
-- **P008**: Expected '(' after 'if'
-- **P009**: Expected ')' after if condition
-- **P010**: Expected '{' for if/else body
-- **P011**: Expected '(' after 'while'
-- **P012**: Expected ')' after while condition
-- **P013**: Expected '{' for while body
-- **P014**: Expected ':' after identifier (type annotation required)
-- **P015**: Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)
-- **P016**: Expected declaration at top level
-- **P017**: Expected function name after 'func'
-- **P018**: Expected '(' after function name
-- **P019**: Expected ')' after parameters
-- **P020**: Expected ':' before return type
-- **P021**: Expected return type (i64, i32, u8, u32, f64, bool, str, Arena, or void)
-- **P022**: Expected '=' before function body
-- **P023**: Expected '{' for function body
-- **P024**: Expected value type name after 'value'
-- **P025**: Expected '{' after value type name
-- **P026**: Expected field name in value type
-- **P027**: Expected '}' to close value type
-- **P028**: Expected field name in constructor
-- **P029**: Expected ':' after field name in constructor
-- **P030**: Expected '}' to close constructor
-- **P031**: Expected element type in array type
-- **P032**: Expected ';' in array type
-- **P033**: Expected array size
-- **P034**: Expected ']'
-- **P035**: Expected ']' to close array literal
-- **P036**: Expected 'ref' after 'mut' in parameter
-- **P037**: Expected 'ref' after 'mut' in argument
-- **P038**: Expected 'in' after loop variable in for-loop
-- **P039**: Expected '..' in for-loop range
-- **P040**: Expected '{' for for-loop body
-- **S001**: Duplicate variable declaration
-- **S002**: Undeclared variable
-- **S003**: Cannot assign to immutable variable
-- **S004**: 'break' outside of loop
-- **S005**: 'continue' outside of loop
-- **S006**: Type mismatch
-- **S007**: Condition must be bool (if/while/assert)
-- **S008**: Duplicate function declaration
-- **S009**: No 'main' function defined
-- **S010**: Invalid main signature (must be `(): void`)
-- **S011**: Duplicate parameter name
-- **S012**: void is not valid as parameter type
-- **S013**: Return type mismatch
-- **S014**: Void function cannot return a value
-- **S015**: Non-void function must return a value
-- **S016**: Undefined function
-- **S017**: Wrong number of arguments
-- **S018**: Argument type mismatch
-- **S019**: Division by zero in constant expression
-- **S020**: Type annotation required (expression is not compile-time constant)
-- **S021**: If/else branches have incompatible types
-- **S022**: Duplicate field in value type declaration
-- **S023**: Invalid type for value type field
-- **S024**: Unknown field in constructor
-- **S025**: Missing field in constructor
-- **S026**: Duplicate field in constructor
-- **S027**: Not a value type (constructor on non-value)
-- **S028**: Field access on non-value type
-- **S029**: Unknown field access
-- **S030**: Cannot assign to field of immutable variable
-- **S031**: Array size must be positive integer
-- **S032**: Array literal wrong number of elements
-- **S033**: Array element type mismatch
-- **S034**: Index must be integer
-- **S035**: Cannot index non-array type
-- **S036**: Cannot assign to element of immutable variable
-- **S037**: ref not allowed on value type fields
-- **S038**: ref/mut ref mismatch between call site and parameter
-- **S039**: Cannot take reference of non-addressable expression
-- **S040**: Cannot pass mut ref to immutable variable
-- **S041**: Cannot take reference of scalar field (just copy it)
-- **S042**: Cannot take reference of array element
-- **S043**: Cannot copy struct/Arena variable (not copyable)
-- **S044**: Struct/Arena parameter must use 'ref' or 'mut ref'
-- **S045**: Cannot embed struct/Arena type as field
-- **S046**: Slice type not allowed as local variable (use arena_alloc or function call)
-- **S047**: Slice type not allowed as field (value types only; allowed in structs)
-- **S048**: (no longer emitted — replaced by S053 escape analysis)
-- **S049**: Slice parameter must use 'ref' or 'mut ref'
-- **S050**: Literal out of range for target type / integer overflow in constant expression
-- **S051**: arena_alloc() requires Arena type
-- **S052**: Cannot arena_alloc from immutable Arena (use 'mut')
-- **S053**: Slice escapes local arena (direct, indirect via struct, or transitive via function call)
-- **S054**: String literals cannot be mutable (use 'val')
-- **S055**: Cannot arena_reset immutable Arena (use 'mut')
-- **S056**: Use of slice invalidated by arena reset
-- **S057**: Global variable initializer must be a constant expression (or arena constructor)
-- **S058**: For-loop range bound must be integer type
-- **S059**: Table field must be value-compatible (no slices, structs, or Arena)
-- **S060**: table_len/table_get/table_insert requires a table type
-- **R001**: Assertion failed
-- **R002**: Array index out of bounds
-
-### Error Format
-```
-# Source errors (with location)
-file.nore:3:15: error[P002]: Expected ')' after expression
-
-# Driver errors (no location)
-error[D002]: Unknown flag: --invalid
-```
-
-### Error Functions
-- `panic(code, fmt, ...)` - Internal errors, exits 101
-- `error(code, fmt, ...)` - User errors without location
-- `diagnostic(code, line, col, fmt, ...)` - Collects user errors with location
-- `report_errors_and_exit()` - Prints all collected errors and exits
-- `too_many_errors()` - Returns true when error limit (10) is reached
-
-### Error Recovery
-The compiler uses panic mode recovery to collect multiple errors:
-- On parse error, skips to next statement boundary and continues
-- Collects up to 10 errors before stopping
-- Reports all errors at the end of compilation
-- Semantic analysis runs even if there were parse errors
-
-### Testing
+## Testing
 ```bash
 make test          # Run all tests (errors + success)
 make test-errors   # Run error code tests only
