@@ -12,6 +12,7 @@ The compiler is a self-contained, single-file C program that translates Nore sou
 value Vec2 { x: f64, y: f64 }
 
 // One declaration → columnar storage (struct-of-arrays)
+// Generates: Particles (struct with slice columns) and ParticlesRow (value type)
 table Particles {
     pos: Vec2,
     life: i64
