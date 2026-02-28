@@ -377,6 +377,8 @@ Slices cannot outlive their arena. The compiler enforces this by tracking which 
 
 This is **not** a full borrow checker. There are no per-reference lifetimes, no mutable/immutable borrow distinctions. Just one rule: **slices die when their arena dies.** And since arenas can only be locals, parameters, or globals, lifetime checking reduces to scope nesting — something the compiler already does.
 
+For the full escape analysis design — including cross-function tracking, transitive propagation, and safety guarantees — see [arena-safety.md](arena-safety.md).
+
 #### Local Arenas — Slices Bound to Scope
 
 ```

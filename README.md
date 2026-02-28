@@ -16,9 +16,10 @@ The compiler is a self-contained, single-file C program that translates Nore sou
 
 **Explicit is better than implicit.** Parameters are `ref` or `mut ref` at both declaration and call site. Mutability is visible everywhere. There are no hidden copies, no move semantics to reason about.
 
-## Design Document
+## Design Documents
 
-See [docs/data-oriented-design.md](docs/data-oriented-design.md) for the full design covering the type model, tables, arenas, and memory safety approach.
+- [docs/data-oriented-design.md](docs/data-oriented-design.md) — Type model, tables, arenas, and memory safety approach
+- [docs/arena-safety.md](docs/arena-safety.md) — Escape analysis, slice lifetime tracking, and safety guarantees
 
 ## Architecture
 
