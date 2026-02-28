@@ -1,0 +1,7 @@
+// Error: table field cannot be a slice type
+table Bad {
+    data: [i64]
+}
+
+func main(): void = {
+}

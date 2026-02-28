@@ -1,0 +1,9 @@
+// Error: table field cannot be a struct type
+struct Mesh { count: i64 }
+
+table Bad {
+    mesh: Mesh
+}
+
+func main(): void = {
+}

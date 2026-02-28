@@ -646,6 +646,92 @@ arena_reset(mut ref mem)
 - Arena cannot be a field in value or struct types
 - Arena parameters must use `ref` or `mut ref`
 
+### Tables
+
+Tables provide columnar (struct-of-arrays) storage as syntactic sugar. A `table` declaration generates two types: a `struct` for columnar storage and a `value` for row access.
+
+**Declaration** (top-level only):
+```nore
+value Vec2 { x: f64, y: f64 }
+
+table Particles {
+    pos: Vec2,
+    life: i64
+}
+```
+- Keyword: `table`
+- Generates a struct `Particles` with slice columns (`pos: [Vec2]`, `life: [i64]`, `_len: i64`)
+- Generates a value `ParticlesRow` with the original fields (`pos: Vec2`, `life: i64`)
+- Row type name is the table name + `Row` (e.g., `ParticlesRow`)
+
+**Table Field Constraints**:
+- Fields must be value-compatible: scalars, fixed arrays, or value types
+- Slices, structs, and Arena are not allowed as table fields (error S059)
+
+**Allocating a Table**:
+```nore
+mut mem: Arena = arena(65536)
+mut p: Particles = table_alloc(mut ref mem, 100)
+```
+- `table_alloc(mut ref arena, count)` allocates column storage for `count` rows
+- Table type is inferred from the declaration context (like `arena_alloc`)
+- Arena argument must be `mut ref`
+
+**Getting the Row Count**:
+```nore
+val n: i64 = table_len(ref p)
+```
+- `table_len(ref table)` returns the current number of inserted rows
+- Table argument must be `ref`
+
+**Inserting Rows**:
+```nore
+table_insert(mut ref p, ParticlesRow { pos: Vec2 { x: 1.0, y: 2.0 }, life: 100 })
+```
+- `table_insert(mut ref table, row)` appends a row to the table
+- Table argument must be `mut ref`
+- Row must match the generated row type
+- Runtime error if capacity is exceeded
+
+**Getting Rows**:
+```nore
+val row: ParticlesRow = table_get(ref p, 0)
+assert row.pos.x == 1.0
+```
+- `table_get(ref table, index)` returns a row value at the given index
+- Table argument must be `ref`
+- Index must be an integer type
+- Runtime bounds check (error R002, exits with code 2 on out-of-bounds)
+
+**Direct Column Access**:
+```nore
+// Read column elements (slice indexing)
+val life: i64 = p.life[i]
+val pos: Vec2 = p.pos[0]
+
+// Write column elements (requires mut table)
+p.life[i] = 50
+```
+- Columns are regular slices — standard slice indexing and bounds checking apply
+
+**Tables Follow Struct Rules**:
+- Cannot be copied (use `ref` or `mut ref` to pass)
+- Cannot be embedded in other types
+- Can be passed as `ref` (read-only) or `mut ref` (for insert) parameters
+
+**Example**:
+```nore
+func count_alive(ref p: Particles): i64 = {
+    mut alive: i64 = 0
+    for i in 0..table_len(ref p) {
+        if (table_get(ref p, i).life > 0) {
+            alive = alive + 1
+        }
+    }
+    return alive
+}
+```
+
 ### Strings
 
 The `str` type is syntactic sugar for `[u8]` (a byte slice). String literals create fat pointers pointing to static C string data at zero cost.
@@ -841,6 +927,7 @@ func main(): void = {
 - `func` - Function declaration
 - `value` - Value type declaration
 - `struct` - Struct type declaration
+- `table` - Table type declaration (columnar storage sugar)
 - `str` - String type (byte slice `[u8]`)
 - `Arena` - Arena type (heap memory)
 - `ref` - Reference parameter/argument
@@ -875,6 +962,10 @@ func main(): void = {
 - `arena(capacity)` - Create a new Arena with the given byte capacity
 - `arena_alloc(mut ref arena, count)` - Allocate a slice of `count` elements from an Arena
 - `arena_reset(mut ref arena)` - Reclaim all arena memory (invalidates existing slices)
+- `table_alloc(mut ref arena, count)` - Allocate columnar storage for `count` rows from an Arena
+- `table_len(ref table)` - Get the current row count of a table
+- `table_get(ref table, index)` - Get a row value at the given index (bounds checked)
+- `table_insert(mut ref table, row)` - Insert a row into the table
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)

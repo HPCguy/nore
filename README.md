@@ -217,6 +217,8 @@ Errors use numeric codes with phase prefixes for stable testing:
 - **S056**: Use of slice invalidated by arena reset
 - **S057**: Global variable initializer must be a constant expression (or arena constructor)
 - **S058**: For-loop range bound must be integer type
+- **S059**: Table field must be value-compatible (no slices, structs, or Arena)
+- **S060**: table_len/table_get/table_insert requires a table type
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 

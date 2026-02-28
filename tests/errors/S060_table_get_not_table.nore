@@ -1,0 +1,7 @@
+// Error: table_get requires a table type
+value Vec2 { x: f64, y: f64 }
+
+func main(): void = {
+    val v: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+    val r: Vec2 = table_get(ref v, 0)
+}

@@ -1,0 +1,7 @@
+// Error: table_len requires a table type
+value Vec2 { x: f64, y: f64 }
+
+func main(): void = {
+    val v: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+    val n: i64 = table_len(ref v)
+}

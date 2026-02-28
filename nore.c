@@ -147,6 +147,8 @@ typedef enum {
     ERR_S056_SLICE_INVALIDATED     = ERR_GROUP_SEMANTIC + 56,
     ERR_S057_GLOBAL_NOT_CONSTANT   = ERR_GROUP_SEMANTIC + 57,
     ERR_S058_FOR_RANGE_NOT_INTEGER = ERR_GROUP_SEMANTIC + 58,
+    ERR_S059_TABLE_FIELD_TYPE      = ERR_GROUP_SEMANTIC + 59,
+    ERR_S060_NOT_TABLE_TYPE        = ERR_GROUP_SEMANTIC + 60,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -329,6 +331,7 @@ typedef enum {
     TOKEN_FALSE,
     TOKEN_VALUE,
     TOKEN_STRUCT,
+    TOKEN_TABLE,
     TOKEN_REF,
     TOKEN_ARENA,
     TOKEN_STR,
@@ -401,6 +404,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_FALSE:         return "FALSE";
         case TOKEN_VALUE:         return "VALUE";
         case TOKEN_STRUCT:        return "STRUCT";
+        case TOKEN_TABLE:         return "TABLE";
         case TOKEN_REF:           return "REF";
         case TOKEN_ARENA:         return "ARENA";
         case TOKEN_STR:           return "STR";
@@ -582,6 +586,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "break", 5) == 0) return TOKEN_BREAK;
             if (memcmp(start, "false", 5) == 0) return TOKEN_FALSE;
             if (memcmp(start, "value", 5) == 0) return TOKEN_VALUE;
+            if (memcmp(start, "table", 5) == 0) return TOKEN_TABLE;
             if (memcmp(start, "Arena", 5) == 0) return TOKEN_ARENA;
             break;
         case 6:
@@ -1138,6 +1143,52 @@ static Type slice_table_intern(Type element_type) {
     return (Type)(TYPE_SLICE_BASE + (int)g_slice_table->count++);
 }
 
+/* ============================== Table Decl Table =========================== */
+
+typedef struct {
+    const char *name_start;    /* "Particles" (points into source) */
+    size_t name_length;
+    char *row_name;            /* "ParticlesRow" (malloc'd) */
+    Type struct_type;          /* TYPE_VALUE_BASE + N */
+    Type row_type;             /* TYPE_VALUE_BASE + M */
+    Parameter *fields;         /* original fields (value-compatible) */
+    size_t field_count;
+} TableDeclEntry;
+
+static TableDeclEntry *g_table_decls = NULL;
+static size_t g_table_decl_count = 0;
+static size_t g_table_decl_capacity = 0;
+
+static void table_decl_add(const char *name_start, size_t name_length,
+                            char *row_name, Type struct_type, Type row_type,
+                            Parameter *fields, size_t field_count) {
+    if (g_table_decl_count >= g_table_decl_capacity) {
+        g_table_decl_capacity = g_table_decl_capacity ? g_table_decl_capacity * 2 : 8;
+        g_table_decls = realloc(g_table_decls,
+                                g_table_decl_capacity * sizeof(TableDeclEntry));
+        if (!g_table_decls) panic(ERR_I001_OUT_OF_MEMORY, "growing table decl table");
+    }
+    TableDeclEntry *e = &g_table_decls[g_table_decl_count++];
+    e->name_start = name_start;
+    e->name_length = name_length;
+    e->row_name = row_name;
+    e->struct_type = struct_type;
+    e->row_type = row_type;
+    e->fields = fields;
+    e->field_count = field_count;
+}
+
+static TableDeclEntry *table_decl_for_type(Type t) {
+    for (size_t i = 0; i < g_table_decl_count; i++) {
+        if (g_table_decls[i].struct_type == t) return &g_table_decls[i];
+    }
+    return NULL;
+}
+
+static bool is_table_type(Type t) {
+    return table_decl_for_type(t) != NULL;
+}
+
 /* Get element type for arrays and slices, TYPE_UNKNOWN otherwise */
 static Type type_element_type(Type type) {
     if (type_is_array(type)) {
@@ -1249,6 +1300,10 @@ typedef enum {
     AST_ARENA_ALLOC,
     AST_ARENA_RESET,
     AST_STRING_LITERAL,
+    AST_TABLE_ALLOC,
+    AST_TABLE_LEN,
+    AST_TABLE_GET,
+    AST_TABLE_INSERT,
     AST_PROGRAM
 } AstKind;
 
@@ -1431,6 +1486,11 @@ typedef struct Ast {
             size_t raw_length;    /* raw source length between quotes */
             size_t byte_length;   /* actual byte count after escape processing */
         } string_literal;
+
+        struct { struct Ast *arena; struct Ast *count; } table_alloc;
+        struct { struct Ast *table; } table_len;
+        struct { struct Ast *table; struct Ast *index; } table_get;
+        struct { struct Ast *table; struct Ast *row; } table_insert;
 
         struct {
             struct Ast **statements;
@@ -1841,6 +1901,45 @@ static Ast *ast_make_arena_reset(Ast *arena, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_table_alloc(Ast *arena, Ast *count, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_TABLE_ALLOC;
+    node->loc = loc;
+    node->as.table_alloc.arena = arena;
+    node->as.table_alloc.count = count;
+    return node;
+}
+
+static Ast *ast_make_table_len(Ast *table, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_TABLE_LEN;
+    node->loc = loc;
+    node->as.table_len.table = table;
+    return node;
+}
+
+static Ast *ast_make_table_get(Ast *table, Ast *index, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_TABLE_GET;
+    node->loc = loc;
+    node->as.table_get.table = table;
+    node->as.table_get.index = index;
+    return node;
+}
+
+static Ast *ast_make_table_insert(Ast *table, Ast *row, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_TABLE_INSERT;
+    node->loc = loc;
+    node->as.table_insert.table = table;
+    node->as.table_insert.row = row;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -1955,6 +2054,21 @@ static void ast_free(Ast *node) {
             break;
         case AST_ARENA_RESET:
             ast_free(node->as.arena_reset.arena);
+            break;
+        case AST_TABLE_ALLOC:
+            ast_free(node->as.table_alloc.arena);
+            ast_free(node->as.table_alloc.count);
+            break;
+        case AST_TABLE_LEN:
+            ast_free(node->as.table_len.table);
+            break;
+        case AST_TABLE_GET:
+            ast_free(node->as.table_get.table);
+            ast_free(node->as.table_get.index);
+            break;
+        case AST_TABLE_INSERT:
+            ast_free(node->as.table_insert.table);
+            ast_free(node->as.table_insert.row);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -2321,6 +2435,132 @@ static Ast *parser_parse_primary(Parser *parser) {
                 return NULL;
             }
             return ast_make_arena_reset(arena, loc);
+        }
+
+        /* table_alloc(mut ref arena, count) — built-in table allocation */
+        if (name_length == 11 && memcmp(name_start, "table_alloc", 11) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before arena argument in table_alloc()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in table_alloc()");
+                return NULL;
+            }
+            Ast *arena = parser_parse_expression(parser);
+            if (!arena) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after arena argument in table_alloc()");
+                ast_free(arena);
+                return NULL;
+            }
+            Ast *count = parser_parse_expression(parser);
+            if (!count) { ast_free(arena); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after table_alloc count");
+                ast_free(arena);
+                ast_free(count);
+                return NULL;
+            }
+            return ast_make_table_alloc(arena, count, loc);
+        }
+
+        /* table_len(ref table) — built-in table length */
+        if (name_length == 9 && memcmp(name_start, "table_len", 9) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' before table argument in table_len()");
+                return NULL;
+            }
+            Ast *table = parser_parse_expression(parser);
+            if (!table) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after table_len argument");
+                ast_free(table);
+                return NULL;
+            }
+            return ast_make_table_len(table, loc);
+        }
+
+        /* table_get(ref table, index) — built-in table row access */
+        if (name_length == 9 && memcmp(name_start, "table_get", 9) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' before table argument in table_get()");
+                return NULL;
+            }
+            Ast *table = parser_parse_expression(parser);
+            if (!table) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after table argument in table_get()");
+                ast_free(table);
+                return NULL;
+            }
+            Ast *index = parser_parse_expression(parser);
+            if (!index) { ast_free(table); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after table_get index");
+                ast_free(table);
+                ast_free(index);
+                return NULL;
+            }
+            return ast_make_table_get(table, index, loc);
+        }
+
+        /* table_insert(mut ref table, row) — built-in table row insert */
+        if (name_length == 12 && memcmp(name_start, "table_insert", 12) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before table argument in table_insert()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in table_insert()");
+                return NULL;
+            }
+            Ast *table = parser_parse_expression(parser);
+            if (!table) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after table argument in table_insert()");
+                ast_free(table);
+                return NULL;
+            }
+            Ast *row = parser_parse_expression(parser);
+            if (!row) { ast_free(table); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after table_insert row");
+                ast_free(table);
+                ast_free(row);
+                return NULL;
+            }
+            return ast_make_table_insert(table, row, loc);
         }
 
         /* Check for function call: identifier followed by '(' */
@@ -2722,8 +2962,9 @@ static Ast *parser_parse_block(Parser *parser) {
                         ast_free(expr);
                     }
                 } else if (expr->kind == AST_FUNC_CALL ||
-                           expr->kind == AST_ARENA_RESET) {
-                    /* Bare function call or arena reset as statement */
+                           expr->kind == AST_ARENA_RESET ||
+                           expr->kind == AST_TABLE_INSERT) {
+                    /* Bare function call or arena reset/table insert as statement */
                     ast_block_add_statement(block, expr);
                 } else {
                     /* Expression not at end of block */
@@ -3276,6 +3517,142 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
                                is_struct, loc);
 }
 
+/* Static string for the synthesized "_len" field name */
+static const char *g_table_len_field = "_len";
+
+/* Parse table declaration: table Name { field: Type, ... }
+ * Generates a struct (columnar) and a value (row) in g_value_table,
+ * plus a TableDeclEntry. Returns AST_VALUE_DECL for the struct. */
+static Ast *parser_parse_table_decl(Parser *parser) {
+    /* TOKEN_TABLE already consumed */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    /* Expect table name */
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        diagnostic(ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
+                   parser->current.column,
+                   "Expected table type name after 'table'");
+        parser_synchronize(parser);
+        return NULL;
+    }
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Expect '{' */
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
+                   parser->current.column,
+                   "Expected '{' after table type name");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse original fields: name: Type, name: Type, ... */
+    size_t field_count = 0;
+    Parameter *orig_fields = parser_parse_param_list(parser, &field_count, TOKEN_RBRACE);
+    if (field_count == 0 && !parser_check(parser, TOKEN_RBRACE)) {
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Expect '}' */
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        diagnostic(ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
+                   parser->current.column,
+                   "Expected '}' to close table type");
+        free(orig_fields);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Build struct fields: one slice column per original field + _len: i64 */
+    size_t struct_field_count = field_count + 1;
+    Parameter *struct_fields = malloc(struct_field_count * sizeof(Parameter));
+    if (!struct_fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating table struct fields");
+
+    for (size_t i = 0; i < field_count; i++) {
+        struct_fields[i].name_start = orig_fields[i].name_start;
+        struct_fields[i].name_length = orig_fields[i].name_length;
+        struct_fields[i].type = slice_table_intern(orig_fields[i].type);
+        struct_fields[i].is_ref = false;
+        struct_fields[i].is_mut_ref = false;
+    }
+    /* _len field */
+    struct_fields[field_count].name_start = g_table_len_field;
+    struct_fields[field_count].name_length = 4;
+    struct_fields[field_count].type = TYPE_I64;
+    struct_fields[field_count].is_ref = false;
+    struct_fields[field_count].is_mut_ref = false;
+
+    /* Register struct in g_value_table */
+    if (g_value_table->count >= g_value_table->capacity) {
+        g_value_table->capacity *= 2;
+        g_value_table->types = realloc(g_value_table->types,
+                                        g_value_table->capacity * sizeof(ValueTypeEntry));
+        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
+    }
+    /* Copy struct fields for table entry */
+    Parameter *table_struct_fields = malloc(struct_field_count * sizeof(Parameter));
+    if (!table_struct_fields) panic(ERR_I001_OUT_OF_MEMORY, "copying table struct fields");
+    memcpy(table_struct_fields, struct_fields, struct_field_count * sizeof(Parameter));
+
+    ValueTypeEntry *struct_entry = &g_value_table->types[g_value_table->count];
+    struct_entry->name_start = name_start;
+    struct_entry->name_length = name_length;
+    struct_entry->fields = table_struct_fields;
+    struct_entry->field_count = struct_field_count;
+    struct_entry->loc = loc;
+    struct_entry->is_struct = true;
+    Type struct_type = (Type)(TYPE_VALUE_BASE + (int)g_value_table->count);
+    g_value_table->count++;
+
+    /* Build row fields: copies of original fields */
+    Parameter *row_fields = malloc(field_count * sizeof(Parameter));
+    if (!row_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "allocating row fields");
+    memcpy(row_fields, orig_fields, field_count * sizeof(Parameter));
+
+    /* Synthesize row name: NameRow */
+    char *row_name = malloc(name_length + 3 + 1);
+    if (!row_name) panic(ERR_I001_OUT_OF_MEMORY, "allocating row name");
+    memcpy(row_name, name_start, name_length);
+    memcpy(row_name + name_length, "Row", 4);  /* includes null */
+
+    /* Register row value in g_value_table */
+    if (g_value_table->count >= g_value_table->capacity) {
+        g_value_table->capacity *= 2;
+        g_value_table->types = realloc(g_value_table->types,
+                                        g_value_table->capacity * sizeof(ValueTypeEntry));
+        if (!g_value_table->types) panic(ERR_I001_OUT_OF_MEMORY, "growing value type table");
+    }
+    /* Copy row fields for table entry */
+    Parameter *table_row_fields = malloc(field_count * sizeof(Parameter));
+    if (!table_row_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying row fields");
+    memcpy(table_row_fields, row_fields, field_count * sizeof(Parameter));
+
+    ValueTypeEntry *row_entry = &g_value_table->types[g_value_table->count];
+    row_entry->name_start = row_name;
+    row_entry->name_length = name_length + 3;
+    row_entry->fields = table_row_fields;
+    row_entry->field_count = field_count;
+    row_entry->loc = loc;
+    row_entry->is_struct = false;
+    Type row_type = (Type)(TYPE_VALUE_BASE + (int)g_value_table->count);
+    g_value_table->count++;
+
+    /* Keep a copy of original fields for the table decl entry */
+    Parameter *decl_fields = malloc(field_count * sizeof(Parameter));
+    if (!decl_fields && field_count > 0) panic(ERR_I001_OUT_OF_MEMORY, "copying decl fields");
+    memcpy(decl_fields, orig_fields, field_count * sizeof(Parameter));
+
+    /* Register in g_table_decls */
+    table_decl_add(name_start, name_length, row_name,
+                   struct_type, row_type, decl_fields, field_count);
+
+    /* Return AST_VALUE_DECL for the struct (reuse existing node) */
+    return ast_make_value_decl(name_start, name_length, struct_fields,
+                               struct_field_count, true, loc);
+}
+
 static Ast *parser_parse_program(Parser *parser) {
     Ast *program = ast_make_program();
 
@@ -3289,6 +3666,11 @@ static Ast *parser_parse_program(Parser *parser) {
                    parser_match(parser, TOKEN_STRUCT)) {
             bool is_struct = parser->previous.kind == TOKEN_STRUCT;
             Ast *decl = parser_parse_value_decl(parser, is_struct);
+            if (decl) {
+                ast_program_add_statement(program, decl);
+            }
+        } else if (parser_match(parser, TOKEN_TABLE)) {
+            Ast *decl = parser_parse_table_decl(parser);
             if (decl) {
                 ast_program_add_statement(program, decl);
             }
@@ -3307,6 +3689,7 @@ static Ast *parser_parse_program(Parser *parser) {
             while (!parser_check(parser, TOKEN_FUNC) &&
                    !parser_check(parser, TOKEN_VALUE) &&
                    !parser_check(parser, TOKEN_STRUCT) &&
+                   !parser_check(parser, TOKEN_TABLE) &&
                    !parser_check(parser, TOKEN_VAL) &&
                    !parser_check(parser, TOKEN_MUT) &&
                    !parser_check(parser, TOKEN_EOF)) {
@@ -3591,6 +3974,43 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("ARENA:\n");
             parser_print_ast_step(node->as.arena_reset.arena, indent + 2);
+            break;
+
+        case AST_TABLE_ALLOC:
+            printf("TABLE_ALLOC\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("ARENA:\n");
+            parser_print_ast_step(node->as.table_alloc.arena, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("COUNT:\n");
+            parser_print_ast_step(node->as.table_alloc.count, indent + 2);
+            break;
+
+        case AST_TABLE_LEN:
+            printf("TABLE_LEN\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("TABLE:\n");
+            parser_print_ast_step(node->as.table_len.table, indent + 2);
+            break;
+
+        case AST_TABLE_GET:
+            printf("TABLE_GET\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("TABLE:\n");
+            parser_print_ast_step(node->as.table_get.table, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("INDEX:\n");
+            parser_print_ast_step(node->as.table_get.index, indent + 2);
+            break;
+
+        case AST_TABLE_INSERT:
+            printf("TABLE_INSERT\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("TABLE:\n");
+            parser_print_ast_step(node->as.table_insert.table, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("ROW:\n");
+            parser_print_ast_step(node->as.table_insert.row, indent + 2);
             break;
 
         case AST_PROGRAM:
@@ -4811,6 +5231,105 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_VOID;
         }
 
+        case AST_TABLE_ALLOC: {
+            Type arena_type = typecheck_expression(node->as.table_alloc.arena, scope, func_table);
+            if (!type_is_arena(arena_type)) {
+                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.table_alloc.arena->loc.line,
+                           node->as.table_alloc.arena->loc.column,
+                           "table_alloc() requires Arena, got %s",
+                           type_name(arena_type));
+            }
+            /* Check arena is mutable */
+            if (node->as.table_alloc.arena->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.table_alloc.arena->as.identifier.start,
+                    node->as.table_alloc.arena->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(ERR_S052_ARENA_IMMUTABLE, node->as.table_alloc.arena->loc.line,
+                               node->as.table_alloc.arena->loc.column,
+                               "Cannot table_alloc from immutable Arena, use 'mut'");
+                }
+            }
+            Type count_type = typecheck_expression(node->as.table_alloc.count, scope, func_table);
+            if (!type_is_integer(count_type)) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.table_alloc.count->loc.line,
+                           node->as.table_alloc.count->loc.column,
+                           "table_alloc() count must be integer, got %s",
+                           type_name(count_type));
+            }
+            g_has_arena = true;
+            node->expr_type = TYPE_UNKNOWN;
+            return TYPE_UNKNOWN;
+        }
+
+        case AST_TABLE_LEN: {
+            Type table_type = typecheck_expression(node->as.table_len.table, scope, func_table);
+            if (!is_table_type(table_type)) {
+                diagnostic(ERR_S060_NOT_TABLE_TYPE, node->as.table_len.table->loc.line,
+                           node->as.table_len.table->loc.column,
+                           "table_len() requires a table type, got %s",
+                           type_name(table_type));
+            }
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+        }
+
+        case AST_TABLE_GET: {
+            Type table_type = typecheck_expression(node->as.table_get.table, scope, func_table);
+            if (!is_table_type(table_type)) {
+                diagnostic(ERR_S060_NOT_TABLE_TYPE, node->as.table_get.table->loc.line,
+                           node->as.table_get.table->loc.column,
+                           "table_get() requires a table type, got %s",
+                           type_name(table_type));
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+            Type index_type = typecheck_expression(node->as.table_get.index, scope, func_table);
+            if (!type_is_integer(index_type)) {
+                diagnostic(ERR_S034_INDEX_NOT_INTEGER, node->as.table_get.index->loc.line,
+                           node->as.table_get.index->loc.column,
+                           "table_get() index must be integer, got %s",
+                           type_name(index_type));
+            }
+            TableDeclEntry *te = table_decl_for_type(table_type);
+            node->expr_type = te->row_type;
+            return te->row_type;
+        }
+
+        case AST_TABLE_INSERT: {
+            Type table_type = typecheck_expression(node->as.table_insert.table, scope, func_table);
+            if (!is_table_type(table_type)) {
+                diagnostic(ERR_S060_NOT_TABLE_TYPE, node->as.table_insert.table->loc.line,
+                           node->as.table_insert.table->loc.column,
+                           "table_insert() requires a table type, got %s",
+                           type_name(table_type));
+                node->expr_type = TYPE_VOID;
+                return TYPE_VOID;
+            }
+            /* Check table is mutable */
+            Ast *table_node = node->as.table_insert.table;
+            if (table_node->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    table_node->as.identifier.start,
+                    table_node->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(ERR_S052_ARENA_IMMUTABLE, table_node->loc.line,
+                               table_node->loc.column,
+                               "Cannot table_insert into immutable table, use 'mut'");
+                }
+            }
+            TableDeclEntry *te = table_decl_for_type(table_type);
+            Type row_type = typecheck_expression(node->as.table_insert.row, scope, func_table);
+            if (!type_can_coerce(row_type, te->row_type)) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.table_insert.row->loc.line,
+                           node->as.table_insert.row->loc.column,
+                           "table_insert() row must be %s, got %s",
+                           type_name(te->row_type), type_name(row_type));
+            }
+            node->expr_type = TYPE_VOID;
+            return TYPE_VOID;
+        }
+
         default:
             break;
     }
@@ -4864,7 +5383,7 @@ static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc lo
 static void typecheck_struct_copy(Type type, Ast *init) {
     if (type_is_struct(type) &&
         init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL &&
-        init->kind != AST_ARENA_NEW) {
+        init->kind != AST_ARENA_NEW && init->kind != AST_TABLE_ALLOC) {
         diagnostic(ERR_S043_STRUCT_COPY, init->loc.line, init->loc.column,
                    "Cannot copy %s (not copyable)", type_name(type));
     }
@@ -4877,7 +5396,7 @@ static void typecheck_invalidate_arena_slices(Scope *scope,
     while (scope != NULL) {
         for (size_t i = 0; i < scope->count; i++) {
             Variable *v = &scope->vars[i];
-            if (type_is_slice(v->type) &&
+            if ((type_is_slice(v->type) || is_table_type(v->type)) &&
                 v->arena_source_start != NULL &&
                 v->arena_source_length == arena_length &&
                 memcmp(v->arena_source_start, arena_start, arena_length) == 0) {
@@ -4996,6 +5515,28 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
             Type declared = node->as.val_decl.type;
 
+            /* Table local via table_alloc — propagate declared type */
+            if (is_table_type(declared) &&
+                node->as.val_decl.initializer->kind == AST_TABLE_ALLOC) {
+                node->as.val_decl.initializer->expr_type = declared;
+                Variable *sv = scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                /* Mark arena locality for table variable */
+                if (sv) {
+                    Ast *arena_node = node->as.val_decl.initializer->as.table_alloc.arena;
+                    if (arena_node->kind == AST_IDENTIFIER) {
+                        Variable *av = scope_lookup(*scope, arena_node->as.identifier.start,
+                                                    arena_node->as.identifier.length);
+                        if (av) {
+                            sv->arena_is_local = !av->is_ref && !av->is_global;
+                            sv->arena_source_start = arena_node->as.identifier.start;
+                            sv->arena_source_length = arena_node->as.identifier.length;
+                        }
+                    }
+                }
+                break;
+            }
+
             /* Slice local via arena alloc — propagate declared type */
             if (type_is_slice(declared) &&
                 node->as.val_decl.initializer->kind == AST_ARENA_ALLOC) {
@@ -5081,6 +5622,28 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_MUT_DECL: {
             Type init_type = typecheck_expression(node->as.mut_decl.initializer, *scope, func_table);
             Type declared = node->as.mut_decl.type;
+
+            /* Table local via table_alloc — propagate declared type */
+            if (is_table_type(declared) &&
+                node->as.mut_decl.initializer->kind == AST_TABLE_ALLOC) {
+                node->as.mut_decl.initializer->expr_type = declared;
+                Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                /* Mark arena locality for table variable */
+                if (sv) {
+                    Ast *arena_node = node->as.mut_decl.initializer->as.table_alloc.arena;
+                    if (arena_node->kind == AST_IDENTIFIER) {
+                        Variable *av = scope_lookup(*scope, arena_node->as.identifier.start,
+                                                    arena_node->as.identifier.length);
+                        if (av) {
+                            sv->arena_is_local = !av->is_ref && !av->is_global;
+                            sv->arena_source_start = arena_node->as.identifier.start;
+                            sv->arena_source_length = arena_node->as.identifier.length;
+                        }
+                    }
+                }
+                break;
+            }
 
             /* Slice local via arena alloc — propagate declared type */
             if (type_is_slice(declared) &&
@@ -5347,6 +5910,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
         case AST_FUNC_CALL:
         case AST_ARENA_RESET:
+        case AST_TABLE_INSERT:
             typecheck_expression(node, *scope, func_table);
             break;
 
@@ -5665,6 +6229,20 @@ static void typecheck_program(Ast *program) {
                                (int)node->as.value_decl.name_length,
                                node->as.value_decl.name_start);
                 }
+            }
+        }
+    }
+
+    /* Validate table field types (original fields must be value-compatible) */
+    for (size_t i = 0; i < g_table_decl_count; i++) {
+        TableDeclEntry *te = &g_table_decls[i];
+        for (size_t f = 0; f < te->field_count; f++) {
+            Type ft = te->fields[f].type;
+            if (type_is_slice(ft) || type_is_struct(ft)) {
+                diagnostic(ERR_S059_TABLE_FIELD_TYPE, 0, 0,
+                           "Table field '%.*s' in table '%.*s' must be a value type (no slices, structs, or Arena)",
+                           (int)te->fields[f].name_length, te->fields[f].name_start,
+                           (int)te->name_length, te->name_start);
             }
         }
     }
@@ -6093,6 +6671,49 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             codegen_emit_lvalue(out, node->as.arena_reset.arena);
             fprintf(out, ")");
             break;
+
+        case AST_TABLE_ALLOC: {
+            TableDeclEntry *te = table_decl_for_type(node->expr_type);
+            if (!te) { fprintf(out, "0 /* error */"); break; }
+            fprintf(out, "ni_table_alloc_%.*s(&",
+                    (int)te->name_length, te->name_start);
+            codegen_emit_lvalue(out, node->as.table_alloc.arena);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.table_alloc.count);
+            fprintf(out, ")");
+            break;
+        }
+
+        case AST_TABLE_LEN:
+            codegen_emit_lvalue(out, node->as.table_len.table);
+            fprintf(out, ".ni__len");
+            break;
+
+        case AST_TABLE_GET: {
+            Type table_type = node->as.table_get.table->expr_type;
+            TableDeclEntry *te = table_decl_for_type(table_type);
+            if (!te) { fprintf(out, "0 /* error */"); break; }
+            fprintf(out, "ni_table_get_%.*s(&",
+                    (int)te->name_length, te->name_start);
+            codegen_emit_lvalue(out, node->as.table_get.table);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.table_get.index);
+            fprintf(out, ")");
+            break;
+        }
+
+        case AST_TABLE_INSERT: {
+            Type table_type = node->as.table_insert.table->expr_type;
+            TableDeclEntry *te = table_decl_for_type(table_type);
+            if (!te) { fprintf(out, "0 /* error */"); break; }
+            fprintf(out, "ni_table_insert_%.*s(&",
+                    (int)te->name_length, te->name_start);
+            codegen_emit_lvalue(out, node->as.table_insert.table);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.table_insert.row);
+            fprintf(out, ")");
+            break;
+        }
 
         case AST_VAL_DECL:
         case AST_MUT_DECL:
@@ -6552,6 +7173,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_FUNC_CALL:
         case AST_ARENA_RESET:
+        case AST_TABLE_INSERT:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
             fprintf(out, ";\n");
@@ -6865,6 +7487,61 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         }
         free(emitted);
         fprintf(out, "\n");
+    }
+
+    /* Emit per-table helper functions */
+    for (size_t ti = 0; ti < g_table_decl_count; ti++) {
+        TableDeclEntry *te = &g_table_decls[ti];
+        const char *tname = te->name_start;
+        int tlen = (int)te->name_length;
+        ValueTypeEntry *struct_vt = value_table_get(te->struct_type);
+
+        /* ni_table_alloc_Name */
+        fprintf(out, "static ni_%.*s ni_table_alloc_%.*s(ni_Arena *a, int64_t cap) {\n",
+                tlen, tname, tlen, tname);
+        fprintf(out, "    return (ni_%.*s){", tlen, tname);
+        for (size_t f = 0; f < te->field_count; f++) {
+            Type slice_type = struct_vt->fields[f].type;
+            Type elem_type = type_element_type(slice_type);
+            fprintf(out, "\n        .ni_%.*s = (%s){.data = (%s *)ni_arena_alloc(a, cap, sizeof(%s)), .len = cap},",
+                    (int)te->fields[f].name_length, te->fields[f].name_start,
+                    codegen_type_to_c(slice_type),
+                    codegen_type_to_c(elem_type),
+                    codegen_type_to_c(elem_type));
+        }
+        fprintf(out, "\n        .ni__len = 0\n    };\n}\n\n");
+
+        /* ni_table_get_Name */
+        fprintf(out, "static ni_%s ni_table_get_%.*s(const ni_%.*s *t, int64_t idx) {\n",
+                te->row_name, tlen, tname, tlen, tname);
+        fprintf(out, "    if ((uint64_t)idx >= (uint64_t)t->ni__len) {\n");
+        fprintf(out, "        fprintf(stderr, \"error[R002]: Table index out of bounds: %%ld not in [0, %%ld)\\n\", (long)idx, (long)t->ni__len);\n");
+        fprintf(out, "        exit(2);\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    return (ni_%s){", te->row_name);
+        for (size_t f = 0; f < te->field_count; f++) {
+            fprintf(out, ".ni_%.*s = t->ni_%.*s.data[idx]",
+                    (int)te->fields[f].name_length, te->fields[f].name_start,
+                    (int)te->fields[f].name_length, te->fields[f].name_start);
+            if (f + 1 < te->field_count) fprintf(out, ", ");
+        }
+        fprintf(out, "};\n}\n\n");
+
+        /* ni_table_insert_Name */
+        fprintf(out, "static void ni_table_insert_%.*s(ni_%.*s *t, ni_%s row) {\n",
+                tlen, tname, tlen, tname, te->row_name);
+        /* Use first column's .len as capacity */
+        fprintf(out, "    if (t->ni__len >= t->ni_%.*s.len) {\n",
+                (int)te->fields[0].name_length, te->fields[0].name_start);
+        fprintf(out, "        fprintf(stderr, \"Table capacity exceeded\\n\"); exit(2);\n");
+        fprintf(out, "    }\n");
+        for (size_t f = 0; f < te->field_count; f++) {
+            fprintf(out, "    t->ni_%.*s.data[t->ni__len] = row.ni_%.*s;\n",
+                    (int)te->fields[f].name_length, te->fields[f].name_start,
+                    (int)te->fields[f].name_length, te->fields[f].name_start);
+        }
+        fprintf(out, "    t->ni__len++;\n");
+        fprintf(out, "}\n\n");
     }
 
     /* Create global codegen scope and populate it first (comptime values need

@@ -1,0 +1,101 @@
+// Test: table — columnar storage sugar
+//
+// Tables generate a struct (columnar) + value (row) type.
+// table_alloc, table_insert, table_len, table_get built-ins.
+
+value Vec2 { x: f64, y: f64 }
+value Color { r: u8, g: u8, b: u8 }
+
+table Particles {
+    pos: Vec2,
+    life: i64,
+    color: Color
+}
+
+// Table as ref parameter
+func count_alive(ref p: Particles): i64 = {
+    mut alive: i64 = 0
+    mut i: i64 = 0
+    while (i < table_len(ref p)) {
+        if (table_get(ref p, i).life > 0) {
+            alive = alive + 1
+        }
+        i = i + 1
+    }
+    return alive
+}
+
+// Table as mut ref parameter (insert inside function)
+func add_particle(mut ref p: Particles, x: f64, y: f64, life: i64): void = {
+    table_insert(mut ref p, ParticlesRow {
+        pos: Vec2 { x: x, y: y },
+        life: life,
+        color: Color { r: 255, g: 128, b: 0 }
+    })
+}
+
+// Row as function parameter (by value — it's a value type)
+func get_life(row: ParticlesRow): i64 = {
+    return row.life
+}
+
+table Enemies {
+    health: i64,
+    score: i64
+}
+
+func main(): void = {
+    mut mem: Arena = arena(65536)
+
+    // Basic: alloc, insert, len, get
+    mut p: Particles = table_alloc(mut ref mem, 100)
+    add_particle(mut ref p, 1.0, 2.0, 10)
+    add_particle(mut ref p, 3.0, 4.0, 20)
+    add_particle(mut ref p, 5.0, 6.0, 0)
+
+    assert table_len(ref p) == 3
+    assert count_alive(ref p) == 2
+
+    // Row access and row as parameter
+    val r: ParticlesRow = table_get(ref p, 0)
+    assert get_life(r) == 10
+    assert r.color.r == 255
+    assert r.pos.x == 1.0
+    assert r.pos.y == 2.0
+
+    // Row field access on second row
+    val r2: ParticlesRow = table_get(ref p, 1)
+    assert r2.life == 20
+    assert r2.pos.x == 3.0
+
+    // Direct column access (slice indexing)
+    assert p.pos[0].x == 1.0
+    assert p.life[2] == 0
+
+    // Column mutation
+    p.life[2] = 30
+    assert p.life[2] == 30
+    assert count_alive(ref p) == 3
+
+    // Multiple tables from same arena
+    mut e: Enemies = table_alloc(mut ref mem, 50)
+    table_insert(mut ref e, EnemiesRow { health: 100, score: 10 })
+    table_insert(mut ref e, EnemiesRow { health: 50, score: 20 })
+    assert table_len(ref e) == 2
+    assert table_get(ref e, 0).health == 100
+    assert table_get(ref e, 1).score == 20
+
+    // For loop over table columns
+    mut total_life: i64 = 0
+    for i in 0..table_len(ref p) {
+        total_life = total_life + p.life[i]
+    }
+    assert total_life == 60
+
+    // Table with only scalar fields
+    mut total_score: i64 = 0
+    for i in 0..table_len(ref e) {
+        total_score = total_score + e.score[i]
+    }
+    assert total_score == 30
+}
