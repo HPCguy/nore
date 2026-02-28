@@ -59,8 +59,11 @@ make debug
 # Clean build artifacts
 make clean
 
-# Compile a Nore program
-./nore program.nore -o program
+# Compile a Nore program (outputs ./program by default)
+./nore program.nore
+
+# Specify output path explicitly
+./nore program.nore -o build/program
 
 # Compile and run immediately (temp binary, auto-cleaned)
 ./nore --run program.nore
@@ -282,4 +285,4 @@ This project is in early development. Design discussions and architecture feedba
 
 ## License
 
-TBD
+BSD 3-Clause License with patent grant. See [LICENSE](LICENSE) and [PATENTS](PATENTS).
