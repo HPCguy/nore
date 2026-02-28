@@ -2,44 +2,32 @@
 
 ## Overview
 
-Nore is a new systems programming language designed for low-level control and performance. The project implements a self-contained, single-file compiler written in C that translates Nore source code into native executables.
+Nore is a systems programming language that makes data-oriented design the path of least resistance. Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized — columnar tables, arena allocation, explicit value vs resource semantics — with compile-time safety guarantees and zero runtime overhead.
+
+The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
+
+## What Makes Nore Different
+
+**Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access — the kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping.
+
+**Two kinds of types, one clear rule.** `value` types are plain data: they live on the stack, copy freely, and compose into arrays and tables. `struct` types own resources: they hold slices of arena-allocated memory, pass by reference only, and cannot be copied. No hidden allocations, no implicit clones.
+
+**Arenas replace malloc/free.** All heap memory comes from arenas. The compiler tracks which slices come from which arena and rejects programs where a slice could outlive its arena — at compile time, with no garbage collector and no runtime cost.
+
+**Explicit is better than implicit.** Parameters are `ref` or `mut ref` at both declaration and call site. Mutability is visible everywhere. There are no hidden copies, no move semantics to reason about.
+
+## Design Document
+
+See [docs/data-oriented-design.md](docs/data-oriented-design.md) for the full design covering the type model, tables, arenas, and memory safety approach.
 
 ## Architecture
 
-The Nore compiler follows a multi-stage compilation pipeline:
+The compiler follows a multi-stage pipeline:
 
-### 1. Frontend (Lexer & Parser)
-- **Lexical Analysis**: Tokenizes Nore source code into a stream of tokens
-- **Syntax Analysis**: Builds an Abstract Syntax Tree (AST) from tokens
-- Implemented in a single C file for simplicity and portability
-
-### 2. Code Generation
-- **Target**: C language as intermediate representation
-- **Rationale**: Leverages C's portability and optimization ecosystem
-- Translates AST nodes into semantically equivalent C code
-
-### 3. Native Compilation
-- **Backend**: Clang compiler integration via subprocess invocation
-- Compiles generated C code to native machine code
-- Supports multiple target platforms through Clang's cross-compilation capabilities
-
-## Design Philosophy
-
-As a systems programming language, Nore aims to provide:
-- Direct hardware access and memory control
-- Minimal runtime overhead
-- Predictable performance characteristics
-- Clear mapping to machine code
-- Data-oriented design as the path of least resistance
-
-The choice of C as an intermediate language enables:
-- Rapid prototyping of the compiler
-- Access to mature optimization passes
-- Wide platform support without implementing multiple backends
-- Easier debugging of generated code
-
-### Data-Oriented Design
-See [docs/data-oriented-design.md](docs/data-oriented-design.md) for the full design document covering the unified type model (`value` vs `struct`), tables, arenas, and memory safety approach.
+1. **Frontend** — Lexer tokenizes source, parser builds an AST
+2. **Semantic analysis** — Type checking, escape analysis, arena lifetime validation
+3. **Code generation** — AST translates to C99 code
+4. **Native compilation** — Clang compiles generated C to a native binary
 
 ## Project Status
 
@@ -279,22 +267,13 @@ Each step builds on the previous one. See [docs/data-oriented-design.md](docs/da
 ## Technical Decisions
 
 ### Why a single-file compiler?
-- Simplifies distribution and building
-- Reduces complexity during early development
-- Makes the compiler easy to study and understand
-- Can be refactored into modules later if needed
+Simplifies building, distribution, and studying the compiler. Can be refactored into modules later if needed.
 
-### Why C as intermediate language?
-- Avoids implementing platform-specific backends
-- Inherits Clang's optimization capabilities
-- Enables faster compiler development
-- Proven approach (used by early C++, Nim, and others)
+### Why C as intermediate representation?
+Avoids platform-specific backends, inherits Clang's optimization passes, and enables rapid compiler development. Proven approach (used by early C++, Nim, and others).
 
-### Why Clang specifically?
-- Modern, actively maintained
-- Excellent error messages
-- Strong cross-compilation support
-- Available on all major platforms
+### Why Clang?
+Modern, actively maintained, with strong cross-compilation support and excellent error messages.
 
 ## Contributing
 
