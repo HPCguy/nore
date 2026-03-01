@@ -871,6 +871,16 @@ val y: i64 = {
 
 Works with all numeric types (i64, i32, u8, u32, f64) and comptime types. Both operands must be the same concrete type (after coercion). Negation (`-x`) is not allowed on unsigned types (`u8`, `u32`). Modulo follows C truncation semantics (result sign matches dividend).
 
+**Bitwise** (integer operands only, same type result):
+- `&` Bitwise AND
+- `|` Bitwise OR
+- `^` Bitwise XOR
+- `<<` Left shift
+- `>>` Right shift
+- `~` Bitwise NOT (unary)
+
+Works with all integer types (i64, i32, u8, u32) and comptime int. Not supported on `f64` (error S062). Bitwise operators bind **tighter** than comparisons, so `a & mask == 0` means `(a & mask) == 0`.
+
 **Comparison** (numeric operands, bool result):
 - `==` Equal
 - `!=` Not equal
@@ -885,6 +895,19 @@ Both operands must be the same concrete numeric type (after coercion). Compariso
 - `&&` Logical AND
 - `||` Logical OR
 - `!` Logical NOT (unary)
+
+**Operator Precedence** (highest to lowest):
+| Level | Operators | Category |
+|-------|-----------|----------|
+| 8 | `*` `/` `%` | Multiplicative |
+| 7 | `+` `-` | Additive |
+| 6 | `<<` `>>` | Shift |
+| 5 | `&` | Bitwise AND |
+| 4 | `^` | Bitwise XOR |
+| 3 | `\|` | Bitwise OR |
+| 2 | `==` `!=` `<` `>` `<=` `>=` | Comparison |
+| 1 | `&&` | Logical AND |
+| 0 | `\|\|` | Logical OR |
 
 **Assignment**:
 - `=` Assignment operator (mutable variables only)
@@ -954,7 +977,8 @@ func main(): void = {
 - `void` - Void type
 
 ### Operators
-- `+` `-` `*` `/` - Arithmetic
+- `+` `-` `*` `/` `%` - Arithmetic
+- `&` `|` `^` `~` `<<` `>>` - Bitwise
 - `==` `!=` `<` `<=` `>` `>=` - Comparison
 - `&&` `||` `!` - Logical
 - `=` - Assignment

@@ -1,0 +1,3 @@
+func main(): void = {
+    val x: f64 = ~1.0
+}

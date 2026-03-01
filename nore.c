@@ -150,6 +150,7 @@ typedef enum {
     ERR_S059_TABLE_FIELD_TYPE      = ERR_GROUP_SEMANTIC + 59,
     ERR_S060_NOT_TABLE_TYPE        = ERR_GROUP_SEMANTIC + 60,
     ERR_S061_MODULO_ON_FLOAT       = ERR_GROUP_SEMANTIC + 61,
+    ERR_S062_BITWISE_ON_FLOAT      = ERR_GROUP_SEMANTIC + 62,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -343,6 +344,12 @@ typedef enum {
     TOKEN_STAR,
     TOKEN_SLASH,
     TOKEN_PERCENT,
+    TOKEN_AMPERSAND,
+    TOKEN_PIPE,
+    TOKEN_CARET,
+    TOKEN_TILDE,
+    TOKEN_LESS_LESS,
+    TOKEN_GREATER_GREATER,
     TOKEN_EQUALS,
     TOKEN_EQUAL_EQUAL,
     TOKEN_BANG_EQUAL,
@@ -416,6 +423,12 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_STAR:          return "STAR";
         case TOKEN_SLASH:         return "SLASH";
         case TOKEN_PERCENT:       return "PERCENT";
+        case TOKEN_AMPERSAND:     return "AMPERSAND";
+        case TOKEN_PIPE:          return "PIPE";
+        case TOKEN_CARET:         return "CARET";
+        case TOKEN_TILDE:         return "TILDE";
+        case TOKEN_LESS_LESS:     return "LESS_LESS";
+        case TOKEN_GREATER_GREATER: return "GREATER_GREATER";
         case TOKEN_EQUALS:        return "EQUALS";
         case TOKEN_EQUAL_EQUAL:   return "EQUAL_EQUAL";
         case TOKEN_BANG_EQUAL:    return "BANG_EQUAL";
@@ -698,23 +711,33 @@ Token lexer_next_token(Lexer *lexer) {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_AND_AND);
             }
-            return lexer_error_token(lexer, "Expected '&&'");
+            return lexer_make_token(lexer, TOKEN_AMPERSAND);
         case '|':
             if (lexer_peek(lexer) == '|') {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_OR_OR);
             }
-            return lexer_error_token(lexer, "Expected '||'");
+            return lexer_make_token(lexer, TOKEN_PIPE);
+        case '^': return lexer_make_token(lexer, TOKEN_CARET);
+        case '~': return lexer_make_token(lexer, TOKEN_TILDE);
         case '<':
             if (lexer_peek(lexer) == '=') {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_LESS_EQUAL);
+            }
+            if (lexer_peek(lexer) == '<') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_LESS_LESS);
             }
             return lexer_make_token(lexer, TOKEN_LESS);
         case '>':
             if (lexer_peek(lexer) == '=') {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_GREATER_EQUAL);
+            }
+            if (lexer_peek(lexer) == '>') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_GREATER_GREATER);
             }
             return lexer_make_token(lexer, TOKEN_GREATER);
     }
@@ -1348,12 +1371,18 @@ typedef enum {
     OP_LE,
     OP_GE,
     OP_AND,
-    OP_OR
+    OP_OR,
+    OP_BITAND,
+    OP_BITOR,
+    OP_BITXOR,
+    OP_SHL,
+    OP_SHR
 } BinaryOp;
 
 typedef enum {
     OP_NEG,
-    OP_NOT
+    OP_NOT,
+    OP_BITNOT
 } UnaryOp;
 
 typedef struct {
@@ -2261,9 +2290,18 @@ static int parser_get_precedence(TokenKind kind) {
         case TOKEN_STAR:
         case TOKEN_SLASH:
         case TOKEN_PERCENT:
-            return 4;
+            return 8;
         case TOKEN_PLUS:
         case TOKEN_MINUS:
+            return 7;
+        case TOKEN_LESS_LESS:
+        case TOKEN_GREATER_GREATER:
+            return 6;
+        case TOKEN_AMPERSAND:
+            return 5;
+        case TOKEN_CARET:
+            return 4;
+        case TOKEN_PIPE:
             return 3;
         case TOKEN_EQUAL_EQUAL:
         case TOKEN_BANG_EQUAL:
@@ -2296,6 +2334,11 @@ static BinaryOp parser_token_to_binary_op(TokenKind kind) {
         case TOKEN_GREATER_EQUAL:  return OP_GE;
         case TOKEN_AND_AND:        return OP_AND;
         case TOKEN_OR_OR:          return OP_OR;
+        case TOKEN_AMPERSAND:      return OP_BITAND;
+        case TOKEN_PIPE:           return OP_BITOR;
+        case TOKEN_CARET:          return OP_BITXOR;
+        case TOKEN_LESS_LESS:      return OP_SHL;
+        case TOKEN_GREATER_GREATER: return OP_SHR;
         default:
             fprintf(stderr, "Internal error: not a binary operator\n");
             exit(1);
@@ -2325,6 +2368,14 @@ static Ast *parser_parse_primary(Parser *parser) {
         Ast *operand = parser_parse_primary(parser);
         if (!operand) return NULL;
         return ast_make_unary(OP_NOT, operand, loc);
+    }
+
+    /* Handle bitwise NOT */
+    if (parser_match(parser, TOKEN_TILDE)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        Ast *operand = parser_parse_primary(parser);
+        if (!operand) return NULL;
+        return ast_make_unary(OP_BITNOT, operand, loc);
     }
 
     if (parser_match(parser, TOKEN_NUMBER)) {
@@ -3707,8 +3758,13 @@ static void parser_print_ast_step(Ast *node, int indent) {
                 case OP_GT:  op_name = "GT"; break;
                 case OP_LE:  op_name = "LE"; break;
                 case OP_GE:  op_name = "GE"; break;
-                case OP_AND: op_name = "AND"; break;
-                case OP_OR:  op_name = "OR"; break;
+                case OP_AND:    op_name = "AND"; break;
+                case OP_OR:     op_name = "OR"; break;
+                case OP_BITAND: op_name = "BITAND"; break;
+                case OP_BITOR:  op_name = "BITOR"; break;
+                case OP_BITXOR: op_name = "BITXOR"; break;
+                case OP_SHL:    op_name = "SHL"; break;
+                case OP_SHR:    op_name = "SHR"; break;
             }
             printf("BINARY(%s)\n", op_name);
             parser_print_ast_step(node->as.binary.left, indent + 1);
@@ -3719,8 +3775,9 @@ static void parser_print_ast_step(Ast *node, int indent) {
         case AST_UNARY: {
             const char *op_name;
             switch (node->as.unary.op) {
-                case OP_NEG: op_name = "NEG"; break;
-                case OP_NOT: op_name = "NOT"; break;
+                case OP_NEG:    op_name = "NEG"; break;
+                case OP_NOT:    op_name = "NOT"; break;
+                case OP_BITNOT: op_name = "BITNOT"; break;
             }
             printf("UNARY(%s)\n", op_name);
             parser_print_ast_step(node->as.unary.operand, indent + 1);
@@ -4329,8 +4386,9 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
 
     BinaryOp op = node->as.binary.op;
 
-    /* Only fold arithmetic operations */
-    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV && op != OP_MOD) {
+    /* Only fold arithmetic and bitwise operations */
+    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV && op != OP_MOD &&
+        op != OP_BITAND && op != OP_BITOR && op != OP_BITXOR && op != OP_SHL && op != OP_SHR) {
         return NULL;
     }
 
@@ -4376,6 +4434,21 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
             case OP_MUL: overflow = int_mul_overflows(l, r); if (!overflow) result = l * r; break;
             case OP_DIV: result = l / r; break;
             case OP_MOD: result = l % r; break;
+            case OP_BITAND: result = l & r; break;
+            case OP_BITOR:  result = l | r; break;
+            case OP_BITXOR: result = l ^ r; break;
+            case OP_SHL:
+            case OP_SHR:
+                if (r < 0 || r >= 64) {
+                    overflow = true;
+                } else if (op == OP_SHL && l < 0) {
+                    overflow = true;
+                } else if (op == OP_SHL) {
+                    result = l << r;
+                } else {
+                    result = l >> r;
+                }
+                break;
             default: return NULL;
         }
         if (overflow) {
@@ -4462,6 +4535,14 @@ static Ast *try_fold_unary(Ast *node, Scope *scope) {
         Ast *folded = ast_make_boolean(!operand->as.boolean.value, node->loc);
         folded->expr_type = TYPE_BOOL;
         return folded;
+    }
+
+    if (node->as.unary.op == OP_BITNOT) {
+        if (is_comptime_int_type(operand, scope)) {
+            Ast *folded = ast_make_number(~get_comptime_int(operand, scope), node->loc);
+            folded->expr_type = TYPE_COMPTIME_INT;
+            return folded;
+        }
     }
 
     return NULL;
@@ -4708,6 +4789,43 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     }
                     node->expr_type = TYPE_BOOL;
                     return TYPE_BOOL;
+
+                /* Bitwise: integer x integer -> integer */
+                case OP_BITAND:
+                case OP_BITOR:
+                case OP_BITXOR:
+                case OP_SHL:
+                case OP_SHR: {
+                    Type result = resolve_numeric_binary_type(left_type, right_type);
+                    if (result == TYPE_VOID) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                                   "Cannot mix %s and %s in bitwise operation",
+                                   type_name(left_type), type_name(right_type));
+                        node->expr_type = TYPE_I64;
+                        return TYPE_I64;
+                    }
+
+                    if (result == TYPE_F64 || result == TYPE_COMPTIME_FLOAT) {
+                        diagnostic(ERR_S062_BITWISE_ON_FLOAT, node->loc.line, node->loc.column,
+                                   "Bitwise operators are not supported on floating-point types");
+                        node->expr_type = TYPE_I64;
+                        return TYPE_I64;
+                    }
+
+                    /* Try constant folding */
+                    bool unused = false;
+                    Ast *folded = try_fold_binary(node, scope, &unused);
+                    if (folded) {
+                        ast_free(node->as.binary.left);
+                        ast_free(node->as.binary.right);
+                        *node = *folded;
+                        free(folded);
+                        return node->expr_type;
+                    }
+
+                    node->expr_type = result;
+                    return result;
+                }
             }
             break;
         }
@@ -4756,6 +4874,26 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     }
                     node->expr_type = TYPE_BOOL;
                     return TYPE_BOOL;
+
+                /* Bitwise NOT: integer -> integer */
+                case OP_BITNOT:
+                    if (operand_type == TYPE_F64 || operand_type == TYPE_COMPTIME_FLOAT) {
+                        diagnostic(ERR_S062_BITWISE_ON_FLOAT, node->as.unary.operand->loc.line,
+                                   node->as.unary.operand->loc.column,
+                                   "Bitwise NOT is not supported on floating-point types");
+                        node->expr_type = TYPE_I64;
+                        return TYPE_I64;
+                    }
+                    if (!type_is_integer(operand_type)) {
+                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                                   node->as.unary.operand->loc.column,
+                                   "Expected integer type for bitwise NOT, got %s",
+                                   type_name(operand_type));
+                        node->expr_type = TYPE_I64;
+                        return TYPE_I64;
+                    }
+                    node->expr_type = operand_type;
+                    return operand_type;
             }
             break;
         }
@@ -6419,8 +6557,13 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 case OP_GT:  fprintf(out, " > "); break;
                 case OP_LE:  fprintf(out, " <= "); break;
                 case OP_GE:  fprintf(out, " >= "); break;
-                case OP_AND: fprintf(out, " && "); break;
-                case OP_OR:  fprintf(out, " || "); break;
+                case OP_AND:    fprintf(out, " && "); break;
+                case OP_OR:     fprintf(out, " || "); break;
+                case OP_BITAND: fprintf(out, " & "); break;
+                case OP_BITOR:  fprintf(out, " | "); break;
+                case OP_BITXOR: fprintf(out, " ^ "); break;
+                case OP_SHL:    fprintf(out, " << "); break;
+                case OP_SHR:    fprintf(out, " >> "); break;
             }
 
             codegen_emit_expression(out, node->as.binary.right);
@@ -6431,8 +6574,9 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_UNARY: {
             fprintf(out, "(");
             switch (node->as.unary.op) {
-                case OP_NEG: fprintf(out, "-"); break;
-                case OP_NOT: fprintf(out, "!"); break;
+                case OP_NEG:    fprintf(out, "-"); break;
+                case OP_NOT:    fprintf(out, "!"); break;
+                case OP_BITNOT: fprintf(out, "~"); break;
             }
             codegen_emit_expression(out, node->as.unary.operand);
             fprintf(out, ")");
