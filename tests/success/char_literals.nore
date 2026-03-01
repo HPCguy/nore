@@ -1,0 +1,47 @@
+// Test character literals
+
+func main(): void = {
+    // Basic ASCII values
+    assert 'A' == 65
+    assert 'Z' == 90
+    assert 'a' == 97
+    assert 'z' == 122
+    assert '0' == 48
+    assert '9' == 57
+    assert ' ' == 32
+
+    // Escape sequences
+    assert '\n' == 10
+    assert '\t' == 9
+    assert '\r' == 13
+    assert '\0' == 0
+    assert '\\' == 92
+    assert '\'' == 39
+
+    // Type coercion to u8
+    val cu8: u8 = 'A'
+    assert cu8 == 65
+
+    // Type coercion to i32
+    val ci32: i32 = 'A'
+    assert ci32 == 65
+
+    // Type coercion to i64
+    val ci64: i64 = 'A'
+    assert ci64 == 65
+
+    // Type coercion to u32
+    val cu32: u32 = 'A'
+    assert cu32 == 65
+
+    // Use in arithmetic expressions
+    assert 'A' + 1 == 66
+    assert 'Z' - 'A' == 25
+    assert '0' + 9 == '9'
+
+    // Comparison with string byte index
+    val s: str = "hello"
+    assert s[0] == 'h'
+    assert s[1] == 'e'
+    assert s[4] == 'o'
+}

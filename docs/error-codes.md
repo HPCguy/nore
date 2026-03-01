@@ -26,6 +26,8 @@ error[D002]: Unknown flag: --invalid
 - **L002**: Unterminated block comment
 - **L003**: Unterminated string literal
 - **L004**: Invalid escape sequence
+- **L005**: Empty character literal
+- **L006**: Character literal must contain exactly one character
 - **P006**: Integer literal out of range (overflow)
 - **P007**: Expected '}' to close block
 - **P008**: Expected '(' after 'if'

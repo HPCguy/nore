@@ -69,6 +69,14 @@ val y: i64 = 10
 
 Supported escape sequences: `\n` (newline), `\t` (tab), `\r` (carriage return), `\\` (backslash), `\"` (double quote), `\0` (null byte).
 
+**Character literals**:
+```nore
+'A'     // comptime_int (value 65), coerces to any integer type
+'\n'    // escape sequence (value 10)
+```
+
+A character literal produces a `comptime_int` equal to the byte value of the character. Supported escape sequences: `\n`, `\t`, `\r`, `\\`, `\'`, `\0`.
+
 **Boolean literals**:
 ```nore
 true

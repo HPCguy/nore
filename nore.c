@@ -45,6 +45,8 @@ typedef enum {
     ERR_L002_UNTERMINATED_COMMENT = ERR_GROUP_LEXER + 2,
     ERR_L003_UNTERMINATED_STRING  = ERR_GROUP_LEXER + 3,
     ERR_L004_INVALID_ESCAPE       = ERR_GROUP_LEXER + 4,
+    ERR_L005_EMPTY_CHAR           = ERR_GROUP_LEXER + 5,
+    ERR_L006_CHAR_TOO_LONG        = ERR_GROUP_LEXER + 6,
 
     /* Parser errors: P001-P099 */
     ERR_P001_EXPECTED_EXPRESSION   = ERR_GROUP_PARSER + 1,
@@ -303,6 +305,11 @@ static int is_alnum(char c) {
     return is_alpha(c) || is_digit(c);
 }
 
+static int is_valid_escape(char esc, char quote) {
+    return esc == 'n' || esc == 't' || esc == 'r' || esc == '\\' ||
+           esc == quote || esc == '0';
+}
+
 /* ================================= Tokens ================================= */
 
 typedef enum {
@@ -338,6 +345,7 @@ typedef enum {
     TOKEN_ARENA,
     TOKEN_STR,
     TOKEN_STRING,
+    TOKEN_CHAR,
 
     TOKEN_PLUS,
     TOKEN_MINUS,
@@ -418,6 +426,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_ARENA:         return "ARENA";
         case TOKEN_STR:           return "STR";
         case TOKEN_STRING:        return "STRING";
+        case TOKEN_CHAR:          return "CHAR";
         case TOKEN_PLUS:          return "PLUS";
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
@@ -630,8 +639,7 @@ static Token lexer_scan_string(Lexer *lexer) {
         if (c == '\\') {
             lexer_advance(lexer);  /* consume backslash */
             char esc = lexer_peek(lexer);
-            if (esc != 'n' && esc != 't' && esc != 'r' && esc != '\\' &&
-                esc != '"' && esc != '0') {
+            if (!is_valid_escape(esc, '"')) {
                 diagnostic(ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
                            "Invalid escape sequence '\\%c'", esc);
             }
@@ -640,6 +648,53 @@ static Token lexer_scan_string(Lexer *lexer) {
     }
     lexer_advance(lexer);  /* consume closing quote */
     return lexer_make_token(lexer, TOKEN_STRING);
+}
+
+static Token lexer_scan_char(Lexer *lexer) {
+    size_t start_line = lexer->line;
+    size_t start_col = lexer->column - 1;  /* opening quote already consumed */
+    char c = lexer_peek(lexer);
+    if (c == '\'') {
+        diagnostic(ERR_L005_EMPTY_CHAR, start_line, start_col,
+                   "Empty character literal");
+        lexer_advance(lexer);  /* consume closing quote */
+        return lexer_make_token(lexer, TOKEN_CHAR);
+    }
+    if (c == '\0' || c == '\n') {
+        diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
+                   "Unterminated character literal");
+        return lexer_make_token(lexer, TOKEN_CHAR);
+    }
+    if (c == '\\') {
+        lexer_advance(lexer);  /* consume backslash */
+        char esc = lexer_peek(lexer);
+        if (!is_valid_escape(esc, '\'')) {
+            diagnostic(ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
+                       "Invalid escape sequence '\\%c'", esc);
+        }
+    }
+    lexer_advance(lexer);  /* consume the character (or escape char) */
+    /* Check for closing quote */
+    c = lexer_peek(lexer);
+    if (c != '\'') {
+        if (c == '\0' || c == '\n') {
+            diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
+                       "Unterminated character literal");
+            return lexer_make_token(lexer, TOKEN_CHAR);
+        }
+        /* Multi-character literal — skip to closing quote or end */
+        while ((c = lexer_peek(lexer)) != '\'' && c != '\0' && c != '\n') {
+            lexer_advance(lexer);
+        }
+        diagnostic(ERR_L006_CHAR_TOO_LONG, start_line, start_col,
+                   "Character literal must contain exactly one character");
+        if (c == '\'') {
+            lexer_advance(lexer);  /* consume closing quote */
+        }
+        return lexer_make_token(lexer, TOKEN_CHAR);
+    }
+    lexer_advance(lexer);  /* consume closing quote */
+    return lexer_make_token(lexer, TOKEN_CHAR);
 }
 
 static Token lexer_scan_identifier(Lexer *lexer) {
@@ -674,6 +729,7 @@ Token lexer_next_token(Lexer *lexer) {
 
     switch (c) {
         case '"': return lexer_scan_string(lexer);
+        case '\'': return lexer_scan_char(lexer);
         case '(': return lexer_make_token(lexer, TOKEN_LPAREN);
         case ')': return lexer_make_token(lexer, TOKEN_RPAREN);
         case '{': return lexer_make_token(lexer, TOKEN_LBRACE);
@@ -752,7 +808,8 @@ static void lexer_print_tokens(Lexer *lexer, const char *source) {
         token = lexer_next_token(lexer);
         printf("%-20s", token_kind_name(token.kind));
         if (token.kind == TOKEN_NUMBER || token.kind == TOKEN_FLOAT ||
-            token.kind == TOKEN_IDENTIFIER || token.kind == TOKEN_STRING) {
+            token.kind == TOKEN_IDENTIFIER || token.kind == TOKEN_STRING ||
+            token.kind == TOKEN_CHAR) {
             printf(" '%.*s'", (int)token.length, token.start);
         }
         printf("\n");
@@ -2397,6 +2454,26 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_number(0, loc);
         }
         return ast_make_number(value, loc);
+    }
+
+    if (parser_match(parser, TOKEN_CHAR)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        const char *content = parser->previous.start + 1;  /* skip opening quote */
+        long byte_value;
+        if (content[0] == '\\') {
+            switch (content[1]) {
+                case 'n':  byte_value = 10; break;
+                case 't':  byte_value = 9;  break;
+                case 'r':  byte_value = 13; break;
+                case '\\': byte_value = 92; break;
+                case '\'': byte_value = 39; break;
+                case '0':  byte_value = 0;  break;
+                default:   byte_value = (unsigned char)content[1]; break;
+            }
+        } else {
+            byte_value = (unsigned char)content[0];
+        }
+        return ast_make_number(byte_value, loc);
     }
 
     if (parser_match(parser, TOKEN_FLOAT)) {
