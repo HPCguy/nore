@@ -149,6 +149,7 @@ typedef enum {
     ERR_S058_FOR_RANGE_NOT_INTEGER = ERR_GROUP_SEMANTIC + 58,
     ERR_S059_TABLE_FIELD_TYPE      = ERR_GROUP_SEMANTIC + 59,
     ERR_S060_NOT_TABLE_TYPE        = ERR_GROUP_SEMANTIC + 60,
+    ERR_S061_MODULO_ON_FLOAT       = ERR_GROUP_SEMANTIC + 61,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -341,6 +342,7 @@ typedef enum {
     TOKEN_MINUS,
     TOKEN_STAR,
     TOKEN_SLASH,
+    TOKEN_PERCENT,
     TOKEN_EQUALS,
     TOKEN_EQUAL_EQUAL,
     TOKEN_BANG_EQUAL,
@@ -413,6 +415,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_MINUS:         return "MINUS";
         case TOKEN_STAR:          return "STAR";
         case TOKEN_SLASH:         return "SLASH";
+        case TOKEN_PERCENT:       return "PERCENT";
         case TOKEN_EQUALS:        return "EQUALS";
         case TOKEN_EQUAL_EQUAL:   return "EQUAL_EQUAL";
         case TOKEN_BANG_EQUAL:    return "BANG_EQUAL";
@@ -677,6 +680,7 @@ Token lexer_next_token(Lexer *lexer) {
         case '-': return lexer_make_token(lexer, TOKEN_MINUS);
         case '*': return lexer_make_token(lexer, TOKEN_STAR);
         case '/': return lexer_make_token(lexer, TOKEN_SLASH);
+        case '%': return lexer_make_token(lexer, TOKEN_PERCENT);
         case '=':
             if (lexer_peek(lexer) == '=') {
                 lexer_advance(lexer);
@@ -1336,6 +1340,7 @@ typedef enum {
     OP_SUB,
     OP_MUL,
     OP_DIV,
+    OP_MOD,
     OP_EQ,
     OP_NEQ,
     OP_LT,
@@ -2255,6 +2260,7 @@ static int parser_get_precedence(TokenKind kind) {
     switch (kind) {
         case TOKEN_STAR:
         case TOKEN_SLASH:
+        case TOKEN_PERCENT:
             return 4;
         case TOKEN_PLUS:
         case TOKEN_MINUS:
@@ -2281,6 +2287,7 @@ static BinaryOp parser_token_to_binary_op(TokenKind kind) {
         case TOKEN_MINUS:          return OP_SUB;
         case TOKEN_STAR:           return OP_MUL;
         case TOKEN_SLASH:          return OP_DIV;
+        case TOKEN_PERCENT:        return OP_MOD;
         case TOKEN_EQUAL_EQUAL:    return OP_EQ;
         case TOKEN_BANG_EQUAL:     return OP_NEQ;
         case TOKEN_LESS:           return OP_LT;
@@ -3693,6 +3700,7 @@ static void parser_print_ast_step(Ast *node, int indent) {
                 case OP_SUB: op_name = "SUB"; break;
                 case OP_MUL: op_name = "MUL"; break;
                 case OP_DIV: op_name = "DIV"; break;
+                case OP_MOD: op_name = "MOD"; break;
                 case OP_EQ:  op_name = "EQ"; break;
                 case OP_NEQ: op_name = "NEQ"; break;
                 case OP_LT:  op_name = "LT"; break;
@@ -4322,12 +4330,12 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
     BinaryOp op = node->as.binary.op;
 
     /* Only fold arithmetic operations */
-    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV) {
+    if (op != OP_ADD && op != OP_SUB && op != OP_MUL && op != OP_DIV && op != OP_MOD) {
         return NULL;
     }
 
     /* Check for division by zero */
-    if (op == OP_DIV) {
+    if (op == OP_DIV || op == OP_MOD) {
         long r_int = get_comptime_int(right, scope);
         double r_float = get_comptime_float(right, scope);
         if (r_int == 0 && r_float == 0.0) {
@@ -4367,6 +4375,7 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
             case OP_SUB: overflow = int_sub_overflows(l, r); if (!overflow) result = l - r; break;
             case OP_MUL: overflow = int_mul_overflows(l, r); if (!overflow) result = l * r; break;
             case OP_DIV: result = l / r; break;
+            case OP_MOD: result = l % r; break;
             default: return NULL;
         }
         if (overflow) {
@@ -4614,13 +4623,23 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_ADD:
                 case OP_SUB:
                 case OP_MUL:
-                case OP_DIV: {
+                case OP_DIV:
+                case OP_MOD: {
                     Type result = resolve_numeric_binary_type(left_type, right_type);
                     if (result == TYPE_VOID) {
                         diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
                                    "Cannot mix %s and %s in arithmetic operation",
                                    type_name(left_type), type_name(right_type));
                         node->expr_type = TYPE_I64;  /* default */
+                        return TYPE_I64;
+                    }
+
+                    /* Modulo is integer-only */
+                    if (node->as.binary.op == OP_MOD &&
+                        (result == TYPE_F64 || result == TYPE_COMPTIME_FLOAT)) {
+                        diagnostic(ERR_S061_MODULO_ON_FLOAT, node->loc.line, node->loc.column,
+                                   "Modulo operator '%%' is not supported on floating-point types");
+                        node->expr_type = TYPE_I64;
                         return TYPE_I64;
                     }
 
@@ -6393,6 +6412,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 case OP_SUB: fprintf(out, " - "); break;
                 case OP_MUL: fprintf(out, " * "); break;
                 case OP_DIV: fprintf(out, " / "); break;
+                case OP_MOD: fprintf(out, " %% "); break;
                 case OP_EQ:  fprintf(out, " == "); break;
                 case OP_NEQ: fprintf(out, " != "); break;
                 case OP_LT:  fprintf(out, " < "); break;

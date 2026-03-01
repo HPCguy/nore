@@ -121,6 +121,7 @@ error[D002]: Unknown flag: --invalid
 - **S058**: For-loop range bound must be integer type
 - **S059**: Table field must be value-compatible (no slices, structs, or Arena)
 - **S060**: table_len/table_get/table_insert requires a table type
+- **S061**: modulo operator '%' is not supported on floating-point types
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 

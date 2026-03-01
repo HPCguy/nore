@@ -6,6 +6,8 @@ func main(): void = {
     assert 10 - 4 == 6
     assert 3 * 7 == 21
     assert 20 / 4 == 5
+    assert 10 % 3 == 1
+    assert 7 % 7 == 0
 
     // Typed arithmetic
     val a: i64 = 10
@@ -14,11 +16,14 @@ func main(): void = {
     assert a - b == 7
     assert a * b == 30
     assert a / b == 3
+    assert a % b == 1
 
     // Negative numbers
     val neg: i64 = -5
     assert neg + 10 == 5
     assert neg * -2 == 10
+    assert neg % 3 == -2
+    assert -7 % 3 == -1
 
     // Float arithmetic
     val x: f64 = 3.0

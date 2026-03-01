@@ -867,8 +867,9 @@ val y: i64 = {
 - `-` Subtraction (binary and unary negation)
 - `*` Multiplication
 - `/` Division
+- `%` Modulo (integer types only, not supported on `f64`)
 
-Works with all numeric types (i64, i32, u8, u32, f64) and comptime types. Both operands must be the same concrete type (after coercion). Negation (`-x`) is not allowed on unsigned types (`u8`, `u32`).
+Works with all numeric types (i64, i32, u8, u32, f64) and comptime types. Both operands must be the same concrete type (after coercion). Negation (`-x`) is not allowed on unsigned types (`u8`, `u32`). Modulo follows C truncation semantics (result sign matches dividend).
 
 **Comparison** (numeric operands, bool result):
 - `==` Equal
