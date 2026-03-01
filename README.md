@@ -61,6 +61,7 @@ func main(): void = {
 - [docs/data-oriented-design.md](docs/data-oriented-design.md) — Type model, tables, arenas, and memory safety approach
 - [docs/arena-safety.md](docs/arena-safety.md) — Escape analysis, slice lifetime tracking, and safety guarantees
 - [docs/error-codes.md](docs/error-codes.md) — All compiler error codes and error handling internals
+- [docs/stdlib-roadmap.md](docs/stdlib-roadmap.md) — Standard library design, prerequisites, and implementation sequence
 
 ## Architecture
 
