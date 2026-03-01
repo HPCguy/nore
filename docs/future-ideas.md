@@ -44,3 +44,9 @@ Current arenas are append-only with bulk reset. This works well for batch worklo
 Scheduling languages (Halide, Exo) separate *what* you compute from *how* you traverse data. Nore focuses on data layout; scheduling focuses on iteration strategy. Could table iteration support tiling, vectorization hints, or cache-blocking annotations?
 
 **Source:** r/ProgrammingLanguages pointer to Halide, Exo, and the Exo 2 paper.
+
+## Column Unions (overlaid storage)
+
+Same-sized columns could share storage and be reinterpreted based on context, similar to C#'s `StructLayout.Explicit` or C unions. Useful for variant entities — e.g., enemies and projectiles sharing a table but reinterpreting fields based on a type tag.
+
+**Source:** r/ProgrammingLanguages feedback from game dev perspective.
