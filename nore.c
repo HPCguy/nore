@@ -153,10 +153,12 @@ typedef enum {
     ERR_S060_NOT_TABLE_TYPE        = ERR_GROUP_SEMANTIC + 60,
     ERR_S061_MODULO_ON_FLOAT       = ERR_GROUP_SEMANTIC + 61,
     ERR_S062_BITWISE_ON_FLOAT      = ERR_GROUP_SEMANTIC + 62,
+    ERR_S063_INVALID_CAST          = ERR_GROUP_SEMANTIC + 63,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
     ERR_R002_INDEX_OUT_OF_BOUNDS   = ERR_GROUP_RUNTIME + 2,
+    ERR_R003_CAST_OVERFLOW         = ERR_GROUP_RUNTIME + 3,
 } ErrorCode;
 
 static const char *error_code_str(ErrorCode code) {
@@ -1153,6 +1155,7 @@ typedef struct {
 
 static SliceTypeTable *g_slice_table = NULL;
 static bool g_has_arena = false;
+static bool g_has_casts = false;
 
 /* Deferred arena escape checks — processed after all functions are typechecked */
 typedef struct {
@@ -1412,6 +1415,7 @@ typedef enum {
     AST_TABLE_LEN,
     AST_TABLE_GET,
     AST_TABLE_INSERT,
+    AST_TYPE_CAST,
     AST_PROGRAM
 } AstKind;
 
@@ -1606,6 +1610,7 @@ typedef struct Ast {
         struct { struct Ast *table; } table_len;
         struct { struct Ast *table; struct Ast *index; } table_get;
         struct { struct Ast *table; struct Ast *row; } table_insert;
+        struct { Type target_type; struct Ast *operand; } type_cast;
 
         struct {
             struct Ast **statements;
@@ -2055,6 +2060,16 @@ static Ast *ast_make_table_insert(Ast *table, Ast *row, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_type_cast(Type target, Ast *operand, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_TYPE_CAST;
+    node->loc = loc;
+    node->as.type_cast.target_type = target;
+    node->as.type_cast.operand = operand;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2184,6 +2199,9 @@ static void ast_free(Ast *node) {
         case AST_TABLE_INSERT:
             ast_free(node->as.table_insert.table);
             ast_free(node->as.table_insert.row);
+            break;
+        case AST_TYPE_CAST:
+            ast_free(node->as.type_cast.operand);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -2410,7 +2428,41 @@ static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error,
 static Ast *parser_parse_block(Parser *parser);
 static Ast *parser_parse_if(Parser *parser);
 
+static Type token_to_type(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_I64: return TYPE_I64;
+        case TOKEN_I32: return TYPE_I32;
+        case TOKEN_U8:  return TYPE_U8;
+        case TOKEN_U32: return TYPE_U32;
+        case TOKEN_F64: return TYPE_F64;
+        default:        return TYPE_UNKNOWN;
+    }
+}
+
 static Ast *parser_parse_primary(Parser *parser) {
+    /* Handle type casts: u8(expr), i32(expr), etc. */
+    if (parser_match(parser, TOKEN_I64) || parser_match(parser, TOKEN_I32) ||
+        parser_match(parser, TOKEN_U8)  || parser_match(parser, TOKEN_U32) ||
+        parser_match(parser, TOKEN_F64)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        Type target = token_to_type(parser->previous.kind);
+        if (!parser_match(parser, TOKEN_LPAREN)) {
+            diagnostic(ERR_P001_EXPECTED_EXPRESSION, loc.line, loc.column,
+                       "Expected '(' after type name in cast expression");
+            return NULL;
+        }
+        Ast *operand = parser_parse_expression(parser);
+        if (!operand) return NULL;
+        if (!parser_match(parser, TOKEN_RPAREN)) {
+            diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                       parser->current.column,
+                       "Expected ')' after cast expression");
+            ast_free(operand);
+            return NULL;
+        }
+        return ast_make_type_cast(target, operand, loc);
+    }
+
     /* Handle unary minus */
     if (parser_match(parser, TOKEN_MINUS)) {
         SourceLoc loc = token_loc(&parser->previous);
@@ -4112,6 +4164,11 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.table_insert.row, indent + 2);
             break;
 
+        case AST_TYPE_CAST:
+            printf("CAST(%s)\n", type_name(node->as.type_cast.target_type));
+            parser_print_ast_step(node->as.type_cast.operand, indent + 1);
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -4731,6 +4788,7 @@ static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
     }
 }
 
+static const char *check_integer_range(long value, Type target);
 static void typecheck_comptime_range(Ast *init, Type target, Scope *scope);
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table);
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
@@ -5521,6 +5579,41 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_VOID;
         }
 
+        case AST_TYPE_CAST: {
+            Type operand_type = typecheck_expression(node->as.type_cast.operand, scope, func_table);
+            Type target = node->as.type_cast.target_type;
+
+            if (!type_is_numeric(operand_type)) {
+                diagnostic(ERR_S063_INVALID_CAST, node->loc.line, node->loc.column,
+                           "Cannot cast %s to %s",
+                           type_name(operand_type), type_name(target));
+                node->expr_type = target;
+                return target;
+            }
+
+            /* Comptime int → integer: compile-time range check */
+            if (operand_type == TYPE_COMPTIME_INT && type_is_integer(target)) {
+                typecheck_comptime_range(node->as.type_cast.operand, target, scope);
+            }
+
+            /* Comptime float → integer: compile-time truncation + range check */
+            if (operand_type == TYPE_COMPTIME_FLOAT && type_is_integer(target)) {
+                Ast *op = node->as.type_cast.operand;
+                if (is_comptime_constant(op, scope)) {
+                    double fval = get_comptime_float(op, scope);
+                    const char *tname = check_integer_range((long)fval, target);
+                    if (tname) {
+                        diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, op->loc.line, op->loc.column,
+                                   "Value %g out of range for %s", fval, tname);
+                    }
+                }
+            }
+
+            g_has_casts = true;
+            node->expr_type = target;
+            return target;
+        }
+
         default:
             break;
     }
@@ -5529,24 +5622,30 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
     return TYPE_I64;
 }
 
+/* Check if a long value fits in the target type's range.
+ * Returns range description string on failure, NULL on success. */
+static const char *check_integer_range(long value, Type target) {
+    switch (target) {
+        case TYPE_U8:
+            if (value < 0 || value > UINT8_MAX) return "u8 (0..255)";
+            break;
+        case TYPE_I32:
+            if (value < INT32_MIN || value > INT32_MAX) return "i32 (-2147483648..2147483647)";
+            break;
+        case TYPE_U32:
+            if (value < 0 || value > (long)UINT32_MAX) return "u32 (0..4294967295)";
+            break;
+        default:
+            break;
+    }
+    return NULL;
+}
+
 /* Check if a comptime_int value fits in the target type's range */
 static void typecheck_comptime_range(Ast *init, Type target, Scope *scope) {
     if (!is_comptime_constant(init, scope)) return;
     long value = get_comptime_int(init, scope);
-    const char *tname = NULL;
-    switch (target) {
-        case TYPE_U8:
-            if (value < 0 || value > UINT8_MAX) tname = "u8 (0..255)";
-            break;
-        case TYPE_I32:
-            if (value < INT32_MIN || value > INT32_MAX) tname = "i32 (-2147483648..2147483647)";
-            break;
-        case TYPE_U32:
-            if (value < 0 || value > UINT32_MAX) tname = "u32 (0..4294967295)";
-            break;
-        default:
-            return;
-    }
+    const char *tname = check_integer_range(value, target);
     if (tname) {
         diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, init->loc.line, init->loc.column,
                    "Value %ld out of range for %s", value, tname);
@@ -6892,6 +6991,113 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
         }
 
+        case AST_TYPE_CAST: {
+            Type from = node->as.type_cast.operand->expr_type;
+            Type to = node->as.type_cast.target_type;
+            bool from_is_comptime = type_is_comptime(from);
+            bool from_is_f64 = (from == TYPE_F64 || from == TYPE_COMPTIME_FLOAT);
+
+            /* Identity or comptime → target: just emit the operand (possibly with a plain cast) */
+            if (from == to || (from_is_comptime && !from_is_f64)) {
+                /* comptime_int → integer target: value already range-checked at compile time */
+                if (to == TYPE_F64) {
+                    fprintf(out, "(double)(");
+                    codegen_emit_expression(out, node->as.type_cast.operand);
+                    fprintf(out, ")");
+                } else {
+                    codegen_emit_expression(out, node->as.type_cast.operand);
+                }
+                break;
+            }
+
+            /* comptime_float → f64: identity */
+            if (from == TYPE_COMPTIME_FLOAT && to == TYPE_F64) {
+                codegen_emit_expression(out, node->as.type_cast.operand);
+                break;
+            }
+
+            /* comptime_float → integer: compile-time truncation, emit as integer literal */
+            if (from_is_comptime && from_is_f64 && type_is_integer(to)) {
+                Ast *op = node->as.type_cast.operand;
+                /* Safe: already range-checked in typecheck */
+                fprintf(out, "(%s)(",  codegen_type_to_c(to));
+                codegen_emit_expression(out, op);
+                fprintf(out, ")");
+                break;
+            }
+
+            /* f64 → integer: use checked cast functions */
+            if (from_is_f64 && type_is_integer(to)) {
+                const char *fn = NULL;
+                switch (to) {
+                    case TYPE_I64: fn = "ni_cast_i64_f64"; break;
+                    case TYPE_I32: fn = "ni_cast_i32_f64"; break;
+                    case TYPE_U8:  fn = "ni_cast_u8_f64"; break;
+                    case TYPE_U32: fn = "ni_cast_u32_f64"; break;
+                    default: break;
+                }
+                if (fn) {
+                    fprintf(out, "%s(", fn);
+                    codegen_emit_expression(out, node->as.type_cast.operand);
+                    fprintf(out, ", \"%s\", \"%s\", %zuUL, %zuUL)",
+                            type_name(from), g_source_file,
+                            node->loc.line, node->loc.column);
+                }
+                break;
+            }
+
+            /* integer → f64: always safe, plain C cast */
+            if (to == TYPE_F64) {
+                fprintf(out, "(double)(");
+                codegen_emit_expression(out, node->as.type_cast.operand);
+                fprintf(out, ")");
+                break;
+            }
+
+            /* integer → integer: check if narrowing/sign-change needed */
+            bool needs_check = false;
+            switch (to) {
+                case TYPE_U8:
+                    needs_check = (from != TYPE_U8);
+                    break;
+                case TYPE_I32:
+                    needs_check = (from == TYPE_I64 || from == TYPE_U32);
+                    break;
+                case TYPE_U32:
+                    needs_check = (from == TYPE_I64 || from == TYPE_I32);
+                    break;
+                case TYPE_I64:
+                    /* u8 → i64, i32 → i64: safe; u32 → i64: safe (fits) */
+                    needs_check = false;
+                    break;
+                default:
+                    break;
+            }
+
+            if (needs_check) {
+                const char *fn = NULL;
+                switch (to) {
+                    case TYPE_U8:  fn = "ni_cast_u8"; break;
+                    case TYPE_I32: fn = "ni_cast_i32"; break;
+                    case TYPE_U32: fn = "ni_cast_u32"; break;
+                    default: break;
+                }
+                if (fn) {
+                    fprintf(out, "%s(", fn);
+                    codegen_emit_expression(out, node->as.type_cast.operand);
+                    fprintf(out, ", \"%s\", \"%s\", %zuUL, %zuUL)",
+                            type_name(from), g_source_file,
+                            node->loc.line, node->loc.column);
+                }
+            } else {
+                /* Widening/safe cast: plain C cast */
+                fprintf(out, "(%s)(", codegen_type_to_c(to));
+                codegen_emit_expression(out, node->as.type_cast.operand);
+                fprintf(out, ")");
+            }
+            break;
+        }
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -7566,6 +7772,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
+    if (g_has_casts) fprintf(out, "#include <limits.h>\n");
     if (g_has_arena) fprintf(out, "#include <string.h>\n");
     fprintf(out, "\n");
 
@@ -7584,6 +7791,49 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "#define NI_BOUNDS_CHECK(idx, size, file, line, col) \\\n");
         fprintf(out, "    ((uint64_t)(idx) >= (uint64_t)(size) \\\n");
         fprintf(out, "     ? (ni_bounds_fail((int64_t)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
+    }
+
+    /* Emit cast runtime if any type casts exist */
+    if (g_has_casts) {
+        fprintf(out, "static void ni_cast_fail(const char *from, const char *to,\n");
+        fprintf(out, "                         const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    fprintf(stderr, \"%%s:%%lu:%%lu: error[R003]: Cast overflow: %%s to %%s\\n\",\n");
+        fprintf(out, "            file, line, col, from, to);\n");
+        fprintf(out, "    exit(2);\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static uint8_t ni_cast_u8(int64_t v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v < 0 || v > 255) ni_cast_fail(from, \"u8\", file, line, col);\n");
+        fprintf(out, "    return (uint8_t)v;\n}\n");
+        fprintf(out, "static int32_t ni_cast_i32(int64_t v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v < INT32_MIN || v > INT32_MAX) ni_cast_fail(from, \"i32\", file, line, col);\n");
+        fprintf(out, "    return (int32_t)v;\n}\n");
+        fprintf(out, "static uint32_t ni_cast_u32(int64_t v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v < 0 || v > (int64_t)UINT32_MAX) ni_cast_fail(from, \"u32\", file, line, col);\n");
+        fprintf(out, "    return (uint32_t)v;\n}\n");
+        fprintf(out, "static int64_t ni_cast_i64_f64(double v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v != v || v < -9.2233720368547758e+18 || v > 9.2233720368547758e+18)\n");
+        fprintf(out, "        ni_cast_fail(from, \"i64\", file, line, col);\n");
+        fprintf(out, "    return (int64_t)v;\n}\n");
+        fprintf(out, "static int32_t ni_cast_i32_f64(double v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v != v || v < -2147483648.0 || v > 2147483647.0)\n");
+        fprintf(out, "        ni_cast_fail(from, \"i32\", file, line, col);\n");
+        fprintf(out, "    return (int32_t)v;\n}\n");
+        fprintf(out, "static uint8_t ni_cast_u8_f64(double v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v != v || v < 0.0 || v > 255.0)\n");
+        fprintf(out, "        ni_cast_fail(from, \"u8\", file, line, col);\n");
+        fprintf(out, "    return (uint8_t)v;\n}\n");
+        fprintf(out, "static uint32_t ni_cast_u32_f64(double v, const char *from,\n");
+        fprintf(out, "        const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    if (v != v || v < 0.0 || v > 4294967295.0)\n");
+        fprintf(out, "        ni_cast_fail(from, \"u32\", file, line, col);\n");
+        fprintf(out, "    return (uint32_t)v;\n}\n");
+        fprintf(out, "\n");
     }
 
     /* Emit Arena runtime if arena is used */

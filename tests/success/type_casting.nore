@@ -1,0 +1,135 @@
+// Test type casting: u8(x), i32(x), i64(x), u32(x), f64(x)
+
+func main(): void = {
+    // === Integer widening (always safe) ===
+    val a_u8: u8 = 200
+    assert i64(a_u8) == 200
+    assert i32(a_u8) == 200
+    assert u32(a_u8) == 200
+
+    val b_i32: i32 = -1000
+    assert i64(b_i32) == -1000
+
+    val c_u32: u32 = 3000000000
+    assert i64(c_u32) == 3000000000
+
+    // === Integer narrowing (safe values) ===
+    mut d: i64 = 100
+    assert u8(d) == 100
+    assert i32(d) == 100
+    assert u32(d) == 100
+
+    mut e: i64 = 255
+    assert u8(e) == 255
+
+    mut f: i64 = 0
+    assert u8(f) == 0
+
+    // === Sign conversion ===
+    mut g: i64 = 50
+    assert u32(g) == 50
+    assert u8(g) == 50
+
+    mut h: u32 = 1000
+    assert i32(h) == 1000
+    assert i64(h) == 1000
+
+    val i_i32: i32 = 100
+    assert u32(i_i32) == 100
+    assert u8(i_i32) == 100
+
+    // === Integer to float (always safe) ===
+    mut j: i64 = 42
+    assert f64(j) == 42.0
+
+    val k_u8: u8 = 255
+    assert f64(k_u8) == 255.0
+
+    val l_i32: i32 = -500
+    assert f64(l_i32) == -500.0
+
+    val m_u32: u32 = 1000000
+    assert f64(m_u32) == 1000000.0
+
+    // === Float to integer (safe values) ===
+    mut n: f64 = 3.7
+    assert i64(n) == 3
+
+    mut o: f64 = -2.9
+    assert i64(o) == -2
+
+    mut p: f64 = 100.0
+    assert u8(p) == 100
+    assert i32(p) == 100
+    assert u32(p) == 100
+
+    mut q: f64 = 0.0
+    assert i64(q) == 0
+    assert u8(q) == 0
+
+    // === Identity casts (no-op) ===
+    mut r: i64 = 999
+    assert i64(r) == 999
+
+    mut s: u8 = 42
+    assert u8(s) == 42
+
+    mut t: f64 = 3.14
+    assert f64(t) == 3.14
+
+    mut u_val: i32 = -100
+    assert i32(u_val) == -100
+
+    mut v_val: u32 = 500
+    assert u32(v_val) == 500
+
+    // === Comptime casts (compile-time checked) ===
+    val w: u8 = u8(65)
+    assert w == 65
+
+    val x: i32 = i32(1000)
+    assert x == 1000
+
+    val y: u32 = u32(42)
+    assert y == 42
+
+    val z: f64 = f64(7)
+    assert z == 7.0
+
+    val aa: i64 = i64(100)
+    assert aa == 100
+
+    // === Comptime float to integer ===
+    val bb: i64 = i64(3.14)
+    assert bb == 3
+
+    val cc: i32 = i32(99.9)
+    assert cc == 99
+
+    val dd: u8 = u8(0.5)
+    assert dd == 0
+
+    // === Cast in expressions ===
+    val ee: u8 = 10
+    val ff: u8 = 20
+    assert i64(ee) + i64(ff) == 30
+
+    mut gg: i64 = 5
+    mut hh: i64 = 3
+    assert u8(gg) + u8(hh) == 8
+
+    // === Cast with char literals ===
+    assert i64('A') == 65
+    assert u8('Z') == 90
+    assert i32('\n') == 10
+
+    // === Nested / chained casts ===
+    mut ii: i64 = 42
+    assert i64(u8(ii)) == 42
+    assert f64(i32(ii)) == 42.0
+
+    // === Cast return value used in comparison ===
+    mut jj: u32 = 200
+    assert u8(jj) == 200
+    assert i64(jj) > 100
+}

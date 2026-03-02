@@ -1,0 +1,5 @@
+// error[S063]: Cannot cast non-numeric type
+func main(): void = {
+    val x: bool = true
+    val y: u8 = u8(x)
+}

@@ -114,6 +114,51 @@ val z: f64 = x + 5     // ERROR: result is i64, cannot assign to f64
 val w: f64 = x + 5.0   // ERROR: cannot mix i64 and f64
 ```
 
+### Type Casting
+
+Explicit conversion between numeric types using function-call syntax:
+
+```nore
+val x: i64 = 42
+val y: u8 = u8(x)          // i64 → u8 (runtime bounds check)
+val z: f64 = f64(x)        // i64 → f64 (always safe)
+val w: i64 = i64(3.14)     // comptime_float → i64 (compile-time truncation)
+```
+
+**Supported casts**: `u8(expr)`, `i32(expr)`, `u32(expr)`, `i64(expr)`, `f64(expr)`
+
+**Safety rules**:
+- **Narrowing / sign change**: Runtime bounds check — panics with error R003 if value is out of range
+- **Widening** (e.g., `u8` → `i64`, any integer → `f64`): Always safe, no check needed
+- **Identity** (same type → same type): No-op
+- **Float → integer**: Runtime check for NaN, Inf, and range; value is truncated toward zero
+- **Comptime values**: Range-checked at compile time (error S050 if out of range)
+- **Non-numeric types**: Error S063 (e.g., `u8(true)` is not allowed)
+
+**Examples**:
+```nore
+// Integer widening (safe)
+val a: u8 = 200
+val b: i64 = i64(a)         // OK: 200
+
+// Integer narrowing (checked)
+mut c: i64 = 100
+val d: u8 = u8(c)           // OK: 100 fits in u8
+// u8(300_as_i64) → runtime panic R003
+
+// Float conversion
+mut e: f64 = 3.7
+val f: i64 = i64(e)         // OK: truncated to 3
+
+// Cast in expressions
+val g: u8 = 10
+val h: u8 = 20
+val sum: i64 = i64(g) + i64(h)   // 30
+
+// Comptime casts
+val k: u8 = u8(65)          // compile-time checked
+```
+
 ### Constant Folding
 
 Expressions involving only literals or comptime variables are evaluated at compile time:
@@ -1038,7 +1083,6 @@ Note: `"` delimits string literals but is consumed by the lexer during scanning,
 ## Future Extensions
 
 **Not yet implemented**:
-- Character literals
 - Multiline strings
 - Additional types (`f32`)
 - Module system

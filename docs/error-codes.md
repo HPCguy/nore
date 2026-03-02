@@ -125,8 +125,10 @@ error[D002]: Unknown flag: --invalid
 - **S060**: table_len/table_get/table_insert requires a table type
 - **S061**: modulo operator '%' is not supported on floating-point types
 - **S062**: bitwise operators are not supported on floating-point types
+- **S063**: Cannot cast non-numeric type (only numeric types can be cast)
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
+- **R003**: Cast overflow (value out of range for target type at runtime)
 
 ## Error Functions
 
