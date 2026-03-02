@@ -48,9 +48,19 @@ func main(): void = {
 
 ## What Makes Nore Different
 
-**Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access — the kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping.
+**Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access — the kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping. For example, `table Particles { pos: Vec2, life: i64 }` generates:
 
-**Two kinds of types, one clear rule.** `value` types are plain data: they live on the stack, copy freely, and compose into arrays and tables. `struct` types own resources: they hold slices of arena-allocated memory, pass by reference only, and cannot be copied. No hidden allocations, no implicit clones.
+```
+Particles (struct)          ParticlesRow (value)
+┌─────────────────┐         ┌─────────────────┐
+│ pos:  []Vec2    │         │ pos:  Vec2       │
+│ life: []i64     │         │ life: i64        │
+│ _len: i64       │         └─────────────────┘
+└─────────────────┘         copyable, embeddable
+ref-only, owns slices
+```
+
+**Two kinds of types, one clear rule.** `value` types are plain data: they live on the stack, copy freely, and compose into arrays and tables. `struct` types hold slices — pointers into arena memory — so copying one would create aliased pointers to the same allocation. That's why structs pass by reference only and cannot be copied. The distinction isn't about data shape, it's about whether a type owns heap resources.
 
 **Arenas replace malloc/free.** All heap memory comes from arenas. The compiler tracks which slices come from which arena and rejects programs where a slice could outlive its arena — at compile time, with no garbage collector and no runtime cost.
 
