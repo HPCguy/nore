@@ -50,3 +50,38 @@ Scheduling languages (Halide, Exo) separate *what* you compute from *how* you tr
 Same-sized columns could share storage and be reinterpreted based on context, similar to C#'s `StructLayout.Explicit` or C unions. Useful for variant entities — e.g., enemies and projectiles sharing a table but reinterpreting fields based on a type tag.
 
 **Source:** r/ProgrammingLanguages feedback from game dev perspective.
+
+## Index Sets and Table Views
+
+Today's tables are flat: N rows, every column has exactly N entries. There's no way to express subsets, partitions, or hierarchical groupings. An index set model could address this.
+
+**Core idea:** A view is a set of indices over the same underlying columns. Multiple views share the same data — no duplication.
+
+```
+// 1000 particle slots allocated
+p: Particles([0, 1000))     // full index set
+
+// Only some are active — a subset view
+p.active()                   // starts empty, grows with spawns
+
+// "Deleting" = removing from the active set, no data movement
+// Iterating p.active only touches live particles
+```
+
+**What this enables:**
+
+- **No insert/shift cost** — "deleting" means removing an index, not moving data
+- **Multiple views, same data** — `p.active`, `p.dying`, `p.onscreen` all point to different subsets of the same columns
+- **Hierarchical subsets** — a view can have sub-views (`p.active.nearby`), addressing the flat-cardinality limitation
+- **Partitioning for parallelism** — index sets can be split across threads; each thread gets a chunk of indices over the same columns, no aliasing
+
+**Design tension for Nore:** The full model (auto-parallelism, compiler-managed thread safety, automatic reduction in loops) is powerful but requires significant compiler machinery — index set management, lock-free mutations, thread-local accumulators. This conflicts with Nore's "explicit, no magic" philosophy.
+
+A simpler version might fit Nore better: support subset views as explicit index sets, but let the developer manage threading. This addresses the "flat table" limitation without hidden concurrency.
+
+**Open questions:**
+- Should views be a table feature or a more general language concept?
+- How do views interact with arena lifetime tracking?
+- Is the simpler "explicit index sets, no auto-parallelism" version enough?
+
+**Source:** r/ProgrammingLanguages detailed feedback with pseudo-code example showing View-based model with index sets, nested views, and implicit parallelism.
