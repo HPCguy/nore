@@ -898,6 +898,35 @@ exit(1)      // failure
 - Returns `void` (never returns)
 - Used as a bare statement
 
+**print(ref data)** — print bytes to stdout:
+```nore
+print(ref "Hello, ")
+val msg: str = "world"
+print(ref msg)
+```
+- `data` must be `[]u8` (slice), `str`, or `[u8; N]` (array), passed with `ref`
+- Returns `void`
+- Used as a bare statement
+
+**println(ref data)** — print bytes to stdout with a trailing newline:
+```nore
+println(ref "Hello, World!")
+```
+- Same as `print` but appends `\n` after the data
+- `data` must be `[]u8`, `str`, or `[u8; N]`, passed with `ref`
+- Returns `void`
+- Used as a bare statement
+
+**print_i64(value)** — print an integer as decimal to stdout:
+```nore
+print_i64(42)
+print_i64(-123)
+print_i64(0)
+```
+- `value` must be an integer type (`i64`, `i32`, `u8`, `u32`, or `comptime_int`)
+- Returns `void`
+- Used as a bare statement
+
 **Type errors**:
 - Non-integer fd: error S064
 - Non-byte-buffer data/buf/path: error S065
@@ -1121,6 +1150,9 @@ func main(): void = {
 - `fd_open(ref path, flags)` - Open a file, returns `i32` file descriptor
 - `fd_close(fd)` - Close a file descriptor
 - `exit(code)` - Terminate the process
+- `print(ref data)` - Print bytes to stdout
+- `println(ref data)` - Print bytes + newline to stdout
+- `print_i64(value)` - Print integer as decimal to stdout
 
 ### Predefined Constants
 - `STDIN` - Standard input (0)

@@ -1,0 +1,5 @@
+// error[S065]: println() data must be []u8
+func main(): void = {
+    val x: i64 = 10
+    println(ref x)
+}

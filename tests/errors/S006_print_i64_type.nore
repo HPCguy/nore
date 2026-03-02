@@ -1,0 +1,5 @@
+// error[S006]: print_i64() value must be integer
+func main(): void = {
+    val msg: str = "hi"
+    print_i64(msg)
+}

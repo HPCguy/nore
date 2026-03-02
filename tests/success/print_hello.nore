@@ -1,0 +1,35 @@
+// Test print, println, and print_i64 built-ins
+
+func main(): void = {
+    // print a string literal
+    print(ref "Hello, ")
+
+    // println adds a newline
+    println(ref "World!")
+
+    // print_i64 prints integers
+    print_i64(42)
+    print(ref "\n")
+
+    // negative numbers
+    print_i64(-123)
+    print(ref "\n")
+
+    // zero
+    print_i64(0)
+    print(ref "\n")
+
+    // print from a str variable
+    val msg: str = "test slice"
+    println(ref msg)
+
+    // print from an array variable
+    val arr: [u8; 3] = ['a', 'b', 'c']
+    print(ref arr)
+    print(ref "\n")
+
+    // print_i64 with different integer types
+    val x: i32 = 99
+    print_i64(i64(x))
+    print(ref "\n")
+}
