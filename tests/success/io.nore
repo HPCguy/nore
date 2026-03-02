@@ -1,0 +1,43 @@
+// Test I/O built-in functions
+
+func main(): void = {
+    // Predefined constants
+    assert STDIN == 0
+    assert STDOUT == 1
+    assert STDERR == 2
+
+    // fd_write returns bytes written
+    val n: i64 = fd_write(STDOUT, ref "hello")
+    assert n == 5
+
+    // fd_write with a byte array
+    val data: [u8; 3] = [65, 66, 67]
+    val n2: i64 = fd_write(STDOUT, ref data)
+    assert n2 == 3
+
+    // File round-trip: write then read back
+    // O_WRONLY | O_CREAT | O_TRUNC = 577 on macOS/Linux
+    val wfd: i32 = fd_open(ref "/tmp/nore_io_test.txt", 577)
+    assert wfd >= 0
+    val written: i64 = fd_write(wfd, ref "Test123")
+    assert written == 7
+    fd_close(wfd)
+
+    // Read it back
+    val rfd: i32 = fd_open(ref "/tmp/nore_io_test.txt", 0)
+    assert rfd >= 0
+    mut buf: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val nread: i64 = fd_read(rfd, mut ref buf)
+    assert nread == 7
+    assert buf[0] == 84
+    assert buf[1] == 101
+    assert buf[2] == 115
+    assert buf[3] == 116
+    assert buf[4] == 49
+    assert buf[5] == 50
+    assert buf[6] == 51
+    fd_close(rfd)
+
+    // exit(0) at the end
+    exit(0)
+}

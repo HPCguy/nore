@@ -126,6 +126,9 @@ error[D002]: Unknown flag: --invalid
 - **S061**: modulo operator '%' is not supported on floating-point types
 - **S062**: bitwise operators are not supported on floating-point types
 - **S063**: Cannot cast non-numeric type (only numeric types can be cast)
+- **S064**: I/O built-in fd argument must be integer type
+- **S065**: I/O built-in data/buffer/path argument must be `[]u8` or `[u8; N]`
+- **S066**: `fd_read()` buffer must be mutable
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

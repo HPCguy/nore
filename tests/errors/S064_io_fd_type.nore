@@ -1,0 +1,4 @@
+// error[S064]: fd_write() fd must be integer
+func main(): void = {
+    fd_write(true, ref "data")
+}

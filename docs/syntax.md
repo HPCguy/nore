@@ -831,6 +831,78 @@ assert length(ref msg) == 5
 - String literals cannot be mutable (`mut` binding is error S054)
 - Multiline strings are not yet supported
 
+### Predefined Constants
+
+Three constants are predefined in every program for use with I/O built-ins:
+
+| Name | Type | Value |
+|------|------|-------|
+| `STDIN` | comptime_int | 0 |
+| `STDOUT` | comptime_int | 1 |
+| `STDERR` | comptime_int | 2 |
+
+These are inlined at use sites (no C variable emitted).
+
+### I/O Built-in Functions
+
+Low-level I/O built-ins provide the thinnest possible bridge to POSIX syscalls. These are the only way to interact with the operating system.
+
+**fd_write(fd, ref data)** — write bytes to a file descriptor:
+```nore
+val n: i64 = fd_write(STDOUT, ref "Hello, World!\n")
+assert n == 14
+
+val data: [u8; 3] = [65, 66, 67]
+fd_write(STDOUT, ref data)    // writes "ABC"
+```
+- `fd` must be an integer type (file descriptor)
+- `data` must be `[]u8` (slice) or `[u8; N]` (array), passed with `ref`
+- Returns `i64`: bytes written (negative on error)
+- Can be used as a bare statement or expression
+
+**fd_read(fd, mut ref buf)** — read bytes from a file descriptor:
+```nore
+mut buf: [u8; 256] = [0, 0, ...]
+val n: i64 = fd_read(STDIN, mut ref buf)
+```
+- `fd` must be an integer type (file descriptor)
+- `buf` must be `[]u8` or `[u8; N]`, passed with `mut ref` (buffer must be mutable)
+- Returns `i64`: bytes read (0 = EOF, negative on error)
+- Can be used as a bare statement or expression
+
+**fd_open(ref path, flags)** — open a file:
+```nore
+val fd: i32 = fd_open(ref "file.txt", 0)    // O_RDONLY
+assert fd >= 0
+```
+- `path` must be `[]u8` or string literal, passed with `ref`
+- `flags` must be an integer type (POSIX open flags, e.g., 0 = O_RDONLY, 577 = O_WRONLY|O_CREAT|O_TRUNC)
+- Returns `i32`: file descriptor (negative on error)
+- Path is null-terminated internally (max 4095 bytes)
+- File permissions default to 0644
+
+**fd_close(fd)** — close a file descriptor:
+```nore
+fd_close(fd)
+```
+- `fd` must be an integer type
+- Returns `void`
+- Used as a bare statement
+
+**exit(code)** — terminate the process:
+```nore
+exit(0)      // success
+exit(1)      // failure
+```
+- `code` must be an integer type
+- Returns `void` (never returns)
+- Used as a bare statement
+
+**Type errors**:
+- Non-integer fd: error S064
+- Non-byte-buffer data/buf/path: error S065
+- Immutable buffer for fd_read: error S066
+
 ### Control Flow
 
 **Conditional Statements**:
@@ -1044,6 +1116,16 @@ func main(): void = {
 - `table_len(ref table)` - Get the current row count of a table
 - `table_get(ref table, index)` - Get a row value at the given index (bounds checked)
 - `table_insert(mut ref table, row)` - Insert a row into the table
+- `fd_write(fd, ref data)` - Write bytes to a file descriptor, returns `i64` bytes written
+- `fd_read(fd, mut ref buf)` - Read bytes from a file descriptor, returns `i64` bytes read
+- `fd_open(ref path, flags)` - Open a file, returns `i32` file descriptor
+- `fd_close(fd)` - Close a file descriptor
+- `exit(code)` - Terminate the process
+
+### Predefined Constants
+- `STDIN` - Standard input (0)
+- `STDOUT` - Standard output (1)
+- `STDERR` - Standard error (2)
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)

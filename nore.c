@@ -154,6 +154,9 @@ typedef enum {
     ERR_S061_MODULO_ON_FLOAT       = ERR_GROUP_SEMANTIC + 61,
     ERR_S062_BITWISE_ON_FLOAT      = ERR_GROUP_SEMANTIC + 62,
     ERR_S063_INVALID_CAST          = ERR_GROUP_SEMANTIC + 63,
+    ERR_S064_IO_FD_TYPE            = ERR_GROUP_SEMANTIC + 64,
+    ERR_S065_IO_DATA_TYPE          = ERR_GROUP_SEMANTIC + 65,
+    ERR_S066_IO_BUF_IMMUTABLE      = ERR_GROUP_SEMANTIC + 66,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -1156,6 +1159,7 @@ typedef struct {
 static SliceTypeTable *g_slice_table = NULL;
 static bool g_has_arena = false;
 static bool g_has_casts = false;
+static bool g_has_io = false;
 
 /* Deferred arena escape checks — processed after all functions are typechecked */
 typedef struct {
@@ -1317,6 +1321,16 @@ static bool type_is_str(Type type) {
     return type_is_slice(type) && type_element_type(type) == TYPE_U8;
 }
 
+/* Check if a type is a byte buffer: []u8 slice or [u8; N] array */
+static bool type_is_byte_buffer(Type type) {
+    if (type_is_str(type)) return true;
+    if (type_is_array(type)) {
+        ArrayTypeEntry *ae = array_table_get(type);
+        return ae && ae->element_type == TYPE_U8;
+    }
+    return false;
+}
+
 static bool type_can_coerce(Type from, Type to) {
     if (from == to) return true;
     if (from == TYPE_COMPTIME_INT && type_is_numeric(to) && !type_is_comptime(to)) return true;
@@ -1416,6 +1430,11 @@ typedef enum {
     AST_TABLE_GET,
     AST_TABLE_INSERT,
     AST_TYPE_CAST,
+    AST_FD_WRITE,
+    AST_FD_READ,
+    AST_FD_OPEN,
+    AST_FD_CLOSE,
+    AST_EXIT,
     AST_PROGRAM
 } AstKind;
 
@@ -1611,6 +1630,11 @@ typedef struct Ast {
         struct { struct Ast *table; struct Ast *index; } table_get;
         struct { struct Ast *table; struct Ast *row; } table_insert;
         struct { Type target_type; struct Ast *operand; } type_cast;
+        struct { struct Ast *fd; struct Ast *data; } fd_write;
+        struct { struct Ast *fd; struct Ast *buf; } fd_read;
+        struct { struct Ast *path; struct Ast *flags; } fd_open;
+        struct { struct Ast *fd; } fd_close;
+        struct { struct Ast *code; } exit_call;
 
         struct {
             struct Ast **statements;
@@ -2070,6 +2094,54 @@ static Ast *ast_make_type_cast(Type target, Ast *operand, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_fd_write(Ast *fd, Ast *data, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_FD_WRITE;
+    node->loc = loc;
+    node->as.fd_write.fd = fd;
+    node->as.fd_write.data = data;
+    return node;
+}
+
+static Ast *ast_make_fd_read(Ast *fd, Ast *buf, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_FD_READ;
+    node->loc = loc;
+    node->as.fd_read.fd = fd;
+    node->as.fd_read.buf = buf;
+    return node;
+}
+
+static Ast *ast_make_fd_open(Ast *path, Ast *flags, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_FD_OPEN;
+    node->loc = loc;
+    node->as.fd_open.path = path;
+    node->as.fd_open.flags = flags;
+    return node;
+}
+
+static Ast *ast_make_fd_close(Ast *fd, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_FD_CLOSE;
+    node->loc = loc;
+    node->as.fd_close.fd = fd;
+    return node;
+}
+
+static Ast *ast_make_exit(Ast *code, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_EXIT;
+    node->loc = loc;
+    node->as.exit_call.code = code;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2202,6 +2274,24 @@ static void ast_free(Ast *node) {
             break;
         case AST_TYPE_CAST:
             ast_free(node->as.type_cast.operand);
+            break;
+        case AST_FD_WRITE:
+            ast_free(node->as.fd_write.fd);
+            ast_free(node->as.fd_write.data);
+            break;
+        case AST_FD_READ:
+            ast_free(node->as.fd_read.fd);
+            ast_free(node->as.fd_read.buf);
+            break;
+        case AST_FD_OPEN:
+            ast_free(node->as.fd_open.path);
+            ast_free(node->as.fd_open.flags);
+            break;
+        case AST_FD_CLOSE:
+            ast_free(node->as.fd_close.fd);
+            break;
+        case AST_EXIT:
+            ast_free(node->as.exit_call.code);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -2774,6 +2864,138 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_table_insert(table, row, loc);
         }
 
+        /* fd_write(fd, ref data) — built-in file descriptor write */
+        if (name_length == 8 && memcmp(name_start, "fd_write", 8) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *fd = parser_parse_expression(parser);
+            if (!fd) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after fd argument in fd_write()");
+                ast_free(fd);
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' before data argument in fd_write()");
+                ast_free(fd);
+                return NULL;
+            }
+            Ast *data = parser_parse_expression(parser);
+            if (!data) { ast_free(fd); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after fd_write data");
+                ast_free(fd);
+                ast_free(data);
+                return NULL;
+            }
+            return ast_make_fd_write(fd, data, loc);
+        }
+
+        /* fd_read(fd, mut ref buf) — built-in file descriptor read */
+        if (name_length == 7 && memcmp(name_start, "fd_read", 7) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *fd = parser_parse_expression(parser);
+            if (!fd) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after fd argument in fd_read()");
+                ast_free(fd);
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before buffer argument in fd_read()");
+                ast_free(fd);
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in fd_read()");
+                ast_free(fd);
+                return NULL;
+            }
+            Ast *buf = parser_parse_expression(parser);
+            if (!buf) { ast_free(fd); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after fd_read buffer");
+                ast_free(fd);
+                ast_free(buf);
+                return NULL;
+            }
+            return ast_make_fd_read(fd, buf, loc);
+        }
+
+        /* fd_open(ref path, flags) — built-in file open */
+        if (name_length == 7 && memcmp(name_start, "fd_open", 7) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' before path argument in fd_open()");
+                return NULL;
+            }
+            Ast *path = parser_parse_expression(parser);
+            if (!path) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after path argument in fd_open()");
+                ast_free(path);
+                return NULL;
+            }
+            Ast *flags = parser_parse_expression(parser);
+            if (!flags) { ast_free(path); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after fd_open flags");
+                ast_free(path);
+                ast_free(flags);
+                return NULL;
+            }
+            return ast_make_fd_open(path, flags, loc);
+        }
+
+        /* fd_close(fd) — built-in file descriptor close */
+        if (name_length == 8 && memcmp(name_start, "fd_close", 8) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *fd = parser_parse_expression(parser);
+            if (!fd) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after fd_close fd");
+                ast_free(fd);
+                return NULL;
+            }
+            return ast_make_fd_close(fd, loc);
+        }
+
+        /* exit(code) — built-in process exit */
+        if (name_length == 4 && memcmp(name_start, "exit", 4) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *code = parser_parse_expression(parser);
+            if (!code) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after exit code");
+                ast_free(code);
+                return NULL;
+            }
+            return ast_make_exit(code, loc);
+        }
+
         /* Check for function call: identifier followed by '(' */
         if (parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
@@ -3174,8 +3396,12 @@ static Ast *parser_parse_block(Parser *parser) {
                     }
                 } else if (expr->kind == AST_FUNC_CALL ||
                            expr->kind == AST_ARENA_RESET ||
-                           expr->kind == AST_TABLE_INSERT) {
-                    /* Bare function call or arena reset/table insert as statement */
+                           expr->kind == AST_TABLE_INSERT ||
+                           expr->kind == AST_FD_WRITE ||
+                           expr->kind == AST_FD_READ ||
+                           expr->kind == AST_FD_CLOSE ||
+                           expr->kind == AST_EXIT) {
+                    /* Bare function call or built-in as statement */
                     ast_block_add_statement(block, expr);
                 } else {
                     /* Expression not at end of block */
@@ -4169,6 +4395,50 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.type_cast.operand, indent + 1);
             break;
 
+        case AST_FD_WRITE:
+            printf("FD_WRITE\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("FD:\n");
+            parser_print_ast_step(node->as.fd_write.fd, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("DATA:\n");
+            parser_print_ast_step(node->as.fd_write.data, indent + 2);
+            break;
+
+        case AST_FD_READ:
+            printf("FD_READ\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("FD:\n");
+            parser_print_ast_step(node->as.fd_read.fd, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("BUF:\n");
+            parser_print_ast_step(node->as.fd_read.buf, indent + 2);
+            break;
+
+        case AST_FD_OPEN:
+            printf("FD_OPEN\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("PATH:\n");
+            parser_print_ast_step(node->as.fd_open.path, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("FLAGS:\n");
+            parser_print_ast_step(node->as.fd_open.flags, indent + 2);
+            break;
+
+        case AST_FD_CLOSE:
+            printf("FD_CLOSE\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("FD:\n");
+            parser_print_ast_step(node->as.fd_close.fd, indent + 2);
+            break;
+
+        case AST_EXIT:
+            printf("EXIT\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("CODE:\n");
+            parser_print_ast_step(node->as.exit_call.code, indent + 2);
+            break;
+
         case AST_PROGRAM:
             printf("PROGRAM\n");
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -4319,6 +4589,13 @@ static void scope_add_comptime_float(Scope *scope, const char *name_start,
         v->is_comptime = true;
         v->comptime_value.float_value = value;
     }
+}
+
+static void scope_inject_io_constants(Scope *scope) {
+    SourceLoc builtin_loc = {0, 0};
+    scope_add_comptime_int(scope, "STDIN", 5, 0, builtin_loc);
+    scope_add_comptime_int(scope, "STDOUT", 6, 1, builtin_loc);
+    scope_add_comptime_int(scope, "STDERR", 6, 2, builtin_loc);
 }
 
 /* ========================== Function Table ========================== */
@@ -5614,6 +5891,102 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return target;
         }
 
+        case AST_FD_WRITE: {
+            Type fd_type = typecheck_expression(node->as.fd_write.fd, scope, func_table);
+            if (!type_is_integer(fd_type)) {
+                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_write.fd->loc.line,
+                           node->as.fd_write.fd->loc.column,
+                           "fd_write() fd must be integer, got %s",
+                           type_name(fd_type));
+            }
+            Type data_type = typecheck_expression(node->as.fd_write.data, scope, func_table);
+            if (!type_is_byte_buffer(data_type)) {
+                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.fd_write.data->loc.line,
+                           node->as.fd_write.data->loc.column,
+                           "fd_write() data must be []u8, got %s",
+                           type_name(data_type));
+            }
+            g_has_io = true;
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+        }
+
+        case AST_FD_READ: {
+            Type fd_type = typecheck_expression(node->as.fd_read.fd, scope, func_table);
+            if (!type_is_integer(fd_type)) {
+                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_read.fd->loc.line,
+                           node->as.fd_read.fd->loc.column,
+                           "fd_read() fd must be integer, got %s",
+                           type_name(fd_type));
+            }
+            Type buf_type = typecheck_expression(node->as.fd_read.buf, scope, func_table);
+            if (!type_is_byte_buffer(buf_type)) {
+                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.fd_read.buf->loc.line,
+                           node->as.fd_read.buf->loc.column,
+                           "fd_read() buffer must be []u8, got %s",
+                           type_name(buf_type));
+            }
+            /* Check buffer is mutable */
+            if (node->as.fd_read.buf->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.fd_read.buf->as.identifier.start,
+                    node->as.fd_read.buf->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(ERR_S066_IO_BUF_IMMUTABLE, node->as.fd_read.buf->loc.line,
+                               node->as.fd_read.buf->loc.column,
+                               "fd_read() buffer must be mutable, use 'mut'");
+                }
+            }
+            g_has_io = true;
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+        }
+
+        case AST_FD_OPEN: {
+            Type path_type = typecheck_expression(node->as.fd_open.path, scope, func_table);
+            if (!type_is_byte_buffer(path_type)) {
+                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.fd_open.path->loc.line,
+                           node->as.fd_open.path->loc.column,
+                           "fd_open() path must be []u8, got %s",
+                           type_name(path_type));
+            }
+            Type flags_type = typecheck_expression(node->as.fd_open.flags, scope, func_table);
+            if (!type_is_integer(flags_type)) {
+                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_open.flags->loc.line,
+                           node->as.fd_open.flags->loc.column,
+                           "fd_open() flags must be integer, got %s",
+                           type_name(flags_type));
+            }
+            g_has_io = true;
+            node->expr_type = TYPE_I32;
+            return TYPE_I32;
+        }
+
+        case AST_FD_CLOSE: {
+            Type fd_type = typecheck_expression(node->as.fd_close.fd, scope, func_table);
+            if (!type_is_integer(fd_type)) {
+                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_close.fd->loc.line,
+                           node->as.fd_close.fd->loc.column,
+                           "fd_close() fd must be integer, got %s",
+                           type_name(fd_type));
+            }
+            g_has_io = true;
+            node->expr_type = TYPE_VOID;
+            return TYPE_VOID;
+        }
+
+        case AST_EXIT: {
+            Type code_type = typecheck_expression(node->as.exit_call.code, scope, func_table);
+            if (!type_is_integer(code_type)) {
+                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.exit_call.code->loc.line,
+                           node->as.exit_call.code->loc.column,
+                           "exit() code must be integer, got %s",
+                           type_name(code_type));
+            }
+            node->expr_type = TYPE_VOID;
+            return TYPE_VOID;
+        }
+
         default:
             break;
     }
@@ -6180,6 +6553,10 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_FUNC_CALL:
         case AST_ARENA_RESET:
         case AST_TABLE_INSERT:
+        case AST_FD_WRITE:
+        case AST_FD_READ:
+        case AST_FD_CLOSE:
+        case AST_EXIT:
             typecheck_expression(node, *scope, func_table);
             break;
 
@@ -6435,6 +6812,9 @@ static void typecheck_program(Ast *program) {
 
     /* Create global scope for top-level variables */
     Scope *global_scope = scope_create(NULL);
+
+    /* Inject predefined I/O constants */
+    scope_inject_io_constants(global_scope);
 
     /* Validate value/struct type declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
@@ -6696,7 +7076,20 @@ static void codegen_emit_field(FILE *out, Ast *node,
     }
 }
 
-static void codegen_emit_lvalue(FILE *out, Ast *node);  /* forward declaration */
+static void codegen_emit_lvalue(FILE *out, Ast *node);       /* forward declaration */
+static void codegen_emit_expression(FILE *out, Ast *node);  /* forward declaration */
+
+/* Emit a byte buffer argument, coercing [u8; N] arrays to ni_slice_0 */
+static void codegen_emit_byte_buf(FILE *out, Ast *arg) {
+    if (type_is_array(arg->expr_type)) {
+        ArrayTypeEntry *ae = array_table_get(arg->expr_type);
+        fprintf(out, "(ni_slice_0){.data = (uint8_t *)");
+        codegen_emit_lvalue(out, arg);
+        fprintf(out, ".data, .len = %zuL}", ae ? ae->size : 0);
+    } else {
+        codegen_emit_expression(out, arg);
+    }
+}
 
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
@@ -7097,6 +7490,42 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             }
             break;
         }
+
+        case AST_FD_WRITE:
+            fprintf(out, "ni_fd_write(");
+            codegen_emit_expression(out, node->as.fd_write.fd);
+            fprintf(out, ", ");
+            codegen_emit_byte_buf(out, node->as.fd_write.data);
+            fprintf(out, ")");
+            break;
+
+        case AST_FD_READ:
+            fprintf(out, "ni_fd_read(");
+            codegen_emit_expression(out, node->as.fd_read.fd);
+            fprintf(out, ", ");
+            codegen_emit_byte_buf(out, node->as.fd_read.buf);
+            fprintf(out, ")");
+            break;
+
+        case AST_FD_OPEN:
+            fprintf(out, "ni_fd_open(");
+            codegen_emit_byte_buf(out, node->as.fd_open.path);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.fd_open.flags);
+            fprintf(out, ")");
+            break;
+
+        case AST_FD_CLOSE:
+            fprintf(out, "ni_fd_close(");
+            codegen_emit_expression(out, node->as.fd_close.fd);
+            fprintf(out, ")");
+            break;
+
+        case AST_EXIT:
+            fprintf(out, "exit(");
+            codegen_emit_expression(out, node->as.exit_call.code);
+            fprintf(out, ")");
+            break;
 
         case AST_VAL_DECL:
         case AST_MUT_DECL:
@@ -7557,6 +7986,10 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_FUNC_CALL:
         case AST_ARENA_RESET:
         case AST_TABLE_INSERT:
+        case AST_FD_WRITE:
+        case AST_FD_READ:
+        case AST_FD_CLOSE:
+        case AST_EXIT:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
             fprintf(out, ";\n");
@@ -7773,7 +8206,11 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
     if (g_has_casts) fprintf(out, "#include <limits.h>\n");
-    if (g_has_arena) fprintf(out, "#include <string.h>\n");
+    if (g_has_arena || g_has_io) fprintf(out, "#include <string.h>\n");
+    if (g_has_io) {
+        fprintf(out, "#include <unistd.h>\n");
+        fprintf(out, "#include <fcntl.h>\n");
+    }
     fprintf(out, "\n");
 
     if (ast->kind != AST_PROGRAM) {
@@ -7916,6 +8353,24 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "\n");
     }
 
+    /* Emit I/O runtime helpers if any I/O built-ins are used */
+    if (g_has_io) {
+        fprintf(out, "static int64_t ni_fd_write(int32_t fd, ni_slice_0 data) {\n");
+        fprintf(out, "    return (int64_t)write(fd, data.data, (size_t)data.len);\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static int64_t ni_fd_read(int32_t fd, ni_slice_0 buf) {\n");
+        fprintf(out, "    return (int64_t)read(fd, buf.data, (size_t)buf.len);\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static int32_t ni_fd_open(ni_slice_0 path, int32_t flags) {\n");
+        fprintf(out, "    char tmp[4096];\n");
+        fprintf(out, "    if (path.len >= 4096) { fprintf(stderr, \"fd_open: path too long\\n\"); exit(1); }\n");
+        fprintf(out, "    memcpy(tmp, path.data, (size_t)path.len);\n");
+        fprintf(out, "    tmp[path.len] = '\\0';\n");
+        fprintf(out, "    return (int32_t)open(tmp, flags, 0644);\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static void ni_fd_close(int32_t fd) { close(fd); }\n\n");
+    }
+
     /* Emit per-table helper functions */
     for (size_t ti = 0; ti < g_table_decl_count; ti++) {
         TableDeclEntry *te = &g_table_decls[ti];
@@ -7976,6 +8431,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     Scope *global_codegen_scope = scope_create(NULL);
     g_global_codegen_scope = global_codegen_scope;
     g_codegen_scope = global_codegen_scope;
+
+    /* Inject predefined I/O constants into codegen scope */
+    scope_inject_io_constants(global_codegen_scope);
 
     for (size_t i = 0; i < ast->as.program.count; i++) {
         Ast *node = ast->as.program.statements[i];

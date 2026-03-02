@@ -1,0 +1,5 @@
+// error[S066]: fd_read() buffer must be mutable
+func main(): void = {
+    val buf: str = "hello"
+    fd_read(0, mut ref buf)
+}

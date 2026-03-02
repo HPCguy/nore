@@ -1,0 +1,5 @@
+// error[S065]: fd_write() data must be []u8
+func main(): void = {
+    val x: i32 = 42
+    fd_write(1, ref x)
+}
