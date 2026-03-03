@@ -95,9 +95,23 @@ dense:  [7, 2, 5]                         // packed, no holes — iterate this
 
 The sparse array can be large but unused pages are never touched (virtual memory handles this). This gives subset views with no cache penalty on iteration. Implementable entirely with slices and arenas — no compiler support.
 
+**Prior art: TALC (Topologically-Aware Layout in C).** The View + IndexSet model has been validated by [TALC](https://www.osti.gov/biblio/1108924), a research project from Lawrence Livermore National Laboratory (~2007). TALC is a source-to-source C translator that uses Views (data layout schemas), IndexSets (traversal definitions), and Fields (arrays eligible for layout transformation) to separate data layout from algorithm. Key results:
+
+- Same code, different layouts — switching between SoA, AoS, hybrid without changing the algorithm
+- Up to 200% speedups by just changing the layout schema
+- Designed for HPC workloads (mesh traversal, physics simulations)
+
+TALC proved the model works, but it's a preprocessor bolted onto C — the underlying language doesn't understand Views or IndexSets. Nore already has tables, value/struct distinction, arenas, and slices as native concepts. What TALC needed a separate schema file + source-to-source transformation + runtime system to achieve could potentially be expressed in Nore as stdlib types with the compiler's existing type checking.
+
+**References:**
+- [TALC paper (OSTI)](https://www.osti.gov/biblio/1108924)
+- [TALC on ResearchGate](https://www.researchgate.net/publication/228936928_TALC_A_Simple_C_Language_Extension_For_Improved_Performance_and_Code_Maintainability)
+- [Data Layout Optimization for Portable Performance (follow-up)](https://link.springer.com/chapter/10.1007/978-3-662-48096-0_20)
+
 **Open questions:**
 - How do views interact with arena lifetime tracking?
 - What set operations are worth providing (intersection, union, difference)?
 - Should views support hierarchical nesting (sub-views of views)?
+- How much of the TALC model (layout-algorithm separation, parallel partitioning) can be expressed as stdlib vs requiring compiler support?
 
-**Source:** r/ProgrammingLanguages detailed feedback with pseudo-code example showing View-based model with index sets, nested views, and implicit parallelism.
+**Source:** r/ProgrammingLanguages detailed feedback with pseudo-code example showing View-based model with index sets, nested views, and implicit parallelism. TALC reference from same commenter.
