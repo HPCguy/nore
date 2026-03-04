@@ -2,7 +2,7 @@
 
 ## Overview
 
-Nore is a systems programming language that makes data-oriented design the path of least resistance. Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized — columnar tables, arena allocation, explicit value vs resource semantics — with compile-time safety guarantees and zero runtime overhead.
+Nore is a systems programming language that makes data-oriented design the path of least resistance. Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
 
 The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
 
@@ -26,7 +26,7 @@ func spawn(mut ref p: Particles, x: f64, y: f64): void = {
 }
 
 func main(): void = {
-    // All heap memory comes from arenas — no malloc, no GC
+    // All heap memory comes from arenas. No malloc, no GC
     mut mem: Arena = arena(65536)
     mut p: Particles = table_alloc(mut ref mem, 1000)
 
@@ -48,7 +48,7 @@ func main(): void = {
 
 ## What Makes Nore Different
 
-**Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access — the kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping. For example, `table Particles { pos: Vec2, life: i64 }` generates:
+**Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access. The kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping. For example, `table Particles { pos: Vec2, life: i64 }` generates:
 
 ```
 Particles (struct)          Particles.Row (value)
@@ -60,27 +60,37 @@ Particles (struct)          Particles.Row (value)
 ref-only, owns slices
 ```
 
-**Two kinds of types, one clear rule.** `value` types are plain data: they live on the stack, copy freely, and compose into arrays and tables. `struct` types hold slices — pointers into arena memory — so copying one would create aliased pointers to the same allocation. That's why structs pass by reference only and cannot be copied. The distinction isn't about data shape, it's about whether a type owns heap resources.
+**Two kinds of types, one clear rule.** `value` types are plain data: they live on the stack, copy freely, and compose into arrays and tables. `struct` types hold slices (pointers into arena memory), so copying one would create aliased pointers to the same allocation. That's why structs pass by reference only and cannot be copied. The distinction isn't about data shape, it's about whether a type owns heap resources.
 
-**Arenas replace malloc/free.** All heap memory comes from arenas. The compiler tracks which slices come from which arena and rejects programs where a slice could outlive its arena — at compile time, with no garbage collector and no runtime cost.
+**Arenas replace malloc/free.** All heap memory comes from arenas. The compiler tracks which slices come from which arena and rejects programs where a slice could outlive its arena. All at compile time, with no garbage collector and no runtime cost.
 
 **Explicit is better than implicit.** Parameters are `ref` or `mut ref` at both declaration and call site. Mutability is visible everywhere. There are no hidden copies, no move semantics to reason about.
 
+## Thinking in Nore
+
+Most languages default to trees of objects: a node *contains* its children, each allocated somewhere on the heap. It's intuitive, it maps to how we naturally think about hierarchies. But it's also slow when you have thousands of nodes, because every child access is a pointer chase to a different memory location.
+
+Nore nudges you toward a different shape: flat tables where relationships are indices, not pointers. A compiler AST becomes a table of nodes with a `parent_id` column. A scene graph becomes a table of entities with a `parent` index. Children aren't *inside* the parent, they're rows in the same table that *reference* it.
+
+The mind shift is real: instead of "this object contains its data," you think "data lives in tables, and relationships are just columns." Once it clicks, you start seeing that most "tree" problems are actually "table with relationships" problems. And the flat layout gives you sequential memory access, easy serialization, and straightforward parallelism for free.
+
+That said, if your natural model is trees of objects and your dataset is small, Nore will feel like unnecessary ceremony. It's not the right tool for everything, and that's okay.
+
 ## Design Documents
 
-- [docs/data-oriented-design.md](docs/data-oriented-design.md) — Type model, tables, arenas, and memory safety approach
-- [docs/arena-safety.md](docs/arena-safety.md) — Escape analysis, slice lifetime tracking, and safety guarantees
-- [docs/error-codes.md](docs/error-codes.md) — All compiler error codes and error handling internals
-- [docs/stdlib-roadmap.md](docs/stdlib-roadmap.md) — Standard library design, prerequisites, and implementation sequence
+- [docs/data-oriented-design.md](docs/data-oriented-design.md): Type model, tables, arenas, and memory safety approach
+- [docs/arena-safety.md](docs/arena-safety.md): Escape analysis, slice lifetime tracking, and safety guarantees
+- [docs/error-codes.md](docs/error-codes.md): All compiler error codes and error handling internals
+- [docs/stdlib-roadmap.md](docs/stdlib-roadmap.md): Standard library design, prerequisites, and implementation sequence
 
 ## Architecture
 
 The compiler follows a multi-stage pipeline:
 
-1. **Frontend** — Lexer tokenizes source, parser builds an AST
-2. **Semantic analysis** — Type checking, escape analysis, arena lifetime validation
-3. **Code generation** — AST translates to C99 code
-4. **Native compilation** — Clang compiles generated C to a native binary
+1. **Frontend**: Lexer tokenizes source, parser builds an AST
+2. **Semantic analysis**: Type checking, escape analysis, arena lifetime validation
+3. **Code generation**: AST translates to C99 code
+4. **Native compilation**: Clang compiles generated C to a native binary
 
 ## Project Status
 
@@ -144,7 +154,7 @@ make test-errors   # Run error code tests only
 make test-success  # Run success tests only
 ```
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
-- Success tests in `tests/success/` — programs with assertions, compiled and run via `--run` flag
+- Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Test runners: `tests/run_error_tests.sh` and `tests/run_success_tests.sh`
 
 ## Development Roadmap
@@ -160,13 +170,13 @@ make test-success  # Run success tests only
 
 Each step builds on the previous one. See [docs/data-oriented-design.md](docs/data-oriented-design.md) for the full design.
 
-1. **`value` types** — composite data with named fields, stack-only, pass by copy
-2. **Fixed-size arrays** `[T; N]` — stack-allocated, value-compatible
-3. **`ref` parameters** — pass by reference for functions (required before structs)
-4. **`struct` types** — resource owners, ref-only passing, may contain slices
-5. **Slices `[]T` + Arenas** — first heap allocation, compile-time lifetime checks
-6. **`str` type** — byte slice, falls out of slice implementation
-7. **`table` sugar** — generates struct + value, the DOD payoff
+1. **`value` types**: composite data with named fields, stack-only, pass by copy
+2. **Fixed-size arrays** `[T; N]`: stack-allocated, value-compatible
+3. **`ref` parameters**: pass by reference for functions (required before structs)
+4. **`struct` types**: resource owners, ref-only passing, may contain slices
+5. **Slices `[]T` + Arenas**: first heap allocation, compile-time lifetime checks
+6. **`str` type**: byte slice, falls out of slice implementation
+7. **`table` sugar**: generates struct + value, the DOD payoff
 
 ## Technical Decisions
 
