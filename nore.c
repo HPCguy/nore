@@ -1263,7 +1263,7 @@ static Type slice_table_intern(Type element_type) {
 typedef struct {
     const char *name_start;    /* "Particles" (points into source) */
     size_t name_length;
-    char *row_name;            /* "ParticlesRow" (malloc'd) */
+    char *row_name;            /* "Particles.Row" (malloc'd) */
     Type struct_type;          /* TYPE_VALUE_BASE + N */
     Type row_type;             /* TYPE_VALUE_BASE + M */
     Parameter *fields;         /* original fields (value-compatible) */
@@ -2382,6 +2382,36 @@ static int parser_match(Parser *parser, TokenKind kind) {
     return 1;
 }
 
+/* Try to parse ".Suffix" and look up "base.Suffix" in the value table.
+ * On success, consumes dot and suffix tokens and returns the entry.
+ * On failure, parser state is unchanged and returns NULL. */
+static ValueTypeEntry *parser_try_dot_qualified(Parser *parser,
+                                                 const char *base_start,
+                                                 size_t base_len) {
+    if (!parser_check(parser, TOKEN_DOT)) return NULL;
+    Token saved_current = parser->current;
+    Lexer saved_lexer = *parser->lexer;
+    parser_advance(parser);  /* consume '.' */
+    if (parser_check(parser, TOKEN_IDENTIFIER)) {
+        char buf[128];
+        size_t qual_len = base_len + 1 + parser->current.length;
+        if (qual_len < sizeof(buf)) {
+            memcpy(buf, base_start, base_len);
+            buf[base_len] = '.';
+            memcpy(buf + base_len + 1, parser->current.start,
+                   parser->current.length);
+            ValueTypeEntry *vt = value_table_lookup(g_value_table, buf, qual_len);
+            if (vt) {
+                parser_advance(parser);  /* consume suffix */
+                return vt;
+            }
+        }
+    }
+    parser->current = saved_current;
+    *parser->lexer = saved_lexer;
+    return NULL;
+}
+
 /* Parse a type token. Returns TYPE_UNKNOWN if no valid type found.
  * If allow_void is true, void is accepted as valid type. */
 static Type parser_parse_type(Parser *parser, bool allow_void) {
@@ -2394,13 +2424,14 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
     if (parser_match(parser, TOKEN_ARENA)) return TYPE_ARENA;
     if (parser_match(parser, TOKEN_STR)) return slice_table_intern(TYPE_U8);
     if (allow_void && parser_match(parser, TOKEN_VOID)) return TYPE_VOID;
-    /* Check for user-defined value types */
+    /* Check for user-defined value types (including dot-qualified Name.Row) */
     if (parser_check(parser, TOKEN_IDENTIFIER)) {
-        ValueTypeEntry *vt = value_table_lookup(g_value_table,
-                                                 parser->current.start,
-                                                 parser->current.length);
+        const char *base_start = parser->current.start;
+        size_t base_len = parser->current.length;
+        parser_advance(parser);  /* consume identifier */
+        ValueTypeEntry *vt = parser_try_dot_qualified(parser, base_start, base_len);
+        if (!vt) vt = value_table_lookup(g_value_table, base_start, base_len);
         if (vt) {
-            parser_advance(parser);
             int idx = (int)(vt - g_value_table->types);
             return (Type)(TYPE_VALUE_BASE + idx);
         }
@@ -3118,6 +3149,16 @@ static Ast *parser_parse_primary(Parser *parser) {
 
             return ast_make_func_call(name_start, name_length, arguments,
                                        arg_is_ref, arg_is_mut_ref, arg_count, loc);
+        }
+
+        /* Check for dot-qualified Name.Row before constructor */
+        {
+            ValueTypeEntry *dot_vt = parser_try_dot_qualified(
+                parser, name_start, name_length);
+            if (dot_vt) {
+                name_start = dot_vt->name_start;
+                name_length = dot_vt->name_length;
+            }
         }
 
         /* Check for value constructor: TypeName { ... } */
@@ -4104,14 +4145,14 @@ static Ast *parser_parse_table_decl(Parser *parser) {
     Type struct_type = value_table_add(name_start, name_length,
                                        struct_fields, struct_field_count, loc, true);
 
-    /* Synthesize row name: NameRow */
-    char *row_name = malloc(name_length + 3 + 1);
+    /* Synthesize row name: Name.Row */
+    char *row_name = malloc(name_length + 4 + 1);
     if (!row_name) panic(ERR_I001_OUT_OF_MEMORY, "allocating row name");
     memcpy(row_name, name_start, name_length);
-    memcpy(row_name + name_length, "Row", 4);  /* includes null */
+    memcpy(row_name + name_length, ".Row", 5);  /* includes null */
 
     /* Register row (value) type in g_value_table */
-    Type row_type = value_table_add(row_name, name_length + 3,
+    Type row_type = value_table_add(row_name, name_length + 4,
                                      orig_fields, field_count, loc, false);
 
     /* Register in g_table_decls (orig_fields ownership transfers here) */
@@ -7730,6 +7771,9 @@ static const char *codegen_type_to_c(Type type) {
                 char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 80, "ni_%.*s",
                          (int)vt->name_length, vt->name_start);
+                for (char *p = buf + 3; *p; p++) {
+                    if (*p == '.') *p = '_';
+                }
                 return buf;
             }
             if (type_is_array(type)) {
@@ -8482,8 +8526,8 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
                     fprintf(out, " %s ni_%.*s;", codegen_type_to_c(field->type),
                             (int)field->name_length, field->name_start);
                 }
-                fprintf(out, " } ni_%.*s;\n",
-                        (int)vt->name_length, vt->name_start);
+                fprintf(out, " } %s;\n",
+                        codegen_type_to_c((Type)(TYPE_VALUE_BASE + i)));
                 emitted[i] = true;
                 done++; progress++;
             }
@@ -8567,13 +8611,14 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "\n        .ni__len = 0\n    };\n}\n\n");
 
         /* ni_table_get_Name */
-        fprintf(out, "static ni_%s ni_table_get_%.*s(const ni_%.*s *t, int64_t idx) {\n",
-                te->row_name, tlen, tname, tlen, tname);
+        const char *row_c = codegen_type_to_c(te->row_type);
+        fprintf(out, "static %s ni_table_get_%.*s(const ni_%.*s *t, int64_t idx) {\n",
+                row_c, tlen, tname, tlen, tname);
         fprintf(out, "    if ((uint64_t)idx >= (uint64_t)t->ni__len) {\n");
         fprintf(out, "        fprintf(stderr, \"error[R002]: Table index out of bounds: %%ld not in [0, %%ld)\\n\", (long)idx, (long)t->ni__len);\n");
         fprintf(out, "        exit(2);\n");
         fprintf(out, "    }\n");
-        fprintf(out, "    return (ni_%s){", te->row_name);
+        fprintf(out, "    return (%s){", row_c);
         for (size_t f = 0; f < te->field_count; f++) {
             fprintf(out, ".ni_%.*s = t->ni_%.*s.data[idx]",
                     (int)te->fields[f].name_length, te->fields[f].name_start,
@@ -8583,8 +8628,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "};\n}\n\n");
 
         /* ni_table_insert_Name */
-        fprintf(out, "static void ni_table_insert_%.*s(ni_%.*s *t, ni_%s row) {\n",
-                tlen, tname, tlen, tname, te->row_name);
+        row_c = codegen_type_to_c(te->row_type);
+        fprintf(out, "static void ni_table_insert_%.*s(ni_%.*s *t, %s row) {\n",
+                tlen, tname, tlen, tname, row_c);
         /* Use first column's .len as capacity */
         fprintf(out, "    if (t->ni__len >= t->ni_%.*s.len) {\n",
                 (int)te->fields[0].name_length, te->fields[0].name_start);

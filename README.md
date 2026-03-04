@@ -12,14 +12,14 @@ The compiler is a self-contained, single-file C program that translates Nore sou
 value Vec2 { x: f64, y: f64 }
 
 // One declaration → columnar storage (struct-of-arrays)
-// Generates: Particles (struct with slice columns) and ParticlesRow (value type)
+// Generates: Particles (struct with slice columns) and Particles.Row (value type)
 table Particles {
     pos: Vec2,
     life: i64
 }
 
 func spawn(mut ref p: Particles, x: f64, y: f64): void = {
-    table_insert(mut ref p, ParticlesRow {
+    table_insert(mut ref p, Particles.Row {
         pos: Vec2 { x: x, y: y },
         life: 100
     })
@@ -34,7 +34,7 @@ func main(): void = {
     spawn(mut ref p, 3.0, 4.0)
 
     // Row access (returns a value copy)
-    val r: ParticlesRow = table_get(ref p, 0)
+    val r: Particles.Row = table_get(ref p, 0)
     assert r.pos.x == 1.0
 
     // Direct column access (cache-friendly iteration)
@@ -51,7 +51,7 @@ func main(): void = {
 **Data layout is a first-class concern.** A single `table` declaration generates columnar storage (struct-of-arrays) with type-safe row access — the kind of layout that games, simulations, and data-heavy systems need for cache performance, without manual bookkeeping. For example, `table Particles { pos: Vec2, life: i64 }` generates:
 
 ```
-Particles (struct)          ParticlesRow (value)
+Particles (struct)          Particles.Row (value)
 ┌─────────────────┐         ┌─────────────────┐
 │ pos:  []Vec2    │         │ pos:  Vec2       │
 │ life: []i64     │         │ life: i64        │

@@ -27,7 +27,7 @@ func count_alive(ref p: Particles): i64 = {
 
 // Table as mut ref parameter (insert inside function)
 func add_particle(mut ref p: Particles, x: f64, y: f64, life: i64): void = {
-    table_insert(mut ref p, ParticlesRow {
+    table_insert(mut ref p, Particles.Row {
         pos: Vec2 { x: x, y: y },
         life: life,
         color: Color { r: 255, g: 128, b: 0 }
@@ -35,7 +35,7 @@ func add_particle(mut ref p: Particles, x: f64, y: f64, life: i64): void = {
 }
 
 // Row as function parameter (by value — it's a value type)
-func get_life(row: ParticlesRow): i64 = {
+func get_life(row: Particles.Row): i64 = {
     return row.life
 }
 
@@ -57,14 +57,14 @@ func main(): void = {
     assert count_alive(ref p) == 2
 
     // Row access and row as parameter
-    val r: ParticlesRow = table_get(ref p, 0)
+    val r: Particles.Row = table_get(ref p, 0)
     assert get_life(r) == 10
     assert r.color.r == 255
     assert r.pos.x == 1.0
     assert r.pos.y == 2.0
 
     // Row field access on second row
-    val r2: ParticlesRow = table_get(ref p, 1)
+    val r2: Particles.Row = table_get(ref p, 1)
     assert r2.life == 20
     assert r2.pos.x == 3.0
 
@@ -79,8 +79,8 @@ func main(): void = {
 
     // Multiple tables from same arena
     mut e: Enemies = table_alloc(mut ref mem, 50)
-    table_insert(mut ref e, EnemiesRow { health: 100, score: 10 })
-    table_insert(mut ref e, EnemiesRow { health: 50, score: 20 })
+    table_insert(mut ref e, Enemies.Row { health: 100, score: 10 })
+    table_insert(mut ref e, Enemies.Row { health: 50, score: 20 })
     assert table_len(ref e) == 2
     assert table_get(ref e, 0).health == 100
     assert table_get(ref e, 1).score == 20

@@ -714,8 +714,8 @@ table Particles {
 ```
 - Keyword: `table`
 - Generates a struct `Particles` with slice columns (`pos: [Vec2]`, `life: [i64]`, `_len: i64`)
-- Generates a value `ParticlesRow` with the original fields (`pos: Vec2`, `life: i64`)
-- Row type name is the table name + `Row` (e.g., `ParticlesRow`)
+- Generates a value `Particles.Row` with the original fields (`pos: Vec2`, `life: i64`)
+- Row type name is `Name.Row` (e.g., `Particles.Row`)
 
 **Table Field Constraints**:
 - Fields must be value-compatible: scalars, fixed arrays, or value types
@@ -739,7 +739,7 @@ val n: i64 = table_len(ref p)
 
 **Inserting Rows**:
 ```nore
-table_insert(mut ref p, ParticlesRow { pos: Vec2 { x: 1.0, y: 2.0 }, life: 100 })
+table_insert(mut ref p, Particles.Row { pos: Vec2 { x: 1.0, y: 2.0 }, life: 100 })
 ```
 - `table_insert(mut ref table, row)` appends a row to the table
 - Table argument must be `mut ref`
@@ -748,7 +748,7 @@ table_insert(mut ref p, ParticlesRow { pos: Vec2 { x: 1.0, y: 2.0 }, life: 100 }
 
 **Getting Rows**:
 ```nore
-val row: ParticlesRow = table_get(ref p, 0)
+val row: Particles.Row = table_get(ref p, 0)
 assert row.pos.x == 1.0
 ```
 - `table_get(ref table, index)` returns a row value at the given index

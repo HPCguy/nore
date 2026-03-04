@@ -119,7 +119,7 @@ struct Particles {
 **2. A `value` for single-row access:**
 
 ```
-value ParticlesRow {
+value Particles.Row {
     pos: Vec2,
     life: i64,
     color: Color,
@@ -129,7 +129,7 @@ value ParticlesRow {
 ### Why This Is Unified
 
 - `Particles` is a `struct` → passed by `ref`, not nestable, not copyable
-- `ParticlesRow` is a `value` → copyable, composable, can be embedded in other values
+- `Particles.Row` is a `value` → copyable, composable, can be embedded in other values
 
 No third concept. The `table` keyword is convenience that emits the two types we already have.
 
@@ -172,11 +172,11 @@ for i in 0..table_len(ref particles) {
     particles.life[i] = particles.life[i] - 1
 }
 
-# Row access — returns ParticlesRow (a value)
-val row: ParticlesRow = table_get(ref particles, 0)
+# Row access — returns Particles.Row (a value)
+val row: Particles.Row = table_get(ref particles, 0)
 
 # Insert a row from a value
-table_insert(mut ref particles, ParticlesRow { pos: Vec2 { x: 0.0, y: 0.0 }, life: 100, color: ... })
+table_insert(mut ref particles, Particles.Row { pos: Vec2 { x: 0.0, y: 0.0 }, life: 100, color: ... })
 ```
 
 ### Tables Follow Struct Rules
