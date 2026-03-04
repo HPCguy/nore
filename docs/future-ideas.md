@@ -115,3 +115,43 @@ TALC proved the model works, but it's a preprocessor bolted onto C — the under
 - How much of the TALC model (layout-algorithm separation, parallel partitioning) can be expressed as stdlib vs requiring compiler support?
 
 **Source:** r/ProgrammingLanguages detailed feedback with pseudo-code example showing View-based model with index sets, nested views, and implicit parallelism. TALC reference from same commenter.
+
+## Compiler Directives for Low-Level Optimization
+
+The native-vs-stdlib tension (see Index Sets above) reveals a deeper architectural question: how does the stdlib get the performance wins that require compiler awareness, without making the compiler special-case every data structure?
+
+**The problem:** If IndexSets and views are pure stdlib (opaque structs and function calls), the compiler can't optimize through them — no layout rewriting, no prefetching, no tiling. But making them native compiler features contradicts Nore's philosophy and ties optimization to specific data structures.
+
+**Proposed direction: a two-layer architecture.**
+
+```
+User code          →  friendly API (stdlib)
+                       ↓ uses
+Stdlib internals   →  compiler directives (native, low-level, powerful)
+                       ↓ understood by
+Compiler/codegen   →  transforms to optimized C
+```
+
+General-purpose compiler directives — not tied to any specific data structure — that the stdlib uses internally. Users *can* use them directly but mostly wouldn't need to.
+
+**Candidate directives (raw, needs design):**
+
+- `@layout(SoA)` / `@layout(AoS)` — control field arrangement in memory. Stdlib uses this inside table/view implementations. This is the key to TALC-style layout-algorithm separation.
+- `@prefetch(data, stride)` — hint to insert prefetch instructions. Stdlib uses this inside iteration helpers.
+- `@tile(loop, size)` — restructure a loop for cache blocking.
+- `@vectorize(loop)` — hint that a loop body has no dependencies and can be SIMD-vectorized.
+- `@inline` — force function inlining (critical for stdlib wrappers to have zero overhead).
+
+**Why this fits Nore:**
+
+- **Explicit, not magic** — directives are visible in source, deliberately chosen. No hidden transformations.
+- **Power without user-facing complexity** — end users call `table_get`, `view_foreach`. Only stdlib authors touch `@prefetch` and `@tile`.
+- **Not tied to specific types** — directives are general. They work for tables, views, index sets, or any future data structure. Contributors can use them without the compiler needing to special-case each new concept.
+- **Future-proof** — new directives can be added as optimization needs emerge, without changing the language syntax.
+- **Resolves the TALC question** — the optimization pull requests would target directives in the stdlib, not compiler internals. The compiler understands optimization *intent* through explicit directives rather than pattern-matching on magic types.
+
+**The C analogy:** Similar to `restrict`, `inline`, `_Alignas`, and `__builtin_prefetch` — low-level, not user-friendly, but they let library authors squeeze out performance. Nore would make them cleaner and more integrated.
+
+**Risk:** Designing good directives is hard. Too few and they're useless, too many and they become a second language. The TALC papers and the [LLNL data layout optimization report](https://www.osti.gov/servlets/purl/1084701) (showing 1.1x to 22x speedups from automatic layout selection) are a good guide for what the minimal useful set looks like.
+
+**Source:** Design discussion following r/ProgrammingLanguages feedback on native vs stdlib optimization capabilities.
