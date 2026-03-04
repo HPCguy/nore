@@ -53,8 +53,8 @@ func main(): void = {
 ```
 Particles (struct)          Particles.Row (value)
 ┌─────────────────┐         ┌─────────────────┐
-│ pos:  []Vec2    │         │ pos:  Vec2       │
-│ life: []i64     │         │ life: i64        │
+│ pos:  []Vec2    │         │ pos:  Vec2      │
+│ life: []i64     │         │ life: i64       │
 │ _len: i64       │         └─────────────────┘
 └─────────────────┘         copyable, embeddable
 ref-only, owns slices
@@ -71,6 +71,24 @@ ref-only, owns slices
 Most languages default to trees of objects: a node *contains* its children, each allocated somewhere on the heap. It's intuitive, it maps to how we naturally think about hierarchies. But it's also slow when you have thousands of nodes, because every child access is a pointer chase to a different memory location.
 
 Nore nudges you toward a different shape: flat tables where relationships are indices, not pointers. A compiler AST becomes a table of nodes with a `parent_id` column. A scene graph becomes a table of entities with a `parent` index. Children aren't *inside* the parent, they're rows in the same table that *reference* it.
+
+```
+Traditional (tree of objects)       Nore (table with relationships)
+
+  Scene                             Entities table
+  ├── Player                        ┌────┬──────────┬───────────┐
+  │   ├── pos: Vec2                 │ id │ name     │ parent_id │
+  │   ├── health: 100               ├────┼──────────┼───────────┤
+  │   └── Sword                     │  0 │ Player   │        -1 │
+  │       └── damage: 50            │  1 │ Sword    │         0 │
+  └── Enemy                         │  2 │ Enemy    │        -1 │
+      ├── pos: Vec2                 │  3 │ Shield   │         2 │
+      └── Shield                    └────┴──────────┴───────────┘
+          └── armor: 30
+                                    Flat, sequential, cache-friendly.
+  Nested pointers, scattered        Relationships are just indices.
+  across the heap.
+```
 
 The mind shift is real: instead of "this object contains its data," you think "data lives in tables, and relationships are just columns." Once it clicks, you start seeing that most "tree" problems are actually "table with relationships" problems. And the flat layout gives you sequential memory access, easy serialization, and straightforward parallelism for free.
 
