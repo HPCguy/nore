@@ -59,32 +59,31 @@ Small additions with outsized impact. These unblock string processing, hashing, 
 
 **Numeric casting design note:** Nore already has comptime coercion (a literal `42` adapts to any integer type). Runtime casting between concrete types is the gap. The syntax should be explicit — something like `x as u8` or `u8(x)` — and truncation/overflow behavior must be defined. This deserves a focused design decision before implementation.
 
-### Layer 1: Enums
+### Layer 1: Enums (DONE)
 
-Enums unlock error handling, option types, and state machines. Without them, the stdlib has no way to report errors beyond `assert` (which aborts).
+Simple C-style enums with named integer constants, auto-numbered from 0. Dot-qualified variant access (`Color.Red`), equality comparison, casting to `i64`.
 
 ```
 enum Color { Red, Green, Blue }
-
-// Later: tagged unions for Result/Option patterns
-enum Result {
-    Ok { value: i64 },
-    Err { code: i64 },
-}
+val c: Color = Color.Red
+val n: i64 = i64(c)    // 0
 ```
 
-**Minimum viable version:** simple C-style enums (named integer constants). Tagged unions can come later but are the real prize — they enable `Result` and `Option` types that make error handling safe and explicit.
+**What shipped:** named integer constants, type-safe comparison (no cross-enum, no ordering), no arithmetic on enums. Tagged unions for `Result`/`Option` patterns are a future addition.
 
-### Layer 2: Module System
+### Layer 2: Module System (DONE)
 
-The stdlib is shipped as `.nore` files. Without an import mechanism, everything lives in one file.
+The stdlib is shipped as `.nore` files. The import system uses string literal paths:
 
 ```
-import std.io
-import std.str
+import "std/math.nore"
+import "utils.nore"
+import "../shared/helpers.nore"
 ```
 
-**Minimum viable version:** a flat file-based import that brings declarations into scope. No nested namespaces, no visibility modifiers, no package manager. Just `import "path.nore"` to include another source file's declarations.
+**Path resolution:** paths starting with `std/` resolve relative to the compiler binary's directory. All other paths resolve relative to the importing file's directory. Each file is imported at most once (duplicates are silently skipped). All declarations from the imported file are merged into the importing program's scope. Imports are transitive.
+
+**What shipped:** flat file-based import, no namespaces, no visibility modifiers. Error diagnostics track the correct source file per error. First stdlib file: `std/math.nore`.
 
 ---
 
@@ -153,28 +152,26 @@ func is_space(c: u8): bool
 - `str` is `[u8]`, so these all work on byte slices. No separate string type.
 - Character functions work on `u8` — a character is just a byte.
 
-### Layer C: Formatted Output
+### Layer C: Formatted Output (NEXT: move from built-ins to std/io.nore)
 
-Written in Nore. Depends on Layer B (string conversion) and Layer A (I/O).
+`print`, `println`, and `print_i64` are currently compiler built-ins. Now that the import system exists, they should move to `std/io.nore` as regular Nore functions that call `fd_write`.
 
+```nore
+// std/io.nore
+func print(ref s: str): void = { fd_write(STDOUT, ref s) }
+func println(ref s: str): void = { fd_write(STDOUT, ref s)  fd_write(STDOUT, ref "\n") }
+func print_i64(n: i64): void = { ... }  // needs i64-to-string conversion
 ```
-// Print a string to stdout
-func print(ref s: str): void
 
-// Print a string to stdout followed by a newline
-func println(ref s: str): void
-
-// Print an integer to stdout
-func print_i64(n: i64): void
-
-// Print to stderr
-func eprint(ref s: str): void
-func eprintln(ref s: str): void
-```
+**Migration plan:**
+- `print` and `println` are straightforward: just call `fd_write` with STDOUT
+- `print_i64` needs a local buffer and integer-to-string conversion logic
+- After moving to stdlib, remove the built-in parsing/codegen from the compiler
+- Existing programs add `import "std/io.nore"` to keep working
 
 **Design notes:**
-- No format strings. Format strings require either variadic functions or generics — both are complex features Nore doesn't have. Instead, call the function that matches your type.
-- A general-purpose `format` function that builds a string in an arena can come later when the pattern is clear.
+- No format strings. Call the function that matches your type.
+- `eprint`/`eprintln` (stderr variants) can be added to the same file.
 - This is deliberately primitive. It prints values. That's it.
 
 ### Layer D: File Operations
@@ -193,26 +190,23 @@ func write_file(ref path: str, ref data: [u8]): bool
 - `read_file` takes an arena — the caller controls where the file contents live and how long they survive.
 - Error handling through return values initially (empty slice / false). Migrate to `Result` when enums exist.
 
-### Layer E: Math and Utilities
+### Layer E: Math and Utilities (DONE)
 
-Written in Nore. No dependencies beyond the base language.
+Shipped as `std/math.nore`. No dependencies beyond the base language.
 
+```nore
+import "std/math.nore"
+
+val x: i64 = min_i64(3, 5)          // 3
+val y: f64 = clamp_f64(x, 0.0, 1.0) // 1.0
 ```
-func min_i64(a: i64, b: i64): i64
-func max_i64(a: i64, b: i64): i64
-func abs_i64(a: i64): i64
-func clamp_i64(x: i64, lo: i64, hi: i64): i64
 
-func min_f64(a: f64, b: f64): f64
-func max_f64(a: f64, b: f64): f64
-func abs_f64(a: f64): f64
-func clamp_f64(x: f64, lo: f64, hi: f64): f64
-```
+Provides: `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64`.
 
 **Design notes:**
-- Type-suffixed names because Nore has no generics or overloading. This is ugly but honest.
+- Type-suffixed names because Nore has no generics or overloading.
 - When generics arrive, these become `min(a: T, b: T): T`. Until then, explicit names.
-- `abs`, `min`, `max`, `clamp` cover the vast majority of math utility needs.
+- Tested via `tests/std/math.nore`.
 
 ---
 
@@ -229,19 +223,20 @@ Phase 0: Primitives (DONE)
   5. ✓ I/O built-ins (fd_write..)  ← THE unlock for real programs
   6. ✓ print / println / print_i64 ← first programs can print output
 
-Phase 1: Language completeness (compiler work)
-  7. Enums                          ← unblocks error handling, Result/Option
-  8. Module system                  ← unblocks shipping stdlib as .nore files
+Phase 1: Language completeness (DONE)
+  7. ✓ Enums                        ← unblocks error handling, Result/Option
+  8. ✓ Module system (import)       ← unblocks shipping stdlib as .nore files
 
 Phase 2: Standard library (.nore files, importable)
-  9.  String operations             ← Layer B
-  10. File operations               ← Layer D
-  11. Math utilities                ← Layer E
+  9.  ✓ Math utilities              ← std/math.nore (first stdlib file)
+  10. Move print/println/print_i64  ← from compiler built-ins to std/io.nore
+  11. String operations             ← Layer B
+  12. File operations               ← Layer D
 ```
 
-Phase 0 is complete. Steps 1-6 are all done, meaning Nore programs can do real I/O.
+Phases 0 and 1 are complete. All compiler prerequisites are done: operators, casting, I/O built-ins, enums, and the import system.
 
-Phase 1 groups the two remaining compiler prerequisites together. Without enums, the stdlib has no error handling story. Without modules, stdlib code has no home. Both must land before the stdlib can be written as proper importable `.nore` files. Enums come first because they are a smaller, more self-contained change, and the module system design benefits from knowing what the stdlib needs to export (including `Result` and `Option` from enums).
+Phase 2 is underway. `std/math.nore` is shipped and tested. The next step is moving `print`, `println`, and `print_i64` from compiler built-ins to `std/io.nore`. This reduces compiler complexity and proves the stdlib can handle real I/O wrappers. The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access), but the convenience print functions become regular Nore code that calls fd_write.
 
 ---
 
@@ -299,9 +294,9 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 
 ## Open Questions
 
-- **Casting syntax**: resolved. Function-call style `u8(x)`, `i64(x)`, etc. Reads naturally, parses cleanly.
-- **Overflow behavior on cast**: currently truncates (C-style). Revisit when enums/`Result` exist.
-- **I/O error model before enums**: return negative error codes? Return a boolean + out-parameter? Accept the limitation and add proper error handling when enums land?
+- **Casting syntax**: resolved. Function-call style `u8(x)`, `i64(x)`, etc.
+- **Overflow behavior on cast**: runtime error (R003) on out-of-range values. Safe by default.
+- **I/O error model before enums**: return negative error codes for now. Revisit with tagged unions.
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
-- **Module system scope**: textual inclusion (like C `#include`) vs. proper modules with scoping? The former is simpler to implement, the latter is better long-term.
-- **`print`/`println` are built-in for now.** They are compiler built-ins until the module system exists, at which point they can move to stdlib `.nore` files.
+- **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
+- **`print`/`println`/`print_i64` migration**: these are compiler built-ins today. Next step is moving them to `std/io.nore`. The `print_i64` function needs integer-to-string conversion, which is a good forcing function for `std/str.nore` utilities.
