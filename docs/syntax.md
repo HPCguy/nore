@@ -41,6 +41,7 @@ val y: i64 = 10
 - `Arena` - Heap memory arena (see Arenas)
 - User-defined `value` types (see Value Types)
 - User-defined `struct` types (see Struct Types)
+- User-defined `enum` types (see Enum Types)
 
 **Compile-time types** (internal):
 - `comptime_int` - Integer literal (coerces to any integer type or f64)
@@ -456,6 +457,46 @@ val e: Entity = make_entity(1.0, 2.0, 100)
 ```
 - Functions can return struct types
 - Return value can initialize a struct variable (not a copy)
+
+### Enum Types
+
+Enums define named integer constants grouped under a type. Variants are auto-numbered starting from 0.
+
+**Declaration** (top-level only):
+```nore
+enum Color { Red, Green, Blue }
+enum Direction { North, South, East, West }
+```
+- Keyword: `enum`
+- Variants are comma-separated identifiers
+- Each variant gets an integer value: 0, 1, 2, ...
+
+**Usage**:
+```nore
+val c: Color = Color.Red
+mut d: Color = Color.Green
+d = Color.Blue
+```
+- Access variants with dot syntax: `EnumName.Variant`
+- Type annotation optional for `val` (inferred from variant)
+- Can be used as function parameters and return types
+
+**Comparison**:
+```nore
+assert c == Color.Red
+assert c != Color.Green
+```
+- Only `==` and `!=` are allowed
+- Ordering (`<`, `>`, `<=`, `>=`) is not allowed
+- Arithmetic (`+`, `-`, etc.) is not allowed
+- Both sides must be the same enum type
+
+**Casting to integer**:
+```nore
+assert i64(Color.Red) == 0
+assert i64(Color.Blue) == 2
+```
+- Cast to any integer type with `i64()`, `i32()`, `u8()`, `u32()`
 
 ### Arrays
 

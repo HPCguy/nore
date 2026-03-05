@@ -1,0 +1,6 @@
+enum Color { Red, Green, Blue }
+
+func main(): void = {
+    val c: Color = Color.Red
+    assert c < Color.Blue
+}

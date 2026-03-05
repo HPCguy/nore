@@ -89,6 +89,11 @@ typedef enum {
     ERR_P038_EXPECTED_IN_FOR       = ERR_GROUP_PARSER + 38,
     ERR_P039_EXPECTED_DOTDOT       = ERR_GROUP_PARSER + 39,
     ERR_P040_EXPECTED_LBRACE_FOR   = ERR_GROUP_PARSER + 40,
+    ERR_P041_EXPECTED_ENUM_NAME    = ERR_GROUP_PARSER + 41,
+    ERR_P042_EXPECTED_LBRACE_ENUM  = ERR_GROUP_PARSER + 42,
+    ERR_P043_EXPECTED_RBRACE_ENUM  = ERR_GROUP_PARSER + 43,
+    ERR_P044_EXPECTED_VARIANT_NAME = ERR_GROUP_PARSER + 44,
+    ERR_P045_UNKNOWN_ENUM_VARIANT  = ERR_GROUP_PARSER + 45,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -157,6 +162,10 @@ typedef enum {
     ERR_S064_IO_FD_TYPE            = ERR_GROUP_SEMANTIC + 64,
     ERR_S065_IO_DATA_TYPE          = ERR_GROUP_SEMANTIC + 65,
     ERR_S066_IO_BUF_IMMUTABLE      = ERR_GROUP_SEMANTIC + 66,
+    ERR_S067_ENUM_ARITHMETIC       = ERR_GROUP_SEMANTIC + 67,
+    ERR_S068_ENUM_COMPARE_MISMATCH = ERR_GROUP_SEMANTIC + 68,
+    ERR_S069_DUPLICATE_ENUM_VARIANT = ERR_GROUP_SEMANTIC + 69,
+    ERR_S070_DUPLICATE_TYPE_NAME   = ERR_GROUP_SEMANTIC + 70,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -346,6 +355,7 @@ typedef enum {
     TOKEN_VALUE,
     TOKEN_STRUCT,
     TOKEN_TABLE,
+    TOKEN_ENUM,
     TOKEN_REF,
     TOKEN_ARENA,
     TOKEN_STR,
@@ -427,6 +437,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_VALUE:         return "VALUE";
         case TOKEN_STRUCT:        return "STRUCT";
         case TOKEN_TABLE:         return "TABLE";
+        case TOKEN_ENUM:          return "ENUM";
         case TOKEN_REF:           return "REF";
         case TOKEN_ARENA:         return "ARENA";
         case TOKEN_STR:           return "STR";
@@ -610,6 +621,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "else", 4) == 0) return TOKEN_ELSE;
             if (memcmp(start, "bool", 4) == 0) return TOKEN_BOOL;
             if (memcmp(start, "true", 4) == 0) return TOKEN_TRUE;
+            if (memcmp(start, "enum", 4) == 0) return TOKEN_ENUM;
             break;
         case 5:
             if (memcmp(start, "while", 5) == 0) return TOKEN_WHILE;
@@ -854,6 +866,8 @@ typedef enum {
     TYPE_ARRAY_BASE = 1024,
     /* Slice types start at this offset */
     TYPE_SLICE_BASE = 2048,
+    /* Enum types start at this offset */
+    TYPE_ENUM_BASE = 3072,
 } Type;
 
 /* Forward declaration - defined after ValueTypeTable */
@@ -893,7 +907,15 @@ static bool type_is_array(Type type) {
 }
 
 static bool type_is_slice(Type type) {
-    return type >= TYPE_SLICE_BASE;
+    return type >= TYPE_SLICE_BASE && type < TYPE_ENUM_BASE;
+}
+
+static bool type_is_enum(Type type) {
+    return type >= TYPE_ENUM_BASE;
+}
+
+static int type_enum_index(Type type) {
+    return type - TYPE_ENUM_BASE;
 }
 
 static int type_slice_index(Type type) {
@@ -1258,6 +1280,66 @@ static Type slice_table_intern(Type element_type) {
     return (Type)(TYPE_SLICE_BASE + (int)g_slice_table->count++);
 }
 
+/* =============================== Enum Type Table =========================== */
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    long value;
+} EnumVariant;
+
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    EnumVariant *variants;
+    size_t variant_count;
+    SourceLoc loc;
+} EnumTypeEntry;
+
+static EnumTypeEntry *g_enum_table = NULL;
+static size_t g_enum_count = 0;
+static size_t g_enum_capacity = 0;
+
+static Type enum_table_add(const char *name_start, size_t name_length,
+                            EnumVariant *variants, size_t variant_count,
+                            SourceLoc loc) {
+    if (g_enum_count >= g_enum_capacity) {
+        g_enum_capacity = g_enum_capacity ? g_enum_capacity * 2 : 8;
+        g_enum_table = realloc(g_enum_table,
+                               g_enum_capacity * sizeof(EnumTypeEntry));
+        if (!g_enum_table) panic(ERR_I001_OUT_OF_MEMORY, "growing enum type table");
+    }
+    EnumTypeEntry *entry = &g_enum_table[g_enum_count];
+    entry->name_start = name_start;
+    entry->name_length = name_length;
+    entry->variants = variants;
+    entry->variant_count = variant_count;
+    entry->loc = loc;
+    return (Type)(TYPE_ENUM_BASE + (int)g_enum_count++);
+}
+
+static EnumTypeEntry *enum_table_get(Type type) {
+    if (!type_is_enum(type)) return NULL;
+    int idx = type_enum_index(type);
+    if (idx < 0 || (size_t)idx >= g_enum_count) return NULL;
+    return &g_enum_table[idx];
+}
+
+static EnumTypeEntry *enum_table_lookup(const char *name, size_t length) {
+    for (size_t i = 0; i < g_enum_count; i++) {
+        if (g_enum_table[i].name_length == length &&
+            memcmp(g_enum_table[i].name_start, name, length) == 0) {
+            return &g_enum_table[i];
+        }
+    }
+    return NULL;
+}
+
+static Type enum_table_type_for(EnumTypeEntry *entry) {
+    int idx = (int)(entry - g_enum_table);
+    return (Type)(TYPE_ENUM_BASE + idx);
+}
+
 /* ============================== Table Decl Table =========================== */
 
 typedef struct {
@@ -1389,6 +1471,12 @@ static const char *type_name(Type type) {
                 snprintf(buf, 64, "[%s]", type_name(se->element_type));
                 return buf;
             }
+            EnumTypeEntry *et = enum_table_get(type);
+            if (et) {
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 64, "%.*s", (int)et->name_length, et->name_start);
+                return buf;
+            }
             return "unknown";
         }
     }
@@ -1438,6 +1526,8 @@ typedef enum {
     AST_PRINT,
     AST_PRINTLN,
     AST_PRINT_I64,
+    AST_ENUM_DECL,
+    AST_ENUM_VARIANT,
     AST_PROGRAM
 } AstKind;
 
@@ -1640,6 +1730,17 @@ typedef struct Ast {
         struct { struct Ast *code; } exit_call;
         struct { struct Ast *data; } print_call;   /* shared by print/println */
         struct { struct Ast *value; } print_i64;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+            size_t variant_count;
+        } enum_decl;
+
+        struct {
+            Type enum_type;
+            long value;
+        } enum_variant;
 
         struct {
             struct Ast **statements;
@@ -1902,6 +2003,28 @@ static void ast_block_add_statement(Ast *block, Ast *statement) {
     }
 
     block->as.block.statements[block->as.block.count++] = statement;
+}
+
+static Ast *ast_make_enum_decl(const char *name_start, size_t name_length,
+                               size_t variant_count, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ENUM_DECL;
+    node->loc = loc;
+    node->as.enum_decl.name_start = name_start;
+    node->as.enum_decl.name_length = name_length;
+    node->as.enum_decl.variant_count = variant_count;
+    return node;
+}
+
+static Ast *ast_make_enum_variant(Type enum_type, long value, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ENUM_VARIANT;
+    node->loc = loc;
+    node->as.enum_variant.enum_type = enum_type;
+    node->as.enum_variant.value = value;
+    return node;
 }
 
 static Ast *ast_make_program(void) {
@@ -2332,6 +2455,9 @@ static void ast_free(Ast *node) {
         case AST_PRINT_I64:
             ast_free(node->as.print_i64.value);
             break;
+        case AST_ENUM_DECL:
+        case AST_ENUM_VARIANT:
+            break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
                 ast_free(node->as.program.statements[i]);
@@ -2435,6 +2561,8 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
             int idx = (int)(vt - g_value_table->types);
             return (Type)(TYPE_VALUE_BASE + idx);
         }
+        EnumTypeEntry *et = enum_table_lookup(base_start, base_len);
+        if (et) return enum_table_type_for(et);
     }
     /* Array type: [T; N] or Slice type: [T] */
     if (parser_match(parser, TOKEN_LBRACKET)) {
@@ -3121,6 +3249,36 @@ static Ast *parser_parse_primary(Parser *parser) {
                 return NULL;
             }
             return ast_make_print(data, loc);
+        }
+
+        /* Check for enum variant: EnumName.Variant */
+        if (parser_check(parser, TOKEN_DOT)) {
+            EnumTypeEntry *et = enum_table_lookup(name_start, name_length);
+            if (et) {
+                parser_advance(parser);  /* consume '.' */
+                if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                    diagnostic(ERR_P044_EXPECTED_VARIANT_NAME, parser->current.line,
+                               parser->current.column,
+                               "Expected variant name after '%.*s.'",
+                               (int)name_length, name_start);
+                    return NULL;
+                }
+                const char *var_start = parser->previous.start;
+                size_t var_len = parser->previous.length;
+                for (size_t i = 0; i < et->variant_count; i++) {
+                    if (et->variants[i].name_length == var_len &&
+                        memcmp(et->variants[i].name_start, var_start, var_len) == 0) {
+                        return ast_make_enum_variant(enum_table_type_for(et),
+                                                     et->variants[i].value, loc);
+                    }
+                }
+                diagnostic(ERR_P045_UNKNOWN_ENUM_VARIANT, parser->previous.line,
+                           parser->previous.column,
+                           "Unknown variant '%.*s' in enum '%.*s'",
+                           (int)var_len, var_start,
+                           (int)name_length, name_start);
+                return NULL;
+            }
         }
 
         /* Check for function call: identifier followed by '(' */
@@ -4080,6 +4238,92 @@ static const char *g_table_len_field = "_len";
 /* Parse table declaration: table Name { field: Type, ... }
  * Generates a struct (columnar) and a value (row) in g_value_table,
  * plus a TableDeclEntry. Returns AST_VALUE_DECL for the struct. */
+static Ast *parser_parse_enum_decl(Parser *parser) {
+    /* TOKEN_ENUM already consumed */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        diagnostic(ERR_P041_EXPECTED_ENUM_NAME, parser->current.line,
+                   parser->current.column,
+                   "Expected enum type name after 'enum'");
+        parser_synchronize(parser);
+        return NULL;
+    }
+    const char *name_start = parser->previous.start;
+    size_t name_length = parser->previous.length;
+
+    /* Check for duplicate type names */
+    if (value_table_lookup(g_value_table, name_start, name_length) ||
+        enum_table_lookup(name_start, name_length)) {
+        diagnostic(ERR_S070_DUPLICATE_TYPE_NAME, loc.line, loc.column,
+                   "Type name '%.*s' is already defined",
+                   (int)name_length, name_start);
+    }
+
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(ERR_P042_EXPECTED_LBRACE_ENUM, parser->current.line,
+                   parser->current.column,
+                   "Expected '{' after enum name");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse variants: Name, Name, ... */
+    size_t capacity = 8;
+    size_t variant_count = 0;
+    EnumVariant *variants = malloc(capacity * sizeof(EnumVariant));
+    if (!variants) panic(ERR_I001_OUT_OF_MEMORY, "allocating enum variants");
+
+    while (!parser_check(parser, TOKEN_RBRACE) &&
+           !parser_check(parser, TOKEN_EOF)) {
+        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+            diagnostic(ERR_P044_EXPECTED_VARIANT_NAME, parser->current.line,
+                       parser->current.column,
+                       "Expected variant name in enum");
+            free(variants);
+            parser_synchronize(parser);
+            return NULL;
+        }
+
+        /* Check for duplicate variant names */
+        for (size_t i = 0; i < variant_count; i++) {
+            if (variants[i].name_length == parser->previous.length &&
+                memcmp(variants[i].name_start, parser->previous.start,
+                       parser->previous.length) == 0) {
+                diagnostic(ERR_S069_DUPLICATE_ENUM_VARIANT,
+                           parser->previous.line, parser->previous.column,
+                           "Duplicate variant '%.*s' in enum '%.*s'",
+                           (int)parser->previous.length, parser->previous.start,
+                           (int)name_length, name_start);
+            }
+        }
+
+        if (variant_count >= capacity) {
+            capacity *= 2;
+            variants = realloc(variants, capacity * sizeof(EnumVariant));
+            if (!variants) panic(ERR_I001_OUT_OF_MEMORY, "growing enum variants");
+        }
+        variants[variant_count].name_start = parser->previous.start;
+        variants[variant_count].name_length = parser->previous.length;
+        variants[variant_count].value = (long)variant_count;
+        variant_count++;
+
+        if (!parser_match(parser, TOKEN_COMMA)) break;
+    }
+
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        diagnostic(ERR_P043_EXPECTED_RBRACE_ENUM, parser->current.line,
+                   parser->current.column,
+                   "Expected '}' to close enum");
+        free(variants);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    enum_table_add(name_start, name_length, variants, variant_count, loc);
+    return ast_make_enum_decl(name_start, name_length, variant_count, loc);
+}
+
 static Ast *parser_parse_table_decl(Parser *parser) {
     /* TOKEN_TABLE already consumed */
     SourceLoc loc = token_loc(&parser->previous);
@@ -4184,6 +4428,11 @@ static Ast *parser_parse_program(Parser *parser) {
             if (decl) {
                 ast_program_add_statement(program, decl);
             }
+        } else if (parser_match(parser, TOKEN_ENUM)) {
+            Ast *decl = parser_parse_enum_decl(parser);
+            if (decl) {
+                ast_program_add_statement(program, decl);
+            }
         } else if (parser_match(parser, TOKEN_VAL) ||
                    parser_match(parser, TOKEN_MUT)) {
             bool is_mutable = parser->previous.kind == TOKEN_MUT;
@@ -4200,6 +4449,7 @@ static Ast *parser_parse_program(Parser *parser) {
                    !parser_check(parser, TOKEN_VALUE) &&
                    !parser_check(parser, TOKEN_STRUCT) &&
                    !parser_check(parser, TOKEN_TABLE) &&
+                   !parser_check(parser, TOKEN_ENUM) &&
                    !parser_check(parser, TOKEN_VAL) &&
                    !parser_check(parser, TOKEN_MUT) &&
                    !parser_check(parser, TOKEN_EOF)) {
@@ -4593,6 +4843,21 @@ static void parser_print_ast_step(Ast *node, int indent) {
             printf("VALUE:\n");
             parser_print_ast_step(node->as.print_i64.value, indent + 2);
             break;
+
+        case AST_ENUM_DECL:
+            printf("ENUM_DECL(%.*s, %zu variants)\n",
+                   (int)node->as.enum_decl.name_length,
+                   node->as.enum_decl.name_start,
+                   node->as.enum_decl.variant_count);
+            break;
+
+        case AST_ENUM_VARIANT: {
+            EnumTypeEntry *et = enum_table_get(node->as.enum_variant.enum_type);
+            printf("ENUM_VARIANT(%s.%ld)\n",
+                   et ? type_name(node->as.enum_variant.enum_type) : "?",
+                   node->as.enum_variant.value);
+            break;
+        }
 
         case AST_PROGRAM:
             printf("PROGRAM\n");
@@ -5240,6 +5505,10 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             node->expr_type = TYPE_BOOL;
             return TYPE_BOOL;
 
+        case AST_ENUM_VARIANT:
+            node->expr_type = node->as.enum_variant.enum_type;
+            return node->as.enum_variant.enum_type;
+
         case AST_IDENTIFIER: {
             Variable *v = scope_lookup(scope, node->as.identifier.start,
                                         node->as.identifier.length);
@@ -5273,6 +5542,13 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_MUL:
                 case OP_DIV:
                 case OP_MOD: {
+                    if (type_is_enum(left_type) || type_is_enum(right_type)) {
+                        diagnostic(ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
+                                   "Arithmetic is not allowed on enum type %s",
+                                   type_name(type_is_enum(left_type) ? left_type : right_type));
+                        node->expr_type = TYPE_I64;
+                        return TYPE_I64;
+                    }
                     Type result = resolve_numeric_binary_type(left_type, right_type);
                     if (result == TYPE_VOID) {
                         diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
@@ -5320,6 +5596,21 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_GT:
                 case OP_LE:
                 case OP_GE: {
+                    /* Enum comparison: == and != only, same enum type required */
+                    if (type_is_enum(left_type) || type_is_enum(right_type)) {
+                        if (node->as.binary.op != OP_EQ && node->as.binary.op != OP_NEQ) {
+                            diagnostic(ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
+                                       "Only == and != are allowed on enum type %s",
+                                       type_name(type_is_enum(left_type) ? left_type : right_type));
+                        } else if (left_type != right_type) {
+                            diagnostic(ERR_S068_ENUM_COMPARE_MISMATCH, node->loc.line, node->loc.column,
+                                       "Cannot compare different types %s and %s",
+                                       type_name(left_type), type_name(right_type));
+                        }
+                        node->expr_type = TYPE_BOOL;
+                        return TYPE_BOOL;
+                    }
+
                     Type result = resolve_numeric_binary_type(left_type, right_type);
                     if (result == TYPE_VOID) {
                         diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
@@ -6015,6 +6306,13 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Type operand_type = typecheck_expression(node->as.type_cast.operand, scope, func_table);
             Type target = node->as.type_cast.target_type;
 
+            /* Enum to numeric: treat as integer cast */
+            if (type_is_enum(operand_type) && type_is_numeric(target)) {
+                g_has_casts = true;
+                node->expr_type = target;
+                return target;
+            }
+
             if (!type_is_numeric(operand_type)) {
                 diagnostic(ERR_S063_INVALID_CAST, node->loc.line, node->loc.column,
                            "Cannot cast %s to %s",
@@ -6407,8 +6705,10 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             }
 
             if (declared == TYPE_UNKNOWN) {
-                /* No explicit type — must be comptime */
-                if (!type_is_comptime(init_type)) {
+                /* No explicit type — must be comptime or enum variant */
+                if (type_is_enum(init_type)) {
+                    declared = init_type;
+                } else if (!type_is_comptime(init_type)) {
                     diagnostic(ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
                                "Type annotation required (expression is not compile-time constant)");
                     declared = TYPE_I64;  /* fallback */
@@ -6762,6 +7062,7 @@ static bool is_global_initializer(Ast *node, Scope *scope) {
         case AST_BOOLEAN:
         case AST_STRING_LITERAL:
         case AST_ARENA_NEW:
+        case AST_ENUM_VARIANT:
             return true;
         case AST_IDENTIFIER: {
             Variable *v = scope_lookup(scope, node->as.identifier.start,
@@ -6850,7 +7151,9 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
         }
 
         if (declared == TYPE_UNKNOWN) {
-            if (!type_is_comptime(init_type)) {
+            if (type_is_enum(init_type)) {
+                declared = init_type;
+            } else if (!type_is_comptime(init_type)) {
                 diagnostic(ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
                            "Type annotation required (expression is not compile-time constant)");
                 declared = TYPE_I64;
@@ -7291,6 +7594,10 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, "%d", node->as.boolean.value ? 1 : 0);
             break;
 
+        case AST_ENUM_VARIANT:
+            fprintf(out, "%ldL", node->as.enum_variant.value);
+            break;
+
         case AST_IDENTIFIER:
             codegen_emit_identifier(out, node->as.identifier.start,
                                     node->as.identifier.length);
@@ -7576,6 +7883,14 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             bool from_is_comptime = type_is_comptime(from);
             bool from_is_f64 = (from == TYPE_F64 || from == TYPE_COMPTIME_FLOAT);
 
+            /* Enum → numeric: plain C cast (enum is backed by int64_t) */
+            if (type_is_enum(from) && type_is_numeric(to)) {
+                fprintf(out, "(%s)(", codegen_type_to_c(to));
+                codegen_emit_expression(out, node->as.type_cast.operand);
+                fprintf(out, ")");
+                break;
+            }
+
             /* Identity or comptime → target: just emit the operand (possibly with a plain cast) */
             if (from == to || (from_is_comptime && !from_is_f64)) {
                 /* comptime_int → integer target: value already range-checked at compile time */
@@ -7737,6 +8052,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_CONTINUE:
         case AST_FUNC_DECL:
         case AST_VALUE_DECL:
+        case AST_ENUM_DECL:
         case AST_PROGRAM:
             /* These should never appear in expression context */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
@@ -7784,6 +8100,13 @@ static const char *codegen_type_to_c(Type type) {
             if (type_is_slice(type)) {
                 char *buf = bufs[buf_idx++ % 4];
                 snprintf(buf, 80, "ni_slice_%d", type_slice_index(type));
+                return buf;
+            }
+            EnumTypeEntry *et = enum_table_get(type);
+            if (et) {
+                char *buf = bufs[buf_idx++ % 4];
+                snprintf(buf, 80, "ni_%.*s",
+                         (int)et->name_length, et->name_start);
                 return buf;
             }
             return "int64_t";
@@ -8182,6 +8505,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             break;
 
         case AST_VALUE_DECL:
+        case AST_ENUM_DECL:
             /* Typedef already emitted at top level */
             break;
 
@@ -8366,9 +8690,12 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     for (size_t i = 0; i < body->as.block.count; i++) {
         codegen_emit_statement(out, body->as.block.statements[i], &scope, 1);
     }
-    /* Emit trailing value expression as statement (e.g. bare call at end of body) */
+    /* Emit trailing value expression: return for non-void, bare statement for void */
     if (body->as.block.value_expr) {
         codegen_indent(out, 1);
+        if (func_decl->as.func_decl.return_type != TYPE_VOID) {
+            fprintf(out, "return ");
+        }
         codegen_emit_expression(out, body->as.block.value_expr);
         fprintf(out, ";\n");
     }
@@ -8501,6 +8828,14 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "}\n\n");
         fprintf(out, "static void ni_arena_reset(ni_Arena *a) { a->offset = 0; }\n\n");
     }
+
+    /* Emit enum type typedefs (no dependencies, emit first) */
+    for (size_t i = 0; i < g_enum_count; i++) {
+        EnumTypeEntry *et = &g_enum_table[i];
+        fprintf(out, "typedef int64_t ni_%.*s;\n",
+                (int)et->name_length, et->name_start);
+    }
+    if (g_enum_count > 0) fprintf(out, "\n");
 
     /* Emit type typedefs in dependency order (topological sort).
      * Types with no unresolved deps are emitted first. */
@@ -8910,6 +9245,8 @@ int main(int argc, char **argv) {
     value_table_destroy(g_value_table);
     array_table_destroy(g_array_table);
     slice_table_destroy(g_slice_table);
+    for (size_t i = 0; i < g_enum_count; i++) free(g_enum_table[i].variants);
+    free(g_enum_table);
     if (g_codegen_func_table) func_table_destroy(g_codegen_func_table);
     free(source);
 

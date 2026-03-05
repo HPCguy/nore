@@ -1,0 +1,79 @@
+// Test enum types
+
+enum Color { Red, Green, Blue }
+enum Direction { North, South, East, West }
+
+// Global enum variables
+val DEFAULT_COLOR: Color = Color.Red
+val DEFAULT_DIR = Direction.North
+mut current_color: Color = Color.Green
+
+func get_color(): Color = {
+    Color.Blue
+}
+
+func is_red(c: Color): bool = {
+    c == Color.Red
+}
+
+func main(): void = {
+    // Basic comparison
+    val c: Color = Color.Red
+    assert c == Color.Red
+    assert c != Color.Green
+    assert c != Color.Blue
+
+    // Mutable enum variable
+    mut d: Color = Color.Green
+    assert d == Color.Green
+    d = Color.Blue
+    assert d == Color.Blue
+
+    // Type inference with val
+    val e = Color.Red
+    assert e == Color.Red
+
+    // Integer values auto-numbered from 0
+    assert i64(Color.Red) == 0
+    assert i64(Color.Green) == 1
+    assert i64(Color.Blue) == 2
+
+    // Multiple enum types
+    assert i64(Direction.North) == 0
+    assert i64(Direction.South) == 1
+    assert i64(Direction.East) == 2
+    assert i64(Direction.West) == 3
+
+    // Function returning enum
+    val result: Color = get_color()
+    assert result == Color.Blue
+
+    // Function taking enum parameter
+    assert is_red(Color.Red)
+    assert !is_red(Color.Green)
+    assert !is_red(Color.Blue)
+
+    // Enum in if condition
+    val dir: Direction = Direction.East
+    if (dir == Direction.East) {
+        assert true
+    } else {
+        assert false
+    }
+
+    // Enum with if-else expression
+    val label: i64 = if (dir == Direction.North) { 1 } else { 2 }
+    assert label == 2
+
+    // Cast to different integer types
+    assert i32(Color.Red) == 0
+    assert u8(Color.Blue) == 2
+    assert u32(Direction.West) == 3
+
+    // Global enum variables
+    assert DEFAULT_COLOR == Color.Red
+    assert DEFAULT_DIR == Direction.North
+    assert current_color == Color.Green
+    current_color = Color.Blue
+    assert current_color == Color.Blue
+}

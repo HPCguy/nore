@@ -1,0 +1,8 @@
+enum Color { Red, Green, Blue }
+enum Direction { North, South, East, West }
+
+func main(): void = {
+    val c: Color = Color.Red
+    val d: Direction = Direction.North
+    assert c == d
+}

@@ -63,6 +63,11 @@ error[D002]: Unknown flag: --invalid
 - **P038**: Expected 'in' after loop variable in for-loop
 - **P039**: Expected '..' in for-loop range
 - **P040**: Expected '{' for for-loop body
+- **P041**: Expected enum type name after 'enum'
+- **P042**: Expected '{' after enum name
+- **P043**: Expected '}' to close enum
+- **P044**: Expected variant name in enum
+- **P045**: Unknown enum variant
 - **S001**: Duplicate variable declaration
 - **S002**: Undeclared variable
 - **S003**: Cannot assign to immutable variable
@@ -129,6 +134,10 @@ error[D002]: Unknown flag: --invalid
 - **S064**: I/O built-in fd argument must be integer type
 - **S065**: I/O built-in data/buffer/path argument must be `[]u8` or `[u8; N]`
 - **S066**: `fd_read()` buffer must be mutable
+- **S067**: Arithmetic or ordering not allowed on enum type
+- **S068**: Cannot compare different enum types
+- **S069**: Duplicate variant name in enum
+- **S070**: Duplicate type name (enum name already used)
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

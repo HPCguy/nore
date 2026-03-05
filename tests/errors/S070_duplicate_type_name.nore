@@ -1,0 +1,5 @@
+enum Color { Red, Green, Blue }
+enum Color { North, South }
+
+func main(): void = {
+}
