@@ -53,5 +53,10 @@ test: $(TARGET)
 	@echo ""
 	@./tests/run_success_tests.sh
 
+# Run stdlib tests only
+test-std: $(TARGET)
+	@chmod +x tests/run_std_tests.sh
+	@./tests/run_std_tests.sh
+
 # Phony targets
-.PHONY: all debug clean test-errors test-success test
+.PHONY: all debug clean test-errors test-success test-std test

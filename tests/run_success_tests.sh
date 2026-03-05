@@ -29,6 +29,25 @@ for f in "$SCRIPT_DIR"/success/*.nore; do
     fi
 done
 
+# Run stdlib tests (tests/std/*.nore)
+if ls "$SCRIPT_DIR"/std/*.nore 1>/dev/null 2>&1; then
+    echo ""
+    echo "--- stdlib tests ---"
+    for f in "$SCRIPT_DIR"/std/*.nore; do
+        output=$("$NORE" --run "$f" 2>&1)
+        exit_code=$?
+
+        if [ $exit_code -eq 0 ]; then
+            echo "PASS: std/$(basename "$f")"
+            ((PASS++))
+        else
+            echo "FAIL: std/$(basename "$f") (exit code $exit_code)"
+            echo "  Output: $output"
+            ((FAIL++))
+        fi
+    done
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 exit $FAIL

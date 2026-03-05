@@ -167,13 +167,15 @@ The compiler uses structured error codes (e.g., `S053`, `P014`) with source loca
 
 ## Testing
 ```bash
-make test          # Run all tests (errors + success)
+make test          # Run all tests (errors + success + stdlib)
 make test-errors   # Run error code tests only
-make test-success  # Run success tests only
+make test-success  # Run success tests only (includes stdlib)
+make test-std      # Run stdlib tests only
 ```
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
-- Test runners: `tests/run_error_tests.sh` and `tests/run_success_tests.sh`
+- Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
+- Test runners: `tests/run_error_tests.sh`, `tests/run_success_tests.sh`, `tests/run_std_tests.sh`
 
 ## Development Roadmap
 
