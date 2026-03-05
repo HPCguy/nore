@@ -3614,13 +3614,13 @@ static Ast *parser_parse_return(Parser *parser) {
     /* Already consumed TOKEN_RETURN - capture its location */
     SourceLoc loc = token_loc(&parser->previous);
 
-    /* Check for bare return (no expression) */
+    /* Check for bare return (no expression).
+     * TOKEN_IF is NOT listed here: `return if (c) { a } else { b }` is valid. */
     if (parser_check(parser, TOKEN_RBRACE) ||
         parser_check(parser, TOKEN_VAL) ||
         parser_check(parser, TOKEN_MUT) ||
         parser_check(parser, TOKEN_RETURN) ||
         parser_check(parser, TOKEN_ASSERT) ||
-        parser_check(parser, TOKEN_IF) ||
         parser_check(parser, TOKEN_WHILE) ||
         parser_check(parser, TOKEN_BREAK) ||
         parser_check(parser, TOKEN_CONTINUE)) {
@@ -3685,6 +3685,26 @@ static Ast *parser_parse_block(Parser *parser) {
            !parser_check(parser, TOKEN_EOF) &&
            !too_many_errors()) {
 
+        /* Handle if/else: parse it, then decide if it's a value_expr or statement.
+         * Only treat as value_expr if: followed by }, has else, and both branches
+         * produce values (have value_expr set in their blocks). */
+        if (parser_check(parser, TOKEN_IF)) {
+            parser_advance(parser);
+            Ast *if_node = parser_parse_if(parser);
+            if (if_node) {
+                if (parser_check(parser, TOKEN_RBRACE) &&
+                    if_node->as.if_stmt.else_block != NULL &&
+                    if_node->as.if_stmt.then_block->as.block.value_expr != NULL &&
+                    if_node->as.if_stmt.else_block->as.block.value_expr != NULL) {
+                    block->as.block.value_expr = if_node;
+                    break;
+                } else {
+                    ast_block_add_statement(block, if_node);
+                }
+            }
+            continue;
+        }
+
         /* Check if current token starts a statement */
         bool is_statement_start =
             parser_check(parser, TOKEN_VAL) ||
@@ -3696,7 +3716,6 @@ static Ast *parser_parse_block(Parser *parser) {
             parser_check(parser, TOKEN_BREAK) ||
             parser_check(parser, TOKEN_CONTINUE) ||
             parser_check(parser, TOKEN_LBRACE) ||
-            parser_check(parser, TOKEN_IF) ||
             (parser_check(parser, TOKEN_IDENTIFIER) &&
              parser_peek_next(parser) == TOKEN_EQUALS);
 

@@ -1,0 +1,78 @@
+// Test if/else as block value expression
+
+// Simple: if/else as function body value_expr
+func min_i64(a: i64, b: i64): i64 = {
+    if (a < b) { a } else { b }
+}
+
+func max_i64(a: i64, b: i64): i64 = {
+    if (a > b) { a } else { b }
+}
+
+// return if/else
+func abs_i64(a: i64): i64 = {
+    return if (a < 0) { 0 - a } else { a }
+}
+
+// Nested if/else as value_expr
+func clamp(x: i64, lo: i64, hi: i64): i64 = {
+    if (x < lo) { lo } else { if (x > hi) { hi } else { x } }
+}
+
+// if/else as value_expr in val initializer (already worked, but verify)
+func sign(x: i64): i64 = {
+    val s: i64 = if (x > 0) { 1 } else { if (x < 0) { 0 - 1 } else { 0 } }
+    s
+}
+
+// Statement if (no else) still works as statement in block
+func count_positive(a: i64, b: i64, c: i64): i64 = {
+    mut n: i64 = 0
+    if (a > 0) { n = n + 1 }
+    if (b > 0) { n = n + 1 }
+    if (c > 0) { n = n + 1 }
+    n
+}
+
+// Statement if/else (branches have side effects, no value) still works
+func categorize(mut ref out: i64, x: i64): void = {
+    if (x > 0) {
+        out = 1
+    } else {
+        out = 0 - 1
+    }
+}
+
+func main(): void = {
+    // Simple value_expr
+    assert min_i64(3, 5) == 3
+    assert min_i64(7, 2) == 2
+    assert max_i64(3, 5) == 5
+    assert max_i64(7, 2) == 7
+
+    // return if/else
+    assert abs_i64(5) == 5
+    assert abs_i64(0 - 3) == 3
+    assert abs_i64(0) == 0
+
+    // Nested
+    assert clamp(5, 1, 10) == 5
+    assert clamp(0 - 3, 1, 10) == 1
+    assert clamp(15, 1, 10) == 10
+
+    // val initializer with nested if/else
+    assert sign(42) == 1
+    assert sign(0 - 7) == 0 - 1
+    assert sign(0) == 0
+
+    // Statement if still works
+    assert count_positive(1, 0 - 2, 3) == 2
+    assert count_positive(0 - 1, 0 - 2, 0 - 3) == 0
+
+    // Statement if/else with side effects
+    mut r: i64 = 0
+    categorize(mut ref r, 5)
+    assert r == 1
+    categorize(mut ref r, 0 - 3)
+    assert r == 0 - 1
+}

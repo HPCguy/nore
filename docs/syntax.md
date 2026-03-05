@@ -1019,9 +1019,21 @@ val y: i64 = if (flag) {
     val b: i64 = 20
     b - 5
 }
+
+// if/else as function body value expression (implicit return)
+func min(a: i64, b: i64): i64 = {
+    if (a < b) { a } else { b }
+}
+
+// return if/else
+func abs(x: i64): i64 = {
+    return if (x < 0) { 0 - x } else { x }
+}
 ```
 - Both branches must have compatible types
 - Each branch's value is its last expression
+- Works as block value expression (last expression before `}`) in any block, including function bodies
+- Works after `return` keyword
 - Comptime if conditions are folded at compile time
 
 **While Loops**:

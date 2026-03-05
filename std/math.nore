@@ -1,43 +1,17 @@
 // Standard math utilities for Nore
 
-func min_i64(a: i64, b: i64): i64 = {
-    if (a < b) { return a }
-    return b
-}
-
-func max_i64(a: i64, b: i64): i64 = {
-    if (a > b) { return a }
-    return b
-}
-
-func abs_i64(a: i64): i64 = {
-    if (a < 0) { return 0 - a }
-    return a
-}
+func min_i64(a: i64, b: i64): i64 = { if (a < b) { a } else { b } }
+func max_i64(a: i64, b: i64): i64 = { if (a > b) { a } else { b } }
+func abs_i64(a: i64): i64 = { if (a < 0) { 0 - a } else { a } }
 
 func clamp_i64(x: i64, lo: i64, hi: i64): i64 = {
-    if (x < lo) { return lo }
-    if (x > hi) { return hi }
-    return x
+    if (x < lo) { lo } else { if (x > hi) { hi } else { x } }
 }
 
-func min_f64(a: f64, b: f64): f64 = {
-    if (a < b) { return a }
-    return b
-}
-
-func max_f64(a: f64, b: f64): f64 = {
-    if (a > b) { return a }
-    return b
-}
-
-func abs_f64(a: f64): f64 = {
-    if (a < 0.0) { return 0.0 - a }
-    return a
-}
+func min_f64(a: f64, b: f64): f64 = { if (a < b) { a } else { b } }
+func max_f64(a: f64, b: f64): f64 = { if (a > b) { a } else { b } }
+func abs_f64(a: f64): f64 = { if (a < 0.0) { 0.0 - a } else { a } }
 
 func clamp_f64(x: f64, lo: f64, hi: f64): f64 = {
-    if (x < lo) { return lo }
-    if (x > hi) { return hi }
-    return x
+    if (x < lo) { lo } else { if (x > hi) { hi } else { x } }
 }
