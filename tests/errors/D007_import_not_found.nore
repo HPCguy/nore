@@ -1,0 +1,3 @@
+import "nonexistent_file.nore"
+
+func main(): void = {}

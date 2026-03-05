@@ -68,6 +68,9 @@ error[D002]: Unknown flag: --invalid
 - **P043**: Expected '}' to close enum
 - **P044**: Expected variant name in enum
 - **P045**: Unknown enum variant
+- **P046**: Expected string literal after 'import'
+- **D007**: Cannot find imported file
+
 - **S001**: Duplicate variable declaration
 - **S002**: Undeclared variable
 - **S003**: Cannot assign to immutable variable

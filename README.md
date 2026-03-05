@@ -196,6 +196,7 @@ Each step builds on the previous one. See [docs/data-oriented-design.md](docs/da
 6. **`str` type**: byte slice, falls out of slice implementation
 7. **`table` sugar**: generates struct + value, the DOD payoff
 8. **`enum` types**: named integer constants with type safety, dot-qualified access
+9. **`import` system**: multi-file compilation, `std/` prefix for stdlib
 
 ## Technical Decisions
 

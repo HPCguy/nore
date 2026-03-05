@@ -1,0 +1,12 @@
+// Diamond: this imports both types_helper (directly) and combined_helper
+// (which also imports types_helper). types_helper should be imported only once.
+import "import_helpers/types_helper.nore"
+import "import_helpers/combined_helper.nore"
+
+func main(): void = {
+    val v: Vec2 = make_vec2(5.0, 6.0)
+    assert v.x == 5.0
+
+    val d: Direction = Direction.West
+    assert d == Direction.West
+}

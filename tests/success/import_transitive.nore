@@ -1,0 +1,11 @@
+import "import_helpers/combined_helper.nore"
+
+func main(): void = {
+    // Vec2 and Direction come transitively through combined_helper
+    val v: Vec2 = make_vec2(3.0, 4.0)
+    assert v.x == 3.0
+    assert v.y == 4.0
+
+    val d: Direction = Direction.East
+    assert d != Direction.West
+}

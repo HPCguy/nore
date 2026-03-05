@@ -25,6 +25,24 @@ val y: i64 = 10
 - Multi-line: `/*` to `*/` (do not nest)
 - Comments are skipped by the lexer (no tokens produced)
 
+### Imports
+
+Import declarations from other `.nore` files:
+
+```nore
+import "std/math.nore"
+import "utils.nore"
+import "../shared/helpers.nore"
+```
+
+- Keyword `import` followed by a string literal path
+- Must appear at top level (alongside other declarations)
+- **Path resolution**: paths starting with `std/` resolve relative to the compiler binary's directory. All other paths resolve relative to the importing file's directory.
+- Each file is imported at most once (duplicates are silently skipped)
+- All top-level declarations from the imported file are merged into the importing program's scope
+- Imports are transitive: if A imports B and B imports C, declarations from C are visible in A
+- Error diagnostics show the correct source file for each error
+
 ### Types
 
 **Currently supported**:

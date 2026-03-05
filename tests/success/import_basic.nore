@@ -1,0 +1,6 @@
+import "import_helpers/math_helper.nore"
+
+func main(): void = {
+    assert add(3, 4) == 7
+    assert double(5) == 10
+}

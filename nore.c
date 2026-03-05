@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <libgen.h>
+#include <limits.h>
 
 /* ================================= Errors ================================= */
 
@@ -25,6 +27,7 @@
 typedef struct {
     size_t line;
     size_t column;
+    const char *file;
 } SourceLoc;
 
 typedef enum {
@@ -39,6 +42,7 @@ typedef enum {
     ERR_D004_MISSING_OUTPUT_PATH = ERR_GROUP_DRIVER + 4,
     ERR_D005_FILE_NOT_FOUND     = ERR_GROUP_DRIVER + 5,
     ERR_D006_CLANG_FAILED       = ERR_GROUP_DRIVER + 6,
+    ERR_D007_IMPORT_NOT_FOUND   = ERR_GROUP_DRIVER + 7,
 
     /* Lexer errors: L001-L099 */
     ERR_L001_INVALID_CHAR        = ERR_GROUP_LEXER + 1,
@@ -94,6 +98,7 @@ typedef enum {
     ERR_P043_EXPECTED_RBRACE_ENUM  = ERR_GROUP_PARSER + 43,
     ERR_P044_EXPECTED_VARIANT_NAME = ERR_GROUP_PARSER + 44,
     ERR_P045_UNKNOWN_ENUM_VARIANT  = ERR_GROUP_PARSER + 45,
+    ERR_P046_EXPECTED_IMPORT_PATH  = ERR_GROUP_PARSER + 46,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -221,6 +226,18 @@ static void error(ErrorCode code, const char *fmt, ...) {
 /* Global source file path for diagnostics */
 static const char *g_source_file = "<unknown>";
 
+/* Compiler binary directory (for resolving std/ imports) */
+static char g_compiler_dir[PATH_MAX] = "";
+
+/* Import tracking: already-imported files (resolved absolute paths) */
+#define MAX_IMPORTS 256
+static char *g_imported_files[MAX_IMPORTS];
+static size_t g_imported_count = 0;
+
+/* Source buffers from imported files (need to stay alive for token pointers) */
+static char *g_import_sources[MAX_IMPORTS];
+static size_t g_import_source_count = 0;
+
 /* Error collection for multi-error reporting */
 #define MAX_ERRORS 10
 
@@ -228,6 +245,7 @@ typedef struct {
     ErrorCode code;
     size_t line;
     size_t column;
+    const char *file;
     char message[256];
 } CollectedError;
 
@@ -236,8 +254,8 @@ static size_t g_error_count = 0;
 static bool g_had_error = false;
 
 /* Record error for later reporting (does not exit) */
-static void diagnostic(ErrorCode code, size_t line, size_t column,
-                       const char *fmt, ...) {
+static void diagnostic_impl(ErrorCode code, size_t line, size_t column,
+                             const char *file, const char *fmt, va_list args) {
     g_had_error = true;
 
     if (g_error_count < MAX_ERRORS) {
@@ -245,20 +263,32 @@ static void diagnostic(ErrorCode code, size_t line, size_t column,
         err->code = code;
         err->line = line;
         err->column = column;
-
-        va_list args;
-        va_start(args, fmt);
+        err->file = file;
         vsnprintf(err->message, sizeof(err->message), fmt, args);
-        va_end(args);
     }
 }
+
+/* TODO: diagnostic() should take a file path parameter instead of relying on
+ * g_source_file. We use the DIAG_FILE macro as a workaround to keep
+ * g_source_file in sync, but this is fragile. Fix on the first opportunity
+ * by adding a file param and updating all call sites. */
+static void diagnostic(ErrorCode code, size_t line, size_t column,
+                       const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    diagnostic_impl(code, line, column, g_source_file, fmt, args);
+    va_end(args);
+}
+
+/* Set diagnostic file context from a SourceLoc (for multi-file error reporting) */
+#define DIAG_FILE(loc) do { if ((loc).file) g_source_file = (loc).file; } while(0)
 
 /* Print all collected errors and exit */
 static void report_errors_and_exit(void) {
     for (size_t i = 0; i < g_error_count; i++) {
         CollectedError *err = &g_errors[i];
         fprintf(stderr, "%s:%zu:%zu: error[%s]: %s\n",
-                g_source_file, err->line, err->column,
+                err->file, err->line, err->column,
                 error_code_str(err->code), err->message);
     }
 
@@ -356,6 +386,7 @@ typedef enum {
     TOKEN_STRUCT,
     TOKEN_TABLE,
     TOKEN_ENUM,
+    TOKEN_IMPORT,
     TOKEN_REF,
     TOKEN_ARENA,
     TOKEN_STR,
@@ -438,6 +469,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_STRUCT:        return "STRUCT";
         case TOKEN_TABLE:         return "TABLE";
         case TOKEN_ENUM:          return "ENUM";
+        case TOKEN_IMPORT:        return "IMPORT";
         case TOKEN_REF:           return "REF";
         case TOKEN_ARENA:         return "ARENA";
         case TOKEN_STR:           return "STR";
@@ -635,6 +667,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "return", 6) == 0) return TOKEN_RETURN;
             if (memcmp(start, "assert", 6) == 0) return TOKEN_ASSERT;
             if (memcmp(start, "struct", 6) == 0) return TOKEN_STRUCT;
+            if (memcmp(start, "import", 6) == 0) return TOKEN_IMPORT;
             break;
         case 8:
             if (memcmp(start, "continue", 8) == 0) return TOKEN_CONTINUE;
@@ -840,7 +873,7 @@ static void lexer_print_tokens(Lexer *lexer, const char *source) {
 /* ============================== Token Location ============================ */
 
 static SourceLoc token_loc(Token *token) {
-    return (SourceLoc){ .line = token->line, .column = token->column };
+    return (SourceLoc){ .line = token->line, .column = token->column, .file = g_source_file };
 }
 
 /* ================================= Types ================================== */
@@ -4407,11 +4440,124 @@ static Ast *parser_parse_table_decl(Parser *parser) {
                                struct_field_count, true, loc);
 }
 
-static Ast *parser_parse_program(Parser *parser) {
-    Ast *program = ast_make_program();
+/* Resolve import path: std/ prefix -> compiler dir, else -> relative to current file */
+static bool resolve_import_path(const char *import_path,
+                                 const char *current_file,
+                                 char *resolved, size_t resolved_size) {
+    if (strncmp(import_path, "std/", 4) == 0) {
+        snprintf(resolved, resolved_size, "%s/%s", g_compiler_dir, import_path);
+    } else {
+        /* Relative to current file's directory */
+        char dir_buf[PATH_MAX];
+        strncpy(dir_buf, current_file, sizeof(dir_buf) - 1);
+        dir_buf[sizeof(dir_buf) - 1] = '\0';
+        char *dir = dirname(dir_buf);
+        snprintf(resolved, resolved_size, "%s/%s", dir, import_path);
+    }
+    /* Canonicalize */
+    char canonical[PATH_MAX];
+    if (realpath(resolved, canonical)) {
+        strncpy(resolved, canonical, resolved_size - 1);
+        resolved[resolved_size - 1] = '\0';
+        return true;
+    }
+    return false;
+}
 
+/* Check if a file has already been imported */
+static bool is_already_imported(const char *resolved_path) {
+    for (size_t i = 0; i < g_imported_count; i++) {
+        if (strcmp(g_imported_files[i], resolved_path) == 0) return true;
+    }
+    return false;
+}
+
+/* Forward declaration: parser_parse_program needs to call parser_parse_import
+   and parser_parse_import needs parser_parse_program's declaration-parsing logic */
+static void parser_parse_declarations(Parser *parser, Ast *program);
+
+/* Parse an imported file's declarations into the program AST */
+static void parser_parse_import(const char *resolved_path, Ast *program) {
+    /* Read the imported file (reuse read_file which checks fread return) */
+    size_t length;
+    char *source = read_file(resolved_path, &length);
+
+    /* Keep source alive (tokens point into it) */
+    if (g_import_source_count >= MAX_IMPORTS) {
+        panic(ERR_I002_INTERNAL_ERROR, "too many imported files");
+    }
+    g_import_sources[g_import_source_count++] = source;
+
+    /* Save and set source file for diagnostics */
+    const char *saved_source_file = g_source_file;
+    g_source_file = resolved_path;
+
+    /* Lex and parse */
+    Lexer lexer;
+    lexer_init(&lexer, source);
+    Parser parser;
+    parser_init(&parser, &lexer);
+
+    /* Parse all declarations from the imported file */
+    parser_parse_declarations(&parser, program);
+
+    /* Restore source file */
+    g_source_file = saved_source_file;
+}
+
+/* Parse top-level declarations from the current parser into the program AST.
+ * Used by both parser_parse_program (main file) and parser_parse_import. */
+static void parser_parse_declarations(Parser *parser, Ast *program) {
     while (!parser_check(parser, TOKEN_EOF) && !too_many_errors()) {
-        if (parser_match(parser, TOKEN_FUNC)) {
+        if (parser_match(parser, TOKEN_IMPORT)) {
+            /* import "path.nore" */
+            if (!parser_match(parser, TOKEN_STRING)) {
+                diagnostic(ERR_P046_EXPECTED_IMPORT_PATH, parser->current.line,
+                           parser->current.column,
+                           "Expected string literal after 'import'");
+                parser_synchronize(parser);
+                continue;
+            }
+            /* String token includes quotes, strip them */
+            const char *path_start = parser->previous.start + 1;
+            size_t path_len = parser->previous.length - 2;
+            char import_path[PATH_MAX];
+            if (path_len >= sizeof(import_path)) {
+                diagnostic(ERR_P046_EXPECTED_IMPORT_PATH, parser->previous.line,
+                           parser->previous.column, "Import path too long");
+                continue;
+            }
+            memcpy(import_path, path_start, path_len);
+            import_path[path_len] = '\0';
+
+            /* Resolve the path */
+            char resolved[PATH_MAX];
+            if (!resolve_import_path(import_path, g_source_file,
+                                      resolved, sizeof(resolved))) {
+                diagnostic(ERR_D007_IMPORT_NOT_FOUND, parser->previous.line,
+                           parser->previous.column,
+                           "Cannot find imported file '%s'", import_path);
+                continue;
+            }
+
+            /* Skip if already imported */
+            if (is_already_imported(resolved)) continue;
+
+            /* Record as imported */
+            if (g_imported_count >= MAX_IMPORTS) {
+                panic(ERR_I002_INTERNAL_ERROR, "too many imported files");
+            }
+            g_imported_files[g_imported_count] = strdup(resolved);
+            if (!g_imported_files[g_imported_count]) {
+                panic(ERR_I001_OUT_OF_MEMORY, "recording imported file path");
+            }
+            g_imported_count++;
+
+            /* Parse the imported file's declarations into this program.
+             * Use the strdup'd path from g_imported_files (stable pointer). */
+            parser_parse_import(g_imported_files[g_imported_count - 1], program);
+
+        } else if (parser_match(parser, TOKEN_FUNC)) {
             Ast *func = parser_parse_function(parser);
             if (func) {
                 ast_program_add_statement(program, func);
@@ -4450,6 +4596,7 @@ static Ast *parser_parse_program(Parser *parser) {
                    !parser_check(parser, TOKEN_STRUCT) &&
                    !parser_check(parser, TOKEN_TABLE) &&
                    !parser_check(parser, TOKEN_ENUM) &&
+                   !parser_check(parser, TOKEN_IMPORT) &&
                    !parser_check(parser, TOKEN_VAL) &&
                    !parser_check(parser, TOKEN_MUT) &&
                    !parser_check(parser, TOKEN_EOF)) {
@@ -4457,7 +4604,11 @@ static Ast *parser_parse_program(Parser *parser) {
             }
         }
     }
+}
 
+static Ast *parser_parse_program(Parser *parser) {
+    Ast *program = ast_make_program();
+    parser_parse_declarations(parser, program);
     return program;
 }
 
@@ -5012,7 +5163,7 @@ static void scope_add_comptime_float(Scope *scope, const char *name_start,
 }
 
 static void scope_inject_io_constants(Scope *scope) {
-    SourceLoc builtin_loc = {0, 0};
+    SourceLoc builtin_loc = {0, 0, NULL};
     scope_add_comptime_int(scope, "STDIN", 5, 0, builtin_loc);
     scope_add_comptime_int(scope, "STDOUT", 6, 1, builtin_loc);
     scope_add_comptime_int(scope, "STDERR", 6, 2, builtin_loc);
@@ -5492,6 +5643,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
+    DIAG_FILE(node->loc);
     switch (node->kind) {
         case AST_NUMBER:
             node->expr_type = TYPE_COMPTIME_INT;
@@ -6653,6 +6805,7 @@ static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope,
 }
 
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table) {
+    DIAG_FILE(node->loc);
     switch (node->kind) {
         case AST_VAL_DECL: {
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
@@ -7124,6 +7277,7 @@ static Variable *scope_add_global(Scope *scope, const char *name_start,
 
 /* Type check a global variable declaration */
 static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_table) {
+    DIAG_FILE(node->loc);
     if (node->kind == AST_VAL_DECL) {
         Type init_type = typecheck_expression(node->as.val_decl.initializer, scope, func_table);
         Type declared = node->as.val_decl.type;
@@ -7308,6 +7462,7 @@ static void typecheck_program(Ast *program) {
     /* Validate value/struct type declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
+        DIAG_FILE(node->loc);
         if (node->kind == AST_VALUE_DECL) {
             Parameter *fields = node->as.value_decl.fields;
             size_t field_count = node->as.value_decl.field_count;
@@ -7388,6 +7543,7 @@ static void typecheck_program(Ast *program) {
     /* First pass: register all functions */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
+        DIAG_FILE(node->loc);
         if (node->kind == AST_FUNC_DECL) {
             func_table_add(func_table, node);
 
@@ -7417,6 +7573,7 @@ static void typecheck_program(Ast *program) {
     /* Global variable pass: typecheck top-level val/mut declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
+        DIAG_FILE(node->loc);
         if (node->kind == AST_VAL_DECL || node->kind == AST_MUT_DECL) {
             typecheck_global_decl(node, global_scope, func_table);
         }
@@ -7425,6 +7582,7 @@ static void typecheck_program(Ast *program) {
     /* Second pass: type check each function */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
+        DIAG_FILE(node->loc);
         if (node->kind == AST_FUNC_DECL) {
             typecheck_function(node, func_table, global_scope);
         }
@@ -7683,7 +7841,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                                 fprintf(out, ", %zu", oae ? oae->size : 0);
                             }
                             fprintf(out, ", \"%s\", %zuUL, %zuUL), ",
-                                    g_source_file, arg->loc.line, arg->loc.column);
+                                    arg->loc.file, arg->loc.line, arg->loc.column);
                         }
                         fprintf(out, "(%s){.data = (%s *)",
                                 codegen_type_to_c(param_type),
@@ -7777,7 +7935,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 fprintf(out, ", ");
                 codegen_emit_expression(out, obj);
                 fprintf(out, ".len, \"%s\", %zuUL, %zuUL), ",
-                        g_source_file, node->loc.line, node->loc.column);
+                        node->loc.file, node->loc.line, node->loc.column);
                 codegen_emit_expression(out, obj);
                 fprintf(out, ".data[");
                 codegen_emit_expression(out, node->as.index_access.index);
@@ -7788,7 +7946,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                     fprintf(out, "(NI_BOUNDS_CHECK(");
                     codegen_emit_expression(out, node->as.index_access.index);
                     fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL), ",
-                            at->size, g_source_file,
+                            at->size, node->loc.file,
                             node->loc.line, node->loc.column);
                 }
                 codegen_emit_lvalue(out, obj);
@@ -7934,7 +8092,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                     fprintf(out, "%s(", fn);
                     codegen_emit_expression(out, node->as.type_cast.operand);
                     fprintf(out, ", \"%s\", \"%s\", %zuUL, %zuUL)",
-                            type_name(from), g_source_file,
+                            type_name(from), node->loc.file,
                             node->loc.line, node->loc.column);
                 }
                 break;
@@ -7980,7 +8138,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                     fprintf(out, "%s(", fn);
                     codegen_emit_expression(out, node->as.type_cast.operand);
                     fprintf(out, ", \"%s\", \"%s\", %zuUL, %zuUL)",
-                            type_name(from), g_source_file,
+                            type_name(from), node->loc.file,
                             node->loc.line, node->loc.column);
                 }
             } else {
@@ -8163,7 +8321,7 @@ static void codegen_emit_target_bounds_checks(FILE *out, Ast *node, int indent) 
             fprintf(out, ", ");
             codegen_emit_expression(out, node->as.index_access.object);
             fprintf(out, ".len, \"%s\", %zuUL, %zuUL);\n",
-                    g_source_file, node->loc.line, node->loc.column);
+                    node->loc.file, node->loc.line, node->loc.column);
         } else {
             ArrayTypeEntry *at = array_table_get(obj_type);
             if (at) {
@@ -8171,7 +8329,7 @@ static void codegen_emit_target_bounds_checks(FILE *out, Ast *node, int indent) 
                 fprintf(out, "NI_BOUNDS_CHECK(");
                 codegen_emit_expression(out, node->as.index_access.index);
                 fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL);\n",
-                        at->size, g_source_file,
+                        at->size, node->loc.file,
                         node->loc.line, node->loc.column);
             }
         }
@@ -8385,7 +8543,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, ")) {\n");
             codegen_indent(out, indent + 1);
             fprintf(out, "fprintf(stderr, \"%s:%zu:%zu: error[R001]: Assertion failed\\n\");\n",
-                    g_source_file, node->loc.line, node->loc.column);
+                    node->loc.file, node->loc.line, node->loc.column);
             codegen_indent(out, indent + 1);
             fprintf(out, "exit(%d);\n", EXIT_RUNTIME);
             codegen_indent(out, indent);
@@ -9155,6 +9313,31 @@ int main(int argc, char **argv) {
     /* Set global source file for diagnostics */
     g_source_file = input_path;
 
+    /* Determine compiler directory (for std/ imports) */
+    {
+        char argv0_buf[PATH_MAX];
+        strncpy(argv0_buf, argv[0], sizeof(argv0_buf) - 1);
+        argv0_buf[sizeof(argv0_buf) - 1] = '\0';
+        /* Try to resolve the real path of the compiler binary */
+        char real_buf[PATH_MAX];
+        if (realpath(argv[0], real_buf)) {
+            strncpy(argv0_buf, real_buf, sizeof(argv0_buf) - 1);
+            argv0_buf[sizeof(argv0_buf) - 1] = '\0';
+        }
+        char *dir = dirname(argv0_buf);
+        strncpy(g_compiler_dir, dir, sizeof(g_compiler_dir) - 1);
+        g_compiler_dir[sizeof(g_compiler_dir) - 1] = '\0';
+    }
+
+    /* Add main file to import tracking (so it won't be imported again) */
+    {
+        char resolved_main[PATH_MAX];
+        if (realpath(input_path, resolved_main)) {
+            g_imported_files[0] = strdup(resolved_main);
+            g_imported_count = 1;
+        }
+    }
+
     /* Determine output path */
     char output_path[256];
     if (output_arg) {
@@ -9250,8 +9433,12 @@ int main(int argc, char **argv) {
     if (g_codegen_func_table) func_table_destroy(g_codegen_func_table);
     free(source);
 
-    /* Report any collected errors (exits with non-zero) */
+    /* Report any collected errors (exits with non-zero).
+     * Must happen before freeing import paths since errors reference them. */
     if (g_had_error) report_errors_and_exit();
+
+    for (size_t i = 0; i < g_imported_count; i++) free(g_imported_files[i]);
+    for (size_t i = 0; i < g_import_source_count; i++) free(g_import_sources[i]);
 
     return run_exit_code;
 }
