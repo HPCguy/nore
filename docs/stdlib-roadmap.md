@@ -221,20 +221,27 @@ func clamp_f64(x: f64, lo: f64, hi: f64): f64
 The order matters. Each step unlocks the next.
 
 ```
-1. Modulo operator (%)              ← small compiler change, unblocks hashing/formatting
-2. Bitwise operators                ← small compiler change, unblocks binary operations
-3. Character literals               ← small compiler change, unblocks string processing
-4. Numeric type casting             ← compiler change, unblocks I/O (u8 ↔ i64)
-5. I/O built-ins (fd_write, etc.)   ← compiler change, THE unlock for real programs
-6. print / println                  ← first .nore stdlib code (Layer C, trivial wrapper)
-7. String operations                ← .nore stdlib (Layer B)
-8. Enums                            ← compiler change, unblocks error handling
-9. File operations                  ← .nore stdlib (Layer D)
-10. Module system                   ← compiler change, unblocks shipping stdlib as files
-11. Math utilities                  ← .nore stdlib (Layer E, can happen anytime)
+Phase 0: Primitives (DONE)
+  1. ✓ Modulo operator (%)          ← unblocks hashing/formatting
+  2. ✓ Bitwise operators            ← unblocks binary operations
+  3. ✓ Character literals           ← unblocks string processing
+  4. ✓ Numeric type casting         ← unblocks I/O (u8 ↔ i64)
+  5. ✓ I/O built-ins (fd_write..)  ← THE unlock for real programs
+  6. ✓ print / println / print_i64 ← first programs can print output
+
+Phase 1: Language completeness (compiler work)
+  7. Enums                          ← unblocks error handling, Result/Option
+  8. Module system                  ← unblocks shipping stdlib as .nore files
+
+Phase 2: Standard library (.nore files, importable)
+  9.  String operations             ← Layer B
+  10. File operations               ← Layer D
+  11. Math utilities                ← Layer E
 ```
 
-Steps 1-5 are all compiler work. Step 6 is the first moment where a Nore program can print "hello world". That's the milestone to aim for.
+Phase 0 is complete. Steps 1-6 are all done, meaning Nore programs can do real I/O.
+
+Phase 1 groups the two remaining compiler prerequisites together. Without enums, the stdlib has no error handling story. Without modules, stdlib code has no home. Both must land before the stdlib can be written as proper importable `.nore` files. Enums come first because they are a smaller, more self-contained change, and the module system design benefits from knowing what the stdlib needs to export (including `Result` and `Option` from enums).
 
 ---
 
@@ -292,9 +299,9 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 
 ## Open Questions
 
-- **Casting syntax**: `x as u8`, `u8(x)`, or `cast(x, u8)`? Each has trade-offs for readability and parsing.
-- **Overflow behavior on cast**: truncate silently (C-style), trap (safe), or return `Result`?
+- **Casting syntax**: resolved. Function-call style `u8(x)`, `i64(x)`, etc. Reads naturally, parses cleanly.
+- **Overflow behavior on cast**: currently truncates (C-style). Revisit when enums/`Result` exist.
 - **I/O error model before enums**: return negative error codes? Return a boolean + out-parameter? Accept the limitation and add proper error handling when enums land?
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
 - **Module system scope**: textual inclusion (like C `#include`) vs. proper modules with scoping? The former is simpler to implement, the latter is better long-term.
-- **Should `print`/`println` be built-in?** Implementing them as stdlib `.nore` functions is cleaner, but until the module system exists, they'd need to be built-in or pasted into every program. A pragmatic compromise: make them built-in now, move to stdlib later.
+- **`print`/`println` are built-in for now.** They are compiler built-ins until the module system exists, at which point they can move to stdlib `.nore` files.
