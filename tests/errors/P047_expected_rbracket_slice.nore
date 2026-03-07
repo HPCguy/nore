@@ -1,0 +1,6 @@
+// P047: Expected ']' after slice range
+func main(): void = {
+    mut mem = arena(4096)
+    mut nums: [i64] = arena_alloc(mut ref mem, 5)
+    val sub: [i64] = nums[1..3
+}

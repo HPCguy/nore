@@ -69,6 +69,7 @@ error[D002]: Unknown flag: --invalid
 - **P044**: Expected variant name in enum
 - **P045**: Unknown enum variant
 - **P046**: Expected string literal after 'import'
+- **P047**: Expected ']' after slice range
 - **D007**: Cannot find imported file
 
 - **S001**: Duplicate variable declaration
@@ -141,9 +142,12 @@ error[D002]: Unknown flag: --invalid
 - **S068**: Cannot compare different enum types
 - **S069**: Duplicate variant name in enum
 - **S070**: Duplicate type name (enum name already used)
+- **S071**: Slice range bound must be integer type
+- **S072**: Cannot sub-slice non-array/slice type
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)
+- **R004**: Slice bounds out of range
 
 ## Error Functions
 

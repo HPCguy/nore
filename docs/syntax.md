@@ -550,6 +550,14 @@ val z: i64 = grid[1][0]   // nested indexing
 - Bounds checking at runtime (error R002, exits with code 2 on out-of-bounds)
 - Chains with field access: `v.data[i]`
 
+**Sub-Slicing** (produces a slice from an array):
+```nore
+val arr: [i64; 5] = [10, 20, 30, 40, 50]
+val sub: [i64] = arr[1..4]    // slice of elements 1, 2, 3
+val all: [i64] = arr[..]      // full array as slice
+```
+- See the Slices section for full sub-slicing syntax
+
 **Element Assignment**:
 ```nore
 mut arr: [i64; 3] = [1, 2, 3]
@@ -666,14 +674,30 @@ data[i] = 42                 // element assignment (mut ref only)
 - Same syntax as arrays
 - Runtime bounds checking (error R002, exits with code 2 on out-of-bounds)
 
+**Sub-Slicing** (`expr[start..end]`):
+```nore
+val sub: [i64] = data[2..5]    // elements at indices 2, 3, 4
+val head: [i64] = data[..3]    // same as data[0..3]
+val tail: [i64] = data[2..]    // same as data[2..data.len]
+val all: [i64] = data[..]      // full slice
+```
+- Works on both slices and fixed arrays; result is always a slice
+- Range is half-open: `[start..end)` (end-exclusive)
+- Start defaults to 0 when omitted, end defaults to length when omitted
+- Runtime bounds checking (error R004, exits with code 2 if `start < 0`, `end < start`, or `end > len`)
+- Sub-slices borrow from the source, so mutations through a sub-slice affect the original
+- Can be chained with indexing: `data[1..4][0]`
+- Can be passed directly to `ref` parameters: `sum(ref arr[1..4])`
+
 **Slice Local Variables**:
 ```nore
 mut mem: Arena = arena(4096)
 val data: [i64] = arena_alloc(mut ref mem, 10)
 mut pts: [Vec2] = arena_alloc(mut ref mem, 100)
 val result: [i64] = get_data(mut ref mem, 5)   // from function call
+val sub: [i64] = data[2..5]                     // from sub-slicing
 ```
-- Slice locals must be initialized via `arena_alloc()` or from a function call returning a slice
+- Slice locals must be initialized via `arena_alloc()`, a function call returning a slice, or a sub-slice expression
 
 **Slice Struct Fields**:
 ```nore
@@ -688,12 +712,12 @@ mut mem: Arena = arena(4096)
 val a: [i64] = arena_alloc(mut ref mem, 10)
 val b: [i64] = a    // ERROR: slice local must use arena_alloc or function call (S046)
 ```
-- Slice locals can only be initialized via `arena_alloc()` or a function call returning a slice
+- Slice locals can only be initialized via `arena_alloc()`, a function call, or a sub-slice expression
 - To share access, pass slices by `ref` or `mut ref`
 
 **Restrictions** (current):
 - Slice parameters must use `ref` or `mut ref`
-- Slice local variables must be initialized via `arena_alloc()` or from a function call returning a slice
+- Slice local variables must be initialized via `arena_alloc()`, a function call returning a slice, or a sub-slice expression
 
 ### Arenas
 
@@ -1212,12 +1236,12 @@ Available via `import "std/math.nore"`:
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)
 - `{` `}` - Braces (blocks, function bodies, value type declarations, constructors)
-- `[` `]` - Brackets (array types, array literals, indexing)
+- `[` `]` - Brackets (array types, array literals, indexing, sub-slicing)
 - `:` - Type annotation separator
 - `;` - Array type size separator (`[T; N]`)
 - `,` - Parameter/field/element separator
 - `.` - Field access
-- `..` - Range operator (for loops)
+- `..` - Range operator (for loops, sub-slicing)
 
 Note: `"` delimits string literals but is consumed by the lexer during scanning, not emitted as a standalone token.
 

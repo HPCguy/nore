@@ -99,6 +99,7 @@ typedef enum {
     ERR_P044_EXPECTED_VARIANT_NAME = ERR_GROUP_PARSER + 44,
     ERR_P045_UNKNOWN_ENUM_VARIANT  = ERR_GROUP_PARSER + 45,
     ERR_P046_EXPECTED_IMPORT_PATH  = ERR_GROUP_PARSER + 46,
+    ERR_P047_EXPECTED_RBRACKET_SLICE = ERR_GROUP_PARSER + 47,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -171,11 +172,14 @@ typedef enum {
     ERR_S068_ENUM_COMPARE_MISMATCH = ERR_GROUP_SEMANTIC + 68,
     ERR_S069_DUPLICATE_ENUM_VARIANT = ERR_GROUP_SEMANTIC + 69,
     ERR_S070_DUPLICATE_TYPE_NAME   = ERR_GROUP_SEMANTIC + 70,
+    ERR_S071_SLICE_RANGE_NOT_INT   = ERR_GROUP_SEMANTIC + 71,
+    ERR_S072_SLICE_ON_NON_ARRAY    = ERR_GROUP_SEMANTIC + 72,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
     ERR_R002_INDEX_OUT_OF_BOUNDS   = ERR_GROUP_RUNTIME + 2,
     ERR_R003_CAST_OVERFLOW         = ERR_GROUP_RUNTIME + 3,
+    ERR_R004_SLICE_BOUNDS          = ERR_GROUP_RUNTIME + 4,
 } ErrorCode;
 
 static const char *error_code_str(ErrorCode code) {
@@ -1530,6 +1534,7 @@ typedef enum {
     AST_FIELD_ACCESS,
     AST_ARRAY_LITERAL,
     AST_INDEX_ACCESS,
+    AST_SLICE_ACCESS,
     AST_ARENA_NEW,
     AST_ARENA_ALLOC,
     AST_ARENA_RESET,
@@ -1716,6 +1721,12 @@ typedef struct Ast {
             struct Ast *object;
             struct Ast *index;
         } index_access;
+
+        struct {
+            struct Ast *object;
+            struct Ast *start;  /* NULL means 0 */
+            struct Ast *end;    /* NULL means len */
+        } slice_access;
 
         struct {
             struct Ast *capacity;
@@ -2161,6 +2172,17 @@ static Ast *ast_make_index_access(Ast *object, Ast *index, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_slice_access(Ast *object, Ast *start, Ast *end, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_SLICE_ACCESS;
+    node->loc = loc;
+    node->as.slice_access.object = object;
+    node->as.slice_access.start = start;
+    node->as.slice_access.end = end;
+    return node;
+}
+
 static Ast *ast_make_arena_new(Ast *capacity, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -2390,6 +2412,11 @@ static void ast_free(Ast *node) {
         case AST_INDEX_ACCESS:
             ast_free(node->as.index_access.object);
             ast_free(node->as.index_access.index);
+            break;
+        case AST_SLICE_ACCESS:
+            ast_free(node->as.slice_access.object);
+            if (node->as.slice_access.start) ast_free(node->as.slice_access.start);
+            if (node->as.slice_access.end) ast_free(node->as.slice_access.end);
             break;
         case AST_ARENA_NEW:
             ast_free(node->as.arena_new.capacity);
@@ -3390,20 +3417,51 @@ static Ast *parser_parse_postfix(Parser *parser) {
                                           parser->previous.length, loc);
         } else if (parser_match(parser, TOKEN_LBRACKET)) {
             SourceLoc loc = token_loc(&parser->previous);
-            Ast *index = parser_parse_expression(parser);
-            if (!index) {
-                ast_free(expr);
-                return NULL;
+            /* Check for [..end] or [..] (start omitted) */
+            if (parser_match(parser, TOKEN_DOTDOT)) {
+                Ast *end = NULL;
+                if (!parser_check(parser, TOKEN_RBRACKET)) {
+                    end = parser_parse_expression(parser);
+                    if (!end) { ast_free(expr); return NULL; }
+                }
+                if (!parser_match(parser, TOKEN_RBRACKET)) {
+                    diagnostic(g_source_file, ERR_P047_EXPECTED_RBRACKET_SLICE,
+                               parser->current.line, parser->current.column,
+                               "Expected ']' after slice range");
+                    ast_free(expr); if (end) ast_free(end);
+                    return NULL;
+                }
+                expr = ast_make_slice_access(expr, NULL, end, loc);
+            } else {
+                Ast *first = parser_parse_expression(parser);
+                if (!first) { ast_free(expr); return NULL; }
+                if (parser_match(parser, TOKEN_DOTDOT)) {
+                    /* [start..end] or [start..] */
+                    Ast *end = NULL;
+                    if (!parser_check(parser, TOKEN_RBRACKET)) {
+                        end = parser_parse_expression(parser);
+                        if (!end) { ast_free(expr); ast_free(first); return NULL; }
+                    }
+                    if (!parser_match(parser, TOKEN_RBRACKET)) {
+                        diagnostic(g_source_file, ERR_P047_EXPECTED_RBRACKET_SLICE,
+                                   parser->current.line, parser->current.column,
+                                   "Expected ']' after slice range");
+                        ast_free(expr); ast_free(first); if (end) ast_free(end);
+                        return NULL;
+                    }
+                    expr = ast_make_slice_access(expr, first, end, loc);
+                } else {
+                    /* [index] */
+                    if (!parser_match(parser, TOKEN_RBRACKET)) {
+                        diagnostic(g_source_file, ERR_P034_EXPECTED_RBRACKET,
+                                   parser->current.line, parser->current.column,
+                                   "Expected ']' after index expression");
+                        ast_free(expr); ast_free(first);
+                        return NULL;
+                    }
+                    expr = ast_make_index_access(expr, first, loc);
+                }
             }
-            if (!parser_match(parser, TOKEN_RBRACKET)) {
-                diagnostic(g_source_file, ERR_P034_EXPECTED_RBRACKET, parser->current.line,
-                           parser->current.column,
-                           "Expected ']' after index expression");
-                ast_free(expr);
-                ast_free(index);
-                return NULL;
-            }
-            expr = ast_make_index_access(expr, index, loc);
         } else {
             break;
         }
@@ -4772,6 +4830,23 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.index_access.index, indent + 2);
             break;
 
+        case AST_SLICE_ACCESS:
+            printf("SLICE_ACCESS\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("OBJECT:\n");
+            parser_print_ast_step(node->as.slice_access.object, indent + 2);
+            if (node->as.slice_access.start) {
+                for (int i = 0; i < indent + 1; i++) printf("  ");
+                printf("START:\n");
+                parser_print_ast_step(node->as.slice_access.start, indent + 2);
+            }
+            if (node->as.slice_access.end) {
+                for (int i = 0; i < indent + 1; i++) printf("  ");
+                printf("END:\n");
+                parser_print_ast_step(node->as.slice_access.end, indent + 2);
+            }
+            break;
+
         case AST_STRING_LITERAL:
             printf("STRING_LITERAL(\"%.*s\")\n",
                    (int)node->as.string_literal.raw_length,
@@ -6123,6 +6198,48 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return elem_type;
         }
 
+        case AST_SLICE_ACCESS: {
+            Type obj_type = typecheck_expression(node->as.slice_access.object,
+                                                  scope, func_table);
+            if (node->as.slice_access.start) {
+                Type st = typecheck_expression(node->as.slice_access.start,
+                                               scope, func_table);
+                if (!type_is_integer(st)) {
+                    diagnostic(node->as.slice_access.start->loc.file,
+                               ERR_S071_SLICE_RANGE_NOT_INT,
+                               node->as.slice_access.start->loc.line,
+                               node->as.slice_access.start->loc.column,
+                               "Slice range start must be integer, got %s",
+                               type_name(st));
+                }
+            }
+            if (node->as.slice_access.end) {
+                Type et = typecheck_expression(node->as.slice_access.end,
+                                               scope, func_table);
+                if (!type_is_integer(et)) {
+                    diagnostic(node->as.slice_access.end->loc.file,
+                               ERR_S071_SLICE_RANGE_NOT_INT,
+                               node->as.slice_access.end->loc.line,
+                               node->as.slice_access.end->loc.column,
+                               "Slice range end must be integer, got %s",
+                               type_name(et));
+                }
+            }
+            if (!type_is_array(obj_type) && !type_is_slice(obj_type)) {
+                diagnostic(node->loc.file, ERR_S072_SLICE_ON_NON_ARRAY,
+                           node->loc.line, node->loc.column,
+                           "Cannot sub-slice non-array/slice type %s",
+                           type_name(obj_type));
+                node->expr_type = TYPE_I64;
+                return TYPE_I64;
+            }
+            Type elem_type = type_element_type(obj_type);
+            if (elem_type == TYPE_UNKNOWN) elem_type = TYPE_I64;
+            Type result = slice_table_intern(elem_type);
+            node->expr_type = result;
+            return result;
+        }
+
         case AST_FIELD_ACCESS: {
             Type obj_type = typecheck_expression(node->as.field_access.object,
                                                   scope, func_table);
@@ -6713,6 +6830,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 break;
             }
 
+            /* Slice local via sub-slicing — allowed (borrows from source) */
+            if (type_is_slice(declared) &&
+                node->as.val_decl.initializer->kind == AST_SLICE_ACCESS) {
+                scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                break;
+            }
+
             /* Slice locals only allowed via alloc or function call */
             if (type_is_slice(declared)) {
                 diagnostic(node->loc.file, ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
@@ -6811,6 +6936,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             /* Slice local via function call — allowed (escape checked at call site) */
             if (type_is_slice(declared) &&
                 node->as.mut_decl.initializer->kind == AST_FUNC_CALL) {
+                scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                break;
+            }
+
+            /* Slice local via sub-slicing — allowed (borrows from source) */
+            if (type_is_slice(declared) &&
+                node->as.mut_decl.initializer->kind == AST_SLICE_ACCESS) {
                 scope_add(*scope, node->as.mut_decl.name_start,
                           node->as.mut_decl.name_length, true, declared, node->loc);
                 break;
@@ -7581,6 +7714,31 @@ static void codegen_emit_field(FILE *out, Ast *node,
 static void codegen_emit_lvalue(FILE *out, Ast *node);       /* forward declaration */
 static void codegen_emit_expression(FILE *out, Ast *node);  /* forward declaration */
 
+/* Helpers for AST_SLICE_ACCESS codegen to avoid repetition */
+static void codegen_emit_slice_start(FILE *out, Ast *node) {
+    if (node->as.slice_access.start)
+        codegen_emit_expression(out, node->as.slice_access.start);
+    else
+        fprintf(out, "0");
+}
+
+static void codegen_emit_obj_len(FILE *out, Ast *obj, Type obj_type) {
+    if (type_is_slice(obj_type)) {
+        codegen_emit_expression(out, obj);
+        fprintf(out, ".len");
+    } else {
+        ArrayTypeEntry *at = array_table_get(obj_type);
+        fprintf(out, "%zu", at ? at->size : (size_t)0);
+    }
+}
+
+static void codegen_emit_slice_end(FILE *out, Ast *node, Ast *obj, Type obj_type) {
+    if (node->as.slice_access.end)
+        codegen_emit_expression(out, node->as.slice_access.end);
+    else
+        codegen_emit_obj_len(out, obj, obj_type);
+}
+
 /* Emit a byte buffer argument, coercing [u8; N] arrays to ni_slice_0 */
 static void codegen_emit_byte_buf(FILE *out, Ast *arg) {
     if (type_is_array(arg->expr_type)) {
@@ -7810,6 +7968,39 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 fprintf(out, "]");
                 if (at) fprintf(out, ")");
             }
+            break;
+        }
+
+        case AST_SLICE_ACCESS: {
+            /* Emit bounds-checked sub-slice as comma expression:
+             * (NI_SLICE_BOUNDS_CHECK(start, end, len, file, line, col),
+             *  (ni_slice_X){.data = obj.data + start, .len = end - start}) */
+            Ast *obj = node->as.slice_access.object;
+            Type obj_type = obj->expr_type;
+
+            fprintf(out, "(NI_SLICE_BOUNDS_CHECK(");
+            codegen_emit_slice_start(out, node);
+            fprintf(out, ", ");
+            codegen_emit_slice_end(out, node, obj, obj_type);
+            fprintf(out, ", ");
+            codegen_emit_obj_len(out, obj, obj_type);
+            fprintf(out, ", \"%s\", %zuUL, %zuUL), ",
+                    node->loc.file, node->loc.line, node->loc.column);
+            /* result slice literal */
+            fprintf(out, "(%s){.data = (%s *)",
+                    codegen_type_to_c(node->expr_type),
+                    codegen_type_to_c(type_element_type(obj_type)));
+            if (type_is_slice(obj_type))
+                codegen_emit_expression(out, obj);
+            else
+                codegen_emit_lvalue(out, obj);
+            fprintf(out, ".data + ");
+            codegen_emit_slice_start(out, node);
+            fprintf(out, ", .len = ");
+            codegen_emit_slice_end(out, node, obj, obj_type);
+            fprintf(out, " - ");
+            codegen_emit_slice_start(out, node);
+            fprintf(out, "})");
             break;
         }
 
@@ -8770,7 +8961,16 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "}\n");
         fprintf(out, "#define NI_BOUNDS_CHECK(idx, size, file, line, col) \\\n");
         fprintf(out, "    ((uint64_t)(idx) >= (uint64_t)(size) \\\n");
-        fprintf(out, "     ? (ni_bounds_fail((int64_t)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n\n");
+        fprintf(out, "     ? (ni_bounds_fail((int64_t)(idx), (size_t)(size), (file), (line), (col)), 0) : 0)\n");
+        fprintf(out, "static void ni_slice_bounds_fail(int64_t s, int64_t e, int64_t len,\n");
+        fprintf(out, "                                 const char *file, unsigned long line, unsigned long col) {\n");
+        fprintf(out, "    fprintf(stderr, \"%%s:%%lu:%%lu: error[R004]: Slice bounds out of range: [%%ld..%%ld) not in [0, %%ld)\\n\",\n");
+        fprintf(out, "            file, line, col, (long)s, (long)e, (long)len);\n");
+        fprintf(out, "    exit(2);\n");
+        fprintf(out, "}\n");
+        fprintf(out, "#define NI_SLICE_BOUNDS_CHECK(s, e, len, file, line, col) \\\n");
+        fprintf(out, "    ((s) < 0 || (e) < (s) || (e) > (len) \\\n");
+        fprintf(out, "     ? (ni_slice_bounds_fail((int64_t)(s), (int64_t)(e), (int64_t)(len), (file), (line), (col)), 0) : 0)\n\n");
     }
 
     /* Emit cast runtime if any type casts exist */

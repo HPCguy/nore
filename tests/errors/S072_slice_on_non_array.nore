@@ -1,0 +1,5 @@
+// S072: Cannot sub-slice non-array/slice type
+func main(): void = {
+    val x: i64 = 42
+    val sub: [i64] = x[1..3]
+}
