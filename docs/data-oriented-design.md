@@ -223,7 +223,7 @@ Fixed arrays can appear in values, structs, and as standalone variables.
 
 ### Slices — Indirect, Struct-Only
 
-A slice (`[]T`) is a fat pointer: `{pointer, length}`. It contains indirection — the data lives elsewhere (in an arena). Therefore:
+A slice (`[T]`) is a fat pointer: `{pointer, length}`. It contains indirection — the data lives elsewhere (in an arena). Therefore:
 
 ```
 struct Image {

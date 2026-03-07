@@ -194,7 +194,7 @@ Each step builds on the previous one. See [docs/data-oriented-design.md](docs/da
 2. **Fixed-size arrays** `[T; N]`: stack-allocated, value-compatible
 3. **`ref` parameters**: pass by reference for functions (required before structs)
 4. **`struct` types**: resource owners, ref-only passing, may contain slices
-5. **Slices `[]T` + Arenas**: first heap allocation, compile-time lifetime checks
+5. **Slices `[T]` + Arenas**: first heap allocation, compile-time lifetime checks
 6. **`str` type**: byte slice, falls out of slice implementation
 7. **`table` sugar**: generates struct + value, the DOD payoff
 8. **`enum` types**: named integer constants with type safety, dot-qualified access
