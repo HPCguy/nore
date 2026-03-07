@@ -152,27 +152,33 @@ func is_space(c: u8): bool
 - `str` is `[u8]`, so these all work on byte slices. No separate string type.
 - Character functions work on `u8` — a character is just a byte.
 
-### Layer C: Formatted Output (NEXT: move from built-ins to std/io.nore)
+### Layer C: Formatted Output (DONE)
 
-`print`, `println`, and `print_i64` are currently compiler built-ins. Now that the import system exists, they should move to `std/io.nore` as regular Nore functions that call `fd_write`.
+Shipped as `std/io.nore`. Moved from compiler built-ins to regular Nore functions that call `fd_write`.
 
 ```nore
-// std/io.nore
-func print(ref s: str): void = { fd_write(STDOUT, ref s) }
-func println(ref s: str): void = { fd_write(STDOUT, ref s)  fd_write(STDOUT, ref "\n") }
-func print_i64(n: i64): void = { ... }  // needs i64-to-string conversion
+import "std/io.nore"
+
+print(ref "Hello, ")
+println(ref "World!")
+print_i64(42)
 ```
 
-**Migration plan:**
-- `print` and `println` are straightforward: just call `fd_write` with STDOUT
-- `print_i64` needs a local buffer and integer-to-string conversion logic
-- After moving to stdlib, remove the built-in parsing/codegen from the compiler
-- Existing programs add `import "std/io.nore"` to keep working
+Provides: `print`, `println`, `print_i64`.
 
 **Design notes:**
+- `print` and `println` are thin wrappers around `fd_write(STDOUT, ...)`.
+- `print_i64` uses recursive digit extraction to handle all i64 values, including i64 min. Currently makes one `fd_write` syscall per digit (19+ for large numbers). Buffering all digits into a local array and writing once would be better, but requires array sub-slicing, which the language does not yet support. With sub-slicing, the implementation could fill a buffer right-to-left and write the result in a single call:
+  ```nore
+  mut buf: [u8; 20] = [0, ...]
+  // fill digits right-to-left into buf
+  // e.g. for 42: buf = [..., '4', '2'] with pos = 18
+  fd_write(STDOUT, ref buf[pos..20])  // one syscall instead of one per digit
+  ```
+  Revisit when array sub-slicing (`buf[start..end]`) is available.
 - No format strings. Call the function that matches your type.
 - `eprint`/`eprintln` (stderr variants) can be added to the same file.
-- This is deliberately primitive. It prints values. That's it.
+- Tested via `tests/std/io.nore`. Current tests only verify the code runs without crashing (exit 0), not that the output is correct. Proper assertions require `str_eq` and `i64_to_str` from Layer B, e.g. `assert str_eq(ref i64_to_str(mut ref mem, 42), ref "42")`. Revisit test coverage after Layer B ships.
 
 ### Layer D: File Operations
 
@@ -229,14 +235,14 @@ Phase 1: Language completeness (DONE)
 
 Phase 2: Standard library (.nore files, importable)
   9.  ✓ Math utilities              ← std/math.nore (first stdlib file)
-  10. Move print/println/print_i64  ← from compiler built-ins to std/io.nore
+  10. ✓ Move print/println/print_i64 ← from compiler built-ins to std/io.nore
   11. String operations             ← Layer B
   12. File operations               ← Layer D
 ```
 
 Phases 0 and 1 are complete. All compiler prerequisites are done: operators, casting, I/O built-ins, enums, and the import system.
 
-Phase 2 is underway. `std/math.nore` is shipped and tested. The next step is moving `print`, `println`, and `print_i64` from compiler built-ins to `std/io.nore`. This reduces compiler complexity and proves the stdlib can handle real I/O wrappers. The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access), but the convenience print functions become regular Nore code that calls fd_write.
+Phase 2 is underway. `std/math.nore` and `std/io.nore` are shipped and tested. The print functions (`print`, `println`, `print_i64`) have been moved from compiler built-ins to `std/io.nore` as regular Nore functions that call `fd_write`. The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access). The next step is string operations (Layer B).
 
 ---
 
@@ -299,4 +305,4 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - **I/O error model before enums**: return negative error codes for now. Revisit with tagged unions.
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
 - **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
-- **`print`/`println`/`print_i64` migration**: these are compiler built-ins today. Next step is moving them to `std/io.nore`. The `print_i64` function needs integer-to-string conversion, which is a good forcing function for `std/str.nore` utilities.
+- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore` as regular Nore functions. `print_i64` uses recursive digit extraction (no dependency on string utilities).

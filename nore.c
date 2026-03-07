@@ -1556,9 +1556,6 @@ typedef enum {
     AST_FD_OPEN,
     AST_FD_CLOSE,
     AST_EXIT,
-    AST_PRINT,
-    AST_PRINTLN,
-    AST_PRINT_I64,
     AST_ENUM_DECL,
     AST_ENUM_VARIANT,
     AST_PROGRAM
@@ -1761,8 +1758,6 @@ typedef struct Ast {
         struct { struct Ast *path; struct Ast *flags; } fd_open;
         struct { struct Ast *fd; } fd_close;
         struct { struct Ast *code; } exit_call;
-        struct { struct Ast *data; } print_call;   /* shared by print/println */
-        struct { struct Ast *value; } print_i64;
 
         struct {
             const char *name_start;
@@ -2303,33 +2298,6 @@ static Ast *ast_make_exit(Ast *code, SourceLoc loc) {
     return node;
 }
 
-static Ast *ast_make_print(Ast *data, SourceLoc loc) {
-    Ast *node = malloc(sizeof(Ast));
-    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
-    node->kind = AST_PRINT;
-    node->loc = loc;
-    node->as.print_call.data = data;
-    return node;
-}
-
-static Ast *ast_make_println(Ast *data, SourceLoc loc) {
-    Ast *node = malloc(sizeof(Ast));
-    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
-    node->kind = AST_PRINTLN;
-    node->loc = loc;
-    node->as.print_call.data = data;
-    return node;
-}
-
-static Ast *ast_make_print_i64(Ast *value, SourceLoc loc) {
-    Ast *node = malloc(sizeof(Ast));
-    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
-    node->kind = AST_PRINT_I64;
-    node->loc = loc;
-    node->as.print_i64.value = value;
-    return node;
-}
-
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2480,13 +2448,6 @@ static void ast_free(Ast *node) {
             break;
         case AST_EXIT:
             ast_free(node->as.exit_call.code);
-            break;
-        case AST_PRINT:
-        case AST_PRINTLN:
-            ast_free(node->as.print_call.data);
-            break;
-        case AST_PRINT_I64:
-            ast_free(node->as.print_i64.value);
             break;
         case AST_ENUM_DECL:
         case AST_ENUM_VARIANT:
@@ -3227,63 +3188,6 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_exit(code, loc);
         }
 
-        /* print_i64(value) — built-in integer print */
-        if (name_length == 9 && memcmp(name_start, "print_i64", 9) == 0 &&
-            parser_check(parser, TOKEN_LPAREN)) {
-            parser_advance(parser);  /* consume '(' */
-            Ast *value = parser_parse_expression(parser);
-            if (!value) return NULL;
-            if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
-                           parser->current.column, "Expected ')' after print_i64 value");
-                ast_free(value);
-                return NULL;
-            }
-            return ast_make_print_i64(value, loc);
-        }
-
-        /* println(ref data) — built-in print with newline */
-        if (name_length == 7 && memcmp(name_start, "println", 7) == 0 &&
-            parser_check(parser, TOKEN_LPAREN)) {
-            parser_advance(parser);  /* consume '(' */
-            if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
-                           parser->current.column,
-                           "Expected 'ref' before data argument in println()");
-                return NULL;
-            }
-            Ast *data = parser_parse_expression(parser);
-            if (!data) return NULL;
-            if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
-                           parser->current.column, "Expected ')' after println data");
-                ast_free(data);
-                return NULL;
-            }
-            return ast_make_println(data, loc);
-        }
-
-        /* print(ref data) — built-in print to stdout */
-        if (name_length == 5 && memcmp(name_start, "print", 5) == 0 &&
-            parser_check(parser, TOKEN_LPAREN)) {
-            parser_advance(parser);  /* consume '(' */
-            if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
-                           parser->current.column,
-                           "Expected 'ref' before data argument in print()");
-                return NULL;
-            }
-            Ast *data = parser_parse_expression(parser);
-            if (!data) return NULL;
-            if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
-                           parser->current.column, "Expected ')' after print data");
-                ast_free(data);
-                return NULL;
-            }
-            return ast_make_print(data, loc);
-        }
-
         /* Check for enum variant: EnumName.Variant */
         if (parser_check(parser, TOKEN_DOT)) {
             EnumTypeEntry *et = enum_table_lookup(name_start, name_length);
@@ -3747,10 +3651,7 @@ static Ast *parser_parse_block(Parser *parser) {
                            expr->kind == AST_FD_WRITE ||
                            expr->kind == AST_FD_READ ||
                            expr->kind == AST_FD_CLOSE ||
-                           expr->kind == AST_EXIT ||
-                           expr->kind == AST_PRINT ||
-                           expr->kind == AST_PRINTLN ||
-                           expr->kind == AST_PRINT_I64) {
+                           expr->kind == AST_EXIT) {
                     /* Bare function call or built-in as statement */
                     ast_block_add_statement(block, expr);
                 } else {
@@ -4997,21 +4898,6 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("CODE:\n");
             parser_print_ast_step(node->as.exit_call.code, indent + 2);
-            break;
-
-        case AST_PRINT:
-        case AST_PRINTLN:
-            printf("%s\n", node->kind == AST_PRINT ? "PRINT" : "PRINTLN");
-            for (int i = 0; i < indent + 1; i++) printf("  ");
-            printf("DATA:\n");
-            parser_print_ast_step(node->as.print_call.data, indent + 2);
-            break;
-
-        case AST_PRINT_I64:
-            printf("PRINT_I64\n");
-            for (int i = 0; i < indent + 1; i++) printf("  ");
-            printf("VALUE:\n");
-            parser_print_ast_step(node->as.print_i64.value, indent + 2);
             break;
 
         case AST_ENUM_DECL:
@@ -6611,34 +6497,6 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_VOID;
         }
 
-        case AST_PRINT:
-        case AST_PRINTLN: {
-            Type data_type = typecheck_expression(node->as.print_call.data, scope, func_table);
-            if (!type_is_byte_buffer(data_type)) {
-                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.print_call.data->loc.line,
-                           node->as.print_call.data->loc.column,
-                           "%s() data must be []u8, got %s",
-                           node->kind == AST_PRINT ? "print" : "println",
-                           type_name(data_type));
-            }
-            g_has_io = true;
-            node->expr_type = TYPE_VOID;
-            return TYPE_VOID;
-        }
-
-        case AST_PRINT_I64: {
-            Type val_type = typecheck_expression(node->as.print_i64.value, scope, func_table);
-            if (!type_is_integer(val_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.print_i64.value->loc.line,
-                           node->as.print_i64.value->loc.column,
-                           "print_i64() value must be integer, got %s",
-                           type_name(val_type));
-            }
-            g_has_io = true;
-            node->expr_type = TYPE_VOID;
-            return TYPE_VOID;
-        }
-
         default:
             break;
     }
@@ -7212,9 +7070,6 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_FD_READ:
         case AST_FD_CLOSE:
         case AST_EXIT:
-        case AST_PRINT:
-        case AST_PRINTLN:
-        case AST_PRINT_I64:
             typecheck_expression(node, *scope, func_table);
             break;
 
@@ -8205,19 +8060,6 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
 
-        case AST_PRINT:
-        case AST_PRINTLN:
-            fprintf(out, node->kind == AST_PRINT ? "ni_print(" : "ni_println(");
-            codegen_emit_byte_buf(out, node->as.print_call.data);
-            fprintf(out, ")");
-            break;
-
-        case AST_PRINT_I64:
-            fprintf(out, "ni_print_i64(");
-            codegen_emit_expression(out, node->as.print_i64.value);
-            fprintf(out, ")");
-            break;
-
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -8390,6 +8232,13 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
 
     for (size_t i = 0; i < block->as.block.count; i++) {
         codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
+    }
+
+    /* Emit value_expr as a bare statement (e.g., trailing function call in if/while/for block) */
+    if (block->as.block.value_expr) {
+        codegen_indent(out, indent);
+        codegen_emit_expression(out, block->as.block.value_expr);
+        fprintf(out, ";\n");
     }
 
     codegen_emit_arena_frees(out, *scope, indent);
@@ -8637,6 +8486,13 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
                 codegen_emit_statement(out, body->as.block.statements[i], scope, indent + 1);
             }
 
+            /* Emit value_expr as a bare statement (trailing function call before }) */
+            if (body->as.block.value_expr) {
+                codegen_indent(out, indent + 1);
+                codegen_emit_expression(out, body->as.block.value_expr);
+                fprintf(out, ";\n");
+            }
+
             codegen_emit_arena_frees(out, *scope, indent + 1);
 
             Scope *old = *scope;
@@ -8693,9 +8549,6 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_FD_READ:
         case AST_FD_CLOSE:
         case AST_EXIT:
-        case AST_PRINT:
-        case AST_PRINTLN:
-        case AST_PRINT_I64:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
             fprintf(out, ";\n");
@@ -9085,19 +8938,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "    tmp[path.len] = '\\0';\n");
         fprintf(out, "    return (int32_t)open(tmp, flags, 0644);\n");
         fprintf(out, "}\n");
-        fprintf(out, "static void ni_fd_close(int32_t fd) { close(fd); }\n");
-        fprintf(out, "static void ni_print(ni_slice_0 data) {\n");
-        fprintf(out, "    write(1, data.data, (size_t)data.len);\n");
-        fprintf(out, "}\n");
-        fprintf(out, "static void ni_println(ni_slice_0 data) {\n");
-        fprintf(out, "    write(1, data.data, (size_t)data.len);\n");
-        fprintf(out, "    write(1, \"\\n\", 1);\n");
-        fprintf(out, "}\n");
-        fprintf(out, "static void ni_print_i64(int64_t n) {\n");
-        fprintf(out, "    char buf[21];\n");
-        fprintf(out, "    int len = snprintf(buf, sizeof(buf), \"%%lld\", (long long)n);\n");
-        fprintf(out, "    write(1, buf, (size_t)len);\n");
-        fprintf(out, "}\n\n");
+        fprintf(out, "static void ni_fd_close(int32_t fd) { close(fd); }\n\n");
     }
 
     /* Emit per-table helper functions */

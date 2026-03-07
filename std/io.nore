@@ -1,0 +1,37 @@
+// Standard I/O utilities for Nore
+
+func print(ref s: str): void = {
+    fd_write(STDOUT, ref s)
+}
+
+func println(ref s: str): void = {
+    fd_write(STDOUT, ref s)
+    fd_write(STDOUT, ref "\n")
+}
+
+func _write_digit(d: i64): void = {
+    mut c: [u8; 1] = [0]
+    c[0] = u8(d + 48)
+    fd_write(STDOUT, ref c)
+}
+
+func _print_i64_pos(n: i64): void = {
+    if (n >= 10) {
+        _print_i64_pos(n / 10)
+    }
+    _write_digit(n % 10)
+}
+
+func print_i64(n: i64): void = {
+    if (n < 0) {
+        fd_write(STDOUT, ref "-")
+        val last: i64 = 0 - (n % 10)
+        val rest: i64 = 0 - (n / 10)
+        if (rest > 0) {
+            _print_i64_pos(rest)
+        }
+        _write_digit(last)
+        return
+    }
+    _print_i64_pos(n)
+}

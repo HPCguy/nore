@@ -1,4 +1,3 @@
-// Test print, println, and print_i64 from std/io.nore
 import "std/io.nore"
 
 func main(): void = {
@@ -18,6 +17,26 @@ func main(): void = {
 
     // zero
     print_i64(0)
+    print(ref "\n")
+
+    // large positive
+    print_i64(9223372036854775807)
+    print(ref "\n")
+
+    // large negative (i64 min)
+    print_i64(-9223372036854775807 - 1)
+    print(ref "\n")
+
+    // single digit
+    print_i64(7)
+    print(ref "\n")
+
+    // powers of 10
+    print_i64(10)
+    print(ref "\n")
+    print_i64(100)
+    print(ref "\n")
+    print_i64(1000)
     print(ref "\n")
 
     // print from a str variable

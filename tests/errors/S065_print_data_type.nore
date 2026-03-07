@@ -1,5 +1,0 @@
-// error[S065]: print() data must be []u8
-func main(): void = {
-    val x: i32 = 42
-    print(ref x)
-}
