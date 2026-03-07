@@ -168,14 +168,7 @@ Provides: `print`, `println`, `print_i64`.
 
 **Design notes:**
 - `print` and `println` are thin wrappers around `fd_write(STDOUT, ...)`.
-- `print_i64` uses recursive digit extraction to handle all i64 values, including i64 min. Currently makes one `fd_write` syscall per digit (19+ for large numbers). Buffering all digits into a local array and writing once would be better, but requires array sub-slicing, which the language does not yet support. With sub-slicing, the implementation could fill a buffer right-to-left and write the result in a single call:
-  ```nore
-  mut buf: [u8; 20] = [0, ...]
-  // fill digits right-to-left into buf
-  // e.g. for 42: buf = [..., '4', '2'] with pos = 18
-  fd_write(STDOUT, ref buf[pos..20])  // one syscall instead of one per digit
-  ```
-  Revisit when array sub-slicing (`buf[start..end]`) is available.
+- `print_i64` fills a 21-byte buffer right-to-left and writes via a single `fd_write(STDOUT, ref buf[pos..])` sub-slice call. Handles i64 min correctly by working with negative remainders (no overflow from negation).
 - No format strings. Call the function that matches your type.
 - `eprint`/`eprintln` (stderr variants) can be added to the same file.
 - Tested via `tests/std/io.nore`. Current tests only verify the code runs without crashing (exit 0), not that the output is correct. Proper assertions require `str_eq` and `i64_to_str` from Layer B, e.g. `assert str_eq(ref i64_to_str(mut ref mem, 42), ref "42")`. Revisit test coverage after Layer B ships.
@@ -305,4 +298,4 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - **I/O error model before enums**: return negative error codes for now. Revisit with tagged unions.
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
 - **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
-- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore` as regular Nore functions. `print_i64` uses recursive digit extraction (no dependency on string utilities).
+- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore` as regular Nore functions. `print_i64` uses buffer + sub-slice for single-syscall output.
