@@ -154,4 +154,13 @@ General-purpose compiler directives — not tied to any specific data structure 
 
 **Risk:** Designing good directives is hard. Too few and they're useless, too many and they become a second language. The TALC papers and the [LLNL data layout optimization report](https://www.osti.gov/servlets/purl/1084701) (showing 1.1x to 22x speedups from automatic layout selection) are a good guide for what the minimal useful set looks like.
 
-**Source:** Design discussion following r/ProgrammingLanguages feedback on native vs stdlib optimization capabilities.
+**Graceful degradation of control.** Any automatic optimization must have a manual override path. This applies to both layout decisions and parallelism. The principle: the user is always in control, the compiler only helps as much as the user allows.
+
+Concrete model:
+- **Compiler flags** control how aggressively the compiler rearranges user decisions. For example: `--layout=source` (emit exactly what the user wrote, for debugging), `--layout=auto` (let the compiler or architecture plug-in optimize).
+- **In-source overrides** let the user pin a specific decision. For example: `@layout(AoS)` on a specific table overrides the automatic choice for that one case.
+- **Default is source layout** (explicit, no rearrangement), until the user opts in. This preserves Nore's "explicit is better" philosophy while allowing progressive optimization.
+
+This is analogous to C compiler optimization levels: `-O0` gives you what you wrote, `-O2` lets the compiler rearrange, and `volatile` or `__attribute__((noinline))` override specific decisions. The key insight from RAJA's evolution: a complete inability to direct the system step by step is a barrier to adoption. Users need to be able to debug, override, and fall back to direct control at any granularity.
+
+**Source:** Design discussion following r/ProgrammingLanguages feedback on native vs stdlib optimization capabilities. Manual override principle from TALC/RAJA experience (Figure 6 in the TALC paper shows only one override was needed for the full functionality covered).
