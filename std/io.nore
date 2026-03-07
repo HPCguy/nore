@@ -9,29 +9,36 @@ func println(ref s: str): void = {
     fd_write(STDOUT, ref "\n")
 }
 
-func _write_digit(d: i64): void = {
-    mut c: [u8; 1] = [0]
-    c[0] = u8(d + 48)
-    fd_write(STDOUT, ref c)
-}
-
-func _print_i64_pos(n: i64): void = {
-    if (n >= 10) {
-        _print_i64_pos(n / 10)
-    }
-    _write_digit(n % 10)
-}
-
 func print_i64(n: i64): void = {
-    if (n < 0) {
-        fd_write(STDOUT, ref "-")
-        val last: i64 = 0 - (n % 10)
-        val rest: i64 = 0 - (n / 10)
-        if (rest > 0) {
-            _print_i64_pos(rest)
-        }
-        _write_digit(last)
+    // Buffer for sign + up to 19 digits (i64 min = -9223372036854775808)
+    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    mut pos: i64 = 20
+
+    if (n == 0) {
+        buf[20] = 48
+        fd_write(STDOUT, ref buf[20..])
         return
     }
-    _print_i64_pos(n)
+
+    val neg: bool = n < 0
+
+    // Extract digits using negative remainders to avoid overflow on i64 min.
+    // n % 10 gives a negative remainder for negative n, so we negate it.
+    mut v: i64 = n
+    while (v != 0) {
+        mut d: i64 = v % 10
+        if (d < 0) {
+            d = 0 - d
+        }
+        pos = pos - 1
+        buf[pos] = u8(d + 48)
+        v = v / 10
+    }
+
+    if (neg) {
+        pos = pos - 1
+        buf[pos] = 45
+    }
+
+    fd_write(STDOUT, ref buf[pos..])
 }
