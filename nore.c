@@ -254,8 +254,8 @@ static size_t g_error_count = 0;
 static bool g_had_error = false;
 
 /* Record error for later reporting (does not exit) */
-static void diagnostic_impl(ErrorCode code, size_t line, size_t column,
-                             const char *file, const char *fmt, va_list args) {
+static void diagnostic(const char *file, ErrorCode code, size_t line,
+                       size_t column, const char *fmt, ...) {
     g_had_error = true;
 
     if (g_error_count < MAX_ERRORS) {
@@ -264,24 +264,12 @@ static void diagnostic_impl(ErrorCode code, size_t line, size_t column,
         err->line = line;
         err->column = column;
         err->file = file;
+        va_list args;
+        va_start(args, fmt);
         vsnprintf(err->message, sizeof(err->message), fmt, args);
+        va_end(args);
     }
 }
-
-/* TODO: diagnostic() should take a file path parameter instead of relying on
- * g_source_file. We use the DIAG_FILE macro as a workaround to keep
- * g_source_file in sync, but this is fragile. Fix on the first opportunity
- * by adding a file param and updating all call sites. */
-static void diagnostic(ErrorCode code, size_t line, size_t column,
-                       const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    diagnostic_impl(code, line, column, g_source_file, fmt, args);
-    va_end(args);
-}
-
-/* Set diagnostic file context from a SourceLoc (for multi-file error reporting) */
-#define DIAG_FILE(loc) do { if ((loc).file) g_source_file = (loc).file; } while(0)
 
 /* Print all collected errors and exit */
 static void report_errors_and_exit(void) {
@@ -595,7 +583,7 @@ static void lexer_skip_whitespace_and_comments(Lexer *lexer) {
                     lexer_advance(lexer); /* consume * */
                     while (!(lexer_peek(lexer) == '*' && lexer_peek_next(lexer) == '/')) {
                         if (lexer_peek(lexer) == '\0') {
-                            diagnostic(ERR_L002_UNTERMINATED_COMMENT,
+                            diagnostic(g_source_file, ERR_L002_UNTERMINATED_COMMENT,
                                        start_line, start_col,
                                        "Unterminated block comment");
                             return;
@@ -682,7 +670,7 @@ static Token lexer_scan_string(Lexer *lexer) {
     char c;
     while ((c = lexer_peek(lexer)) != '"') {
         if (c == '\0' || c == '\n') {
-            diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
+            diagnostic(g_source_file, ERR_L003_UNTERMINATED_STRING, start_line, start_col,
                        "Unterminated string literal");
             return lexer_make_token(lexer, TOKEN_STRING);
         }
@@ -690,7 +678,7 @@ static Token lexer_scan_string(Lexer *lexer) {
             lexer_advance(lexer);  /* consume backslash */
             char esc = lexer_peek(lexer);
             if (!is_valid_escape(esc, '"')) {
-                diagnostic(ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
+                diagnostic(g_source_file, ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
                            "Invalid escape sequence '\\%c'", esc);
             }
         }
@@ -705,13 +693,13 @@ static Token lexer_scan_char(Lexer *lexer) {
     size_t start_col = lexer->column - 1;  /* opening quote already consumed */
     char c = lexer_peek(lexer);
     if (c == '\'') {
-        diagnostic(ERR_L005_EMPTY_CHAR, start_line, start_col,
+        diagnostic(g_source_file, ERR_L005_EMPTY_CHAR, start_line, start_col,
                    "Empty character literal");
         lexer_advance(lexer);  /* consume closing quote */
         return lexer_make_token(lexer, TOKEN_CHAR);
     }
     if (c == '\0' || c == '\n') {
-        diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
+        diagnostic(g_source_file, ERR_L003_UNTERMINATED_STRING, start_line, start_col,
                    "Unterminated character literal");
         return lexer_make_token(lexer, TOKEN_CHAR);
     }
@@ -719,7 +707,7 @@ static Token lexer_scan_char(Lexer *lexer) {
         lexer_advance(lexer);  /* consume backslash */
         char esc = lexer_peek(lexer);
         if (!is_valid_escape(esc, '\'')) {
-            diagnostic(ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
+            diagnostic(g_source_file, ERR_L004_INVALID_ESCAPE, lexer->line, lexer->column,
                        "Invalid escape sequence '\\%c'", esc);
         }
     }
@@ -728,7 +716,7 @@ static Token lexer_scan_char(Lexer *lexer) {
     c = lexer_peek(lexer);
     if (c != '\'') {
         if (c == '\0' || c == '\n') {
-            diagnostic(ERR_L003_UNTERMINATED_STRING, start_line, start_col,
+            diagnostic(g_source_file, ERR_L003_UNTERMINATED_STRING, start_line, start_col,
                        "Unterminated character literal");
             return lexer_make_token(lexer, TOKEN_CHAR);
         }
@@ -736,7 +724,7 @@ static Token lexer_scan_char(Lexer *lexer) {
         while ((c = lexer_peek(lexer)) != '\'' && c != '\0' && c != '\n') {
             lexer_advance(lexer);
         }
-        diagnostic(ERR_L006_CHAR_TOO_LONG, start_line, start_col,
+        diagnostic(g_source_file, ERR_L006_CHAR_TOO_LONG, start_line, start_col,
                    "Character literal must contain exactly one character");
         if (c == '\'') {
             lexer_advance(lexer);  /* consume closing quote */
@@ -2061,7 +2049,7 @@ static Ast *ast_make_program(void) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     }
     node->kind = AST_PROGRAM;
-    node->loc = (SourceLoc){ .line = 0, .column = 0 };
+    node->loc = (SourceLoc){ .line = 0, .column = 0, .file = g_source_file };
     node->as.program.statements = malloc(8 * sizeof(Ast*));
     if (!node->as.program.statements) {
         free(node);
@@ -2478,7 +2466,7 @@ static void parser_advance(Parser *parser) {
 
     /* Handle lexer errors immediately */
     if (parser->current.kind == TOKEN_ERROR) {
-        diagnostic(ERR_L001_INVALID_CHAR, parser->current.line,
+        diagnostic(g_source_file, ERR_L001_INVALID_CHAR, parser->current.line,
                    parser->current.column, "%.*s",
                    (int)parser->current.length, parser->current.start);
     }
@@ -2562,7 +2550,7 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
     if (parser_match(parser, TOKEN_LBRACKET)) {
         Type elem_type = parser_parse_type(parser, false);
         if (elem_type == TYPE_UNKNOWN) {
-            diagnostic(ERR_P031_EXPECTED_ARRAY_ELEM_TYPE, parser->current.line,
+            diagnostic(g_source_file, ERR_P031_EXPECTED_ARRAY_ELEM_TYPE, parser->current.line,
                        parser->current.column,
                        "Expected element type in array/slice type");
             return TYPE_UNKNOWN;
@@ -2572,13 +2560,13 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
             return slice_table_intern(elem_type);
         }
         if (!parser_match(parser, TOKEN_SEMICOLON)) {
-            diagnostic(ERR_P032_EXPECTED_SEMICOLON_ARRAY, parser->current.line,
+            diagnostic(g_source_file, ERR_P032_EXPECTED_SEMICOLON_ARRAY, parser->current.line,
                        parser->current.column,
                        "Expected ';' or ']' in array/slice type");
             return TYPE_UNKNOWN;
         }
         if (!parser_check(parser, TOKEN_NUMBER)) {
-            diagnostic(ERR_P033_EXPECTED_ARRAY_SIZE, parser->current.line,
+            diagnostic(g_source_file, ERR_P033_EXPECTED_ARRAY_SIZE, parser->current.line,
                        parser->current.column,
                        "Expected array size");
             return TYPE_UNKNOWN;
@@ -2593,13 +2581,13 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
         SourceLoc size_loc = token_loc(&parser->current);
         parser_advance(parser);  /* consume the number */
         if (size_val <= 0) {
-            diagnostic(ERR_S031_ARRAY_SIZE_INVALID, size_loc.line,
+            diagnostic(g_source_file, ERR_S031_ARRAY_SIZE_INVALID, size_loc.line,
                        size_loc.column,
                        "Array size must be a positive integer");
             return TYPE_UNKNOWN;
         }
         if (!parser_match(parser, TOKEN_RBRACKET)) {
-            diagnostic(ERR_P034_EXPECTED_RBRACKET, parser->current.line,
+            diagnostic(g_source_file, ERR_P034_EXPECTED_RBRACKET, parser->current.line,
                        parser->current.column,
                        "Expected ']' to close array type");
             return TYPE_UNKNOWN;
@@ -2729,14 +2717,14 @@ static Ast *parser_parse_primary(Parser *parser) {
         SourceLoc loc = token_loc(&parser->previous);
         Type target = token_to_type(parser->previous.kind);
         if (!parser_match(parser, TOKEN_LPAREN)) {
-            diagnostic(ERR_P001_EXPECTED_EXPRESSION, loc.line, loc.column,
+            diagnostic(g_source_file, ERR_P001_EXPECTED_EXPRESSION, loc.line, loc.column,
                        "Expected '(' after type name in cast expression");
             return NULL;
         }
         Ast *operand = parser_parse_expression(parser);
         if (!operand) return NULL;
         if (!parser_match(parser, TOKEN_RPAREN)) {
-            diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+            diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                        parser->current.column,
                        "Expected ')' after cast expression");
             ast_free(operand);
@@ -2774,7 +2762,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         char buffer[32];
         size_t len = parser->previous.length;
         if (len >= sizeof(buffer)) {
-            diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+            diagnostic(g_source_file, ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
                        "Number literal too large");
             return NULL;
         }
@@ -2783,7 +2771,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         errno = 0;
         long value = strtol(buffer, NULL, 10);
         if (errno == ERANGE) {
-            diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+            diagnostic(g_source_file, ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
                        "Integer literal out of range");
             return ast_make_number(0, loc);
         }
@@ -2815,7 +2803,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         char buffer[64];
         size_t len = parser->previous.length;
         if (len >= sizeof(buffer)) {
-            diagnostic(ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+            diagnostic(g_source_file, ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
                        "Float literal too large");
             return NULL;
         }
@@ -2856,7 +2844,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *capacity = parser_parse_expression(parser);
             if (!capacity) return NULL;
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after arena capacity");
                 ast_free(capacity);
                 return NULL;
@@ -2870,13 +2858,13 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_advance(parser);  /* consume '(' */
             /* Expect 'mut ref' before arena argument */
             if (!parser_match(parser, TOKEN_MUT)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'mut ref' before arena argument in arena_alloc()");
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' after 'mut' in arena_alloc()");
                 return NULL;
@@ -2884,7 +2872,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *arena = parser_parse_expression(parser);
             if (!arena) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after arena argument in arena_alloc()");
                 ast_free(arena);
@@ -2893,7 +2881,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *count = parser_parse_expression(parser);
             if (!count) { ast_free(arena); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after arena_alloc count");
                 ast_free(arena);
                 ast_free(count);
@@ -2908,13 +2896,13 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_advance(parser);  /* consume '(' */
             /* Expect 'mut ref' before arena argument */
             if (!parser_match(parser, TOKEN_MUT)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'mut ref' before arena argument in arena_reset()");
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' after 'mut' in arena_reset()");
                 return NULL;
@@ -2922,7 +2910,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *arena = parser_parse_expression(parser);
             if (!arena) return NULL;
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after arena_reset arena");
                 ast_free(arena);
                 return NULL;
@@ -2935,13 +2923,13 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             if (!parser_match(parser, TOKEN_MUT)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'mut ref' before arena argument in table_alloc()");
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' after 'mut' in table_alloc()");
                 return NULL;
@@ -2949,7 +2937,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *arena = parser_parse_expression(parser);
             if (!arena) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after arena argument in table_alloc()");
                 ast_free(arena);
@@ -2958,7 +2946,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *count = parser_parse_expression(parser);
             if (!count) { ast_free(arena); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after table_alloc count");
                 ast_free(arena);
                 ast_free(count);
@@ -2972,7 +2960,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' before table argument in table_len()");
                 return NULL;
@@ -2980,7 +2968,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *table = parser_parse_expression(parser);
             if (!table) return NULL;
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after table_len argument");
                 ast_free(table);
                 return NULL;
@@ -2993,7 +2981,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' before table argument in table_get()");
                 return NULL;
@@ -3001,7 +2989,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *table = parser_parse_expression(parser);
             if (!table) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after table argument in table_get()");
                 ast_free(table);
@@ -3010,7 +2998,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *index = parser_parse_expression(parser);
             if (!index) { ast_free(table); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after table_get index");
                 ast_free(table);
                 ast_free(index);
@@ -3024,13 +3012,13 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             if (!parser_match(parser, TOKEN_MUT)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'mut ref' before table argument in table_insert()");
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' after 'mut' in table_insert()");
                 return NULL;
@@ -3038,7 +3026,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *table = parser_parse_expression(parser);
             if (!table) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after table argument in table_insert()");
                 ast_free(table);
@@ -3047,7 +3035,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *row = parser_parse_expression(parser);
             if (!row) { ast_free(table); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after table_insert row");
                 ast_free(table);
                 ast_free(row);
@@ -3063,14 +3051,14 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *fd = parser_parse_expression(parser);
             if (!fd) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after fd argument in fd_write()");
                 ast_free(fd);
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' before data argument in fd_write()");
                 ast_free(fd);
@@ -3079,7 +3067,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *data = parser_parse_expression(parser);
             if (!data) { ast_free(fd); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after fd_write data");
                 ast_free(fd);
                 ast_free(data);
@@ -3095,21 +3083,21 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *fd = parser_parse_expression(parser);
             if (!fd) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after fd argument in fd_read()");
                 ast_free(fd);
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_MUT)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'mut ref' before buffer argument in fd_read()");
                 ast_free(fd);
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' after 'mut' in fd_read()");
                 ast_free(fd);
@@ -3118,7 +3106,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *buf = parser_parse_expression(parser);
             if (!buf) { ast_free(fd); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after fd_read buffer");
                 ast_free(fd);
                 ast_free(buf);
@@ -3132,7 +3120,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             parser_check(parser, TOKEN_LPAREN)) {
             parser_advance(parser);  /* consume '(' */
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' before path argument in fd_open()");
                 return NULL;
@@ -3140,7 +3128,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *path = parser_parse_expression(parser);
             if (!path) return NULL;
             if (!parser_match(parser, TOKEN_COMMA)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column,
                            "Expected ',' after path argument in fd_open()");
                 ast_free(path);
@@ -3149,7 +3137,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *flags = parser_parse_expression(parser);
             if (!flags) { ast_free(path); return NULL; }
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after fd_open flags");
                 ast_free(path);
                 ast_free(flags);
@@ -3165,7 +3153,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *fd = parser_parse_expression(parser);
             if (!fd) return NULL;
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after fd_close fd");
                 ast_free(fd);
                 return NULL;
@@ -3180,7 +3168,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             Ast *code = parser_parse_expression(parser);
             if (!code) return NULL;
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after exit code");
                 ast_free(code);
                 return NULL;
@@ -3194,7 +3182,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             if (et) {
                 parser_advance(parser);  /* consume '.' */
                 if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                    diagnostic(ERR_P044_EXPECTED_VARIANT_NAME, parser->current.line,
+                    diagnostic(g_source_file, ERR_P044_EXPECTED_VARIANT_NAME, parser->current.line,
                                parser->current.column,
                                "Expected variant name after '%.*s.'",
                                (int)name_length, name_start);
@@ -3209,7 +3197,7 @@ static Ast *parser_parse_primary(Parser *parser) {
                                                      et->variants[i].value, loc);
                     }
                 }
-                diagnostic(ERR_P045_UNKNOWN_ENUM_VARIANT, parser->previous.line,
+                diagnostic(g_source_file, ERR_P045_UNKNOWN_ENUM_VARIANT, parser->previous.line,
                            parser->previous.column,
                            "Unknown variant '%.*s' in enum '%.*s'",
                            (int)var_len, var_start,
@@ -3234,7 +3222,7 @@ static Ast *parser_parse_primary(Parser *parser) {
             }
 
             if (!parser_match(parser, TOKEN_RPAREN)) {
-                diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                            parser->current.column, "Expected ')' after arguments");
                 free(arguments);
                 free(arg_is_ref);
@@ -3277,7 +3265,7 @@ static Ast *parser_parse_primary(Parser *parser) {
                     }
 
                     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                        diagnostic(ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
+                        diagnostic(g_source_file, ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
                                    parser->current.column,
                                    "Expected field name in constructor");
                         goto ctor_cleanup;
@@ -3286,7 +3274,7 @@ static Ast *parser_parse_primary(Parser *parser) {
                     fields[field_count].name_length = parser->previous.length;
 
                     if (!parser_match(parser, TOKEN_COLON)) {
-                        diagnostic(ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
+                        diagnostic(g_source_file, ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
                                    parser->current.column,
                                    "Expected ':' after field name in constructor");
                         goto ctor_cleanup;
@@ -3301,7 +3289,7 @@ static Ast *parser_parse_primary(Parser *parser) {
                 }
 
                 if (!parser_match(parser, TOKEN_RBRACE)) {
-                    diagnostic(ERR_P030_EXPECTED_RBRACE_CTOR, parser->current.line,
+                    diagnostic(g_source_file, ERR_P030_EXPECTED_RBRACE_CTOR, parser->current.line,
                                parser->current.column,
                                "Expected '}' to close constructor");
                     goto ctor_cleanup;
@@ -3347,7 +3335,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         }
 
         if (!parser_match(parser, TOKEN_RBRACKET)) {
-            diagnostic(ERR_P035_EXPECTED_RBRACKET_LITERAL, parser->current.line,
+            diagnostic(g_source_file, ERR_P035_EXPECTED_RBRACKET_LITERAL, parser->current.line,
                        parser->current.column,
                        "Expected ']' to close array literal");
             for (size_t i = 0; i < count; i++) ast_free(elements[i]);
@@ -3362,7 +3350,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         Ast *expr = parser_parse_expression(parser);
         if (!expr) return NULL;
         if (!parser_match(parser, TOKEN_RPAREN)) {
-            diagnostic(ERR_P002_EXPECTED_RPAREN, parser->current.line,
+            diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
                        parser->current.column, "Expected ')' after expression");
             return NULL;
         }
@@ -3379,7 +3367,7 @@ static Ast *parser_parse_primary(Parser *parser) {
         return parser_parse_if(parser);
     }
 
-    diagnostic(ERR_P001_EXPECTED_EXPRESSION, parser->current.line, parser->current.column,
+    diagnostic(g_source_file, ERR_P001_EXPECTED_EXPRESSION, parser->current.line, parser->current.column,
                "Expected expression");
     return NULL;
 }
@@ -3393,7 +3381,7 @@ static Ast *parser_parse_postfix(Parser *parser) {
         if (parser_match(parser, TOKEN_DOT)) {
             SourceLoc loc = token_loc(&parser->previous);
             if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+                diagnostic(g_source_file, ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                            parser->current.column, "Expected field name after '.'");
                 ast_free(expr);
                 return NULL;
@@ -3408,7 +3396,7 @@ static Ast *parser_parse_postfix(Parser *parser) {
                 return NULL;
             }
             if (!parser_match(parser, TOKEN_RBRACKET)) {
-                diagnostic(ERR_P034_EXPECTED_RBRACKET, parser->current.line,
+                diagnostic(g_source_file, ERR_P034_EXPECTED_RBRACKET, parser->current.line,
                            parser->current.column,
                            "Expected ']' after index expression");
                 ast_free(expr);
@@ -3459,7 +3447,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
 
     /* Expect identifier */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+        diagnostic(g_source_file, ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                    parser->current.column, "Expected identifier after '%s'", keyword);
         parser_synchronize(parser);
         return NULL;
@@ -3471,14 +3459,14 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
     Type type = TYPE_UNKNOWN;
     if (is_mutable) {
         if (!parser_match(parser, TOKEN_COLON)) {
-            diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
+            diagnostic(g_source_file, ERR_P014_EXPECTED_COLON, parser->current.line,
                        parser->current.column, "Expected ':' after identifier");
             parser_synchronize(parser);
             return NULL;
         }
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
-            diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+            diagnostic(g_source_file, ERR_P015_EXPECTED_TYPE, parser->current.line,
                        parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)");
             parser_synchronize(parser);
             return NULL;
@@ -3486,7 +3474,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
     } else if (parser_match(parser, TOKEN_COLON)) {
         type = parser_parse_type(parser, false);
         if (type == TYPE_UNKNOWN) {
-            diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+            diagnostic(g_source_file, ERR_P015_EXPECTED_TYPE, parser->current.line,
                        parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)");
             parser_synchronize(parser);
             return NULL;
@@ -3495,7 +3483,7 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
 
     /* Expect '=' */
     if (!parser_match(parser, TOKEN_EQUALS)) {
-        diagnostic(ERR_P004_EXPECTED_EQUALS, parser->current.line,
+        diagnostic(g_source_file, ERR_P004_EXPECTED_EQUALS, parser->current.line,
                    parser->current.column, "Expected '=' in %s declaration", keyword);
         parser_synchronize(parser);
         return NULL;
@@ -3656,7 +3644,7 @@ static Ast *parser_parse_block(Parser *parser) {
                     ast_block_add_statement(block, expr);
                 } else {
                     /* Expression not at end of block */
-                    diagnostic(ERR_P005_EXPECTED_STATEMENT,
+                    diagnostic(g_source_file, ERR_P005_EXPECTED_STATEMENT,
                                expr->loc.line, expr->loc.column,
                                "Bare expression not allowed; expected statement or '}'");
                     ast_free(expr);
@@ -3667,7 +3655,7 @@ static Ast *parser_parse_block(Parser *parser) {
     }
 
     if (!parser_match(parser, TOKEN_RBRACE)) {
-        diagnostic(ERR_P007_EXPECTED_RBRACE, parser->current.line,
+        diagnostic(g_source_file, ERR_P007_EXPECTED_RBRACE, parser->current.line,
                    parser->current.column, "Expected '}' to close block");
     }
 
@@ -3680,7 +3668,7 @@ static Ast *parser_parse_if(Parser *parser) {
 
     /* Expect '(' */
     if (!parser_match(parser, TOKEN_LPAREN)) {
-        diagnostic(ERR_P008_EXPECTED_LPAREN_IF, parser->current.line,
+        diagnostic(g_source_file, ERR_P008_EXPECTED_LPAREN_IF, parser->current.line,
                    parser->current.column, "Expected '(' after 'if'");
         parser_synchronize(parser);
         return NULL;
@@ -3695,7 +3683,7 @@ static Ast *parser_parse_if(Parser *parser) {
 
     /* Expect ')' */
     if (!parser_match(parser, TOKEN_RPAREN)) {
-        diagnostic(ERR_P009_EXPECTED_RPAREN_IF, parser->current.line,
+        diagnostic(g_source_file, ERR_P009_EXPECTED_RPAREN_IF, parser->current.line,
                    parser->current.column, "Expected ')' after condition");
         parser_synchronize(parser);
         return NULL;
@@ -3703,7 +3691,7 @@ static Ast *parser_parse_if(Parser *parser) {
 
     /* Expect '{' and parse block */
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
+        diagnostic(g_source_file, ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
                    parser->current.column, "Expected '{' for if body");
         parser_synchronize(parser);
         return NULL;
@@ -3714,7 +3702,7 @@ static Ast *parser_parse_if(Parser *parser) {
     Ast *else_block = NULL;
     if (parser_match(parser, TOKEN_ELSE)) {
         if (!parser_match(parser, TOKEN_LBRACE)) {
-            diagnostic(ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
+            diagnostic(g_source_file, ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
                        parser->current.column, "Expected '{' for else body");
             parser_synchronize(parser);
             return NULL;
@@ -3731,7 +3719,7 @@ static Ast *parser_parse_while(Parser *parser) {
 
     /* Expect '(' */
     if (!parser_match(parser, TOKEN_LPAREN)) {
-        diagnostic(ERR_P011_EXPECTED_LPAREN_WHILE, parser->current.line,
+        diagnostic(g_source_file, ERR_P011_EXPECTED_LPAREN_WHILE, parser->current.line,
                    parser->current.column, "Expected '(' after 'while'");
         parser_synchronize(parser);
         return NULL;
@@ -3746,7 +3734,7 @@ static Ast *parser_parse_while(Parser *parser) {
 
     /* Expect ')' */
     if (!parser_match(parser, TOKEN_RPAREN)) {
-        diagnostic(ERR_P012_EXPECTED_RPAREN_WHILE, parser->current.line,
+        diagnostic(g_source_file, ERR_P012_EXPECTED_RPAREN_WHILE, parser->current.line,
                    parser->current.column, "Expected ')' after condition");
         parser_synchronize(parser);
         return NULL;
@@ -3754,7 +3742,7 @@ static Ast *parser_parse_while(Parser *parser) {
 
     /* Expect '{' and parse block */
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P013_EXPECTED_LBRACE_WHILE, parser->current.line,
+        diagnostic(g_source_file, ERR_P013_EXPECTED_LBRACE_WHILE, parser->current.line,
                    parser->current.column, "Expected '{' for while body");
         parser_synchronize(parser);
         return NULL;
@@ -3770,7 +3758,7 @@ static Ast *parser_parse_for(Parser *parser) {
 
     /* Expect loop variable identifier */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+        diagnostic(g_source_file, ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                    parser->current.column, "Expected loop variable after 'for'");
         parser_synchronize(parser);
         return NULL;
@@ -3780,7 +3768,7 @@ static Ast *parser_parse_for(Parser *parser) {
 
     /* Expect 'in' */
     if (!parser_match(parser, TOKEN_IN)) {
-        diagnostic(ERR_P038_EXPECTED_IN_FOR, parser->current.line,
+        diagnostic(g_source_file, ERR_P038_EXPECTED_IN_FOR, parser->current.line,
                    parser->current.column, "Expected 'in' after loop variable");
         parser_synchronize(parser);
         return NULL;
@@ -3795,7 +3783,7 @@ static Ast *parser_parse_for(Parser *parser) {
 
     /* Expect '..' */
     if (!parser_match(parser, TOKEN_DOTDOT)) {
-        diagnostic(ERR_P039_EXPECTED_DOTDOT, parser->current.line,
+        diagnostic(g_source_file, ERR_P039_EXPECTED_DOTDOT, parser->current.line,
                    parser->current.column, "Expected '..' in range");
         parser_synchronize(parser);
         return NULL;
@@ -3810,7 +3798,7 @@ static Ast *parser_parse_for(Parser *parser) {
 
     /* Expect '{' and parse block */
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P040_EXPECTED_LBRACE_FOR, parser->current.line,
+        diagnostic(g_source_file, ERR_P040_EXPECTED_LBRACE_FOR, parser->current.line,
                    parser->current.column, "Expected '{' for for-loop body");
         parser_synchronize(parser);
         return NULL;
@@ -3840,7 +3828,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
     /* Check for [mut] ref prefix */
     if (parser_match(parser, TOKEN_MUT)) {
         if (!parser_match(parser, TOKEN_REF)) {
-            diagnostic(ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+            diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
                        parser->current.column,
                        "Expected 'ref' after 'mut' in parameter");
             return false;
@@ -3852,7 +3840,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
     }
 
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
+        diagnostic(g_source_file, ERR_P003_EXPECTED_IDENTIFIER, parser->current.line,
                    parser->current.column, "Expected parameter name");
         return false;
     }
@@ -3860,7 +3848,7 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
     param->name_length = parser->previous.length;
 
     if (!parser_match(parser, TOKEN_COLON)) {
-        diagnostic(ERR_P014_EXPECTED_COLON, parser->current.line,
+        diagnostic(g_source_file, ERR_P014_EXPECTED_COLON, parser->current.line,
                    parser->current.column, "Expected ':' after parameter name");
         return false;
     }
@@ -3868,10 +3856,10 @@ static bool parser_parse_parameter(Parser *parser, Parameter *param) {
     param->type = parser_parse_type(parser, false);
     if (param->type == TYPE_UNKNOWN) {
         if (parser_match(parser, TOKEN_VOID)) {
-            diagnostic(ERR_S012_VOID_PARAM, parser->previous.line,
+            diagnostic(g_source_file, ERR_S012_VOID_PARAM, parser->previous.line,
                        parser->previous.column, "void is not valid as parameter type");
         } else {
-            diagnostic(ERR_P015_EXPECTED_TYPE, parser->current.line,
+            diagnostic(g_source_file, ERR_P015_EXPECTED_TYPE, parser->current.line,
                        parser->current.column, "Expected type (i64, i32, u8, u32, f64, bool, str, or Arena)");
         }
         return false;
@@ -3910,7 +3898,7 @@ static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error,
 
         if (parser_match(parser, TOKEN_MUT)) {
             if (!parser_match(parser, TOKEN_REF)) {
-                diagnostic(ERR_P037_EXPECTED_REF_ARG, parser->current.line,
+                diagnostic(g_source_file, ERR_P037_EXPECTED_REF_ARG, parser->current.line,
                            parser->current.column,
                            "Expected 'ref' after 'mut' in argument");
                 goto fail;
@@ -4002,7 +3990,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Expect function name */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P017_EXPECTED_FUNC_NAME, parser->current.line,
+        diagnostic(g_source_file, ERR_P017_EXPECTED_FUNC_NAME, parser->current.line,
                    parser->current.column, "Expected function name after 'func'");
         parser_synchronize(parser);
         return NULL;
@@ -4012,7 +4000,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Expect '(' */
     if (!parser_match(parser, TOKEN_LPAREN)) {
-        diagnostic(ERR_P018_EXPECTED_LPAREN_FUNC, parser->current.line,
+        diagnostic(g_source_file, ERR_P018_EXPECTED_LPAREN_FUNC, parser->current.line,
                    parser->current.column, "Expected '(' after function name");
         parser_synchronize(parser);
         return NULL;
@@ -4024,7 +4012,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Expect ')' */
     if (!parser_match(parser, TOKEN_RPAREN)) {
-        diagnostic(ERR_P019_EXPECTED_RPAREN_FUNC, parser->current.line,
+        diagnostic(g_source_file, ERR_P019_EXPECTED_RPAREN_FUNC, parser->current.line,
                    parser->current.column, "Expected ')' after parameters");
         if (params) free(params);
         parser_synchronize(parser);
@@ -4033,7 +4021,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Expect ':' */
     if (!parser_match(parser, TOKEN_COLON)) {
-        diagnostic(ERR_P020_EXPECTED_COLON_FUNC, parser->current.line,
+        diagnostic(g_source_file, ERR_P020_EXPECTED_COLON_FUNC, parser->current.line,
                    parser->current.column, "Expected ':' before return type");
         if (params) free(params);
         parser_synchronize(parser);
@@ -4043,7 +4031,7 @@ static Ast *parser_parse_function(Parser *parser) {
     /* Expect return type */
     Type return_type = parser_parse_type(parser, true);
     if (return_type == TYPE_UNKNOWN) {
-        diagnostic(ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
+        diagnostic(g_source_file, ERR_P021_EXPECTED_RETURN_TYPE, parser->current.line,
                    parser->current.column, "Expected return type (i64, i32, u8, u32, f64, bool, str, Arena, or void)");
         if (params) free(params);
         parser_synchronize(parser);
@@ -4052,7 +4040,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Expect '=' */
     if (!parser_match(parser, TOKEN_EQUALS)) {
-        diagnostic(ERR_P022_EXPECTED_EQUALS_FUNC, parser->current.line,
+        diagnostic(g_source_file, ERR_P022_EXPECTED_EQUALS_FUNC, parser->current.line,
                    parser->current.column, "Expected '=' before function body");
         if (params) free(params);
         parser_synchronize(parser);
@@ -4061,7 +4049,7 @@ static Ast *parser_parse_function(Parser *parser) {
 
     /* Expect '{' and parse block */
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P023_EXPECTED_LBRACE_FUNC, parser->current.line,
+        diagnostic(g_source_file, ERR_P023_EXPECTED_LBRACE_FUNC, parser->current.line,
                    parser->current.column, "Expected '{' for function body");
         if (params) free(params);
         parser_synchronize(parser);
@@ -4128,7 +4116,7 @@ static Ast *parser_parse_statement(Parser *parser) {
         return NULL;
     }
 
-    diagnostic(ERR_P005_EXPECTED_STATEMENT, parser->current.line,
+    diagnostic(g_source_file, ERR_P005_EXPECTED_STATEMENT, parser->current.line,
                parser->current.column, "Expected statement");
     parser_synchronize(parser);
     return NULL;
@@ -4142,7 +4130,7 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
 
     /* Expect type name */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
+        diagnostic(g_source_file, ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
                    parser->current.column,
                    "Expected %s type name after '%s'", keyword, keyword);
         parser_synchronize(parser);
@@ -4153,7 +4141,7 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
 
     /* Expect '{' */
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
+        diagnostic(g_source_file, ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
                    parser->current.column,
                    "Expected '{' after %s type name", keyword);
         parser_synchronize(parser);
@@ -4171,7 +4159,7 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
 
     /* Expect '}' */
     if (!parser_match(parser, TOKEN_RBRACE)) {
-        diagnostic(ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
+        diagnostic(g_source_file, ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
                    parser->current.column,
                    "Expected '}' to close %s type", keyword);
         free(fields);
@@ -4196,7 +4184,7 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
     SourceLoc loc = token_loc(&parser->previous);
 
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P041_EXPECTED_ENUM_NAME, parser->current.line,
+        diagnostic(g_source_file, ERR_P041_EXPECTED_ENUM_NAME, parser->current.line,
                    parser->current.column,
                    "Expected enum type name after 'enum'");
         parser_synchronize(parser);
@@ -4208,13 +4196,13 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
     /* Check for duplicate type names */
     if (value_table_lookup(g_value_table, name_start, name_length) ||
         enum_table_lookup(name_start, name_length)) {
-        diagnostic(ERR_S070_DUPLICATE_TYPE_NAME, loc.line, loc.column,
+        diagnostic(g_source_file, ERR_S070_DUPLICATE_TYPE_NAME, loc.line, loc.column,
                    "Type name '%.*s' is already defined",
                    (int)name_length, name_start);
     }
 
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P042_EXPECTED_LBRACE_ENUM, parser->current.line,
+        diagnostic(g_source_file, ERR_P042_EXPECTED_LBRACE_ENUM, parser->current.line,
                    parser->current.column,
                    "Expected '{' after enum name");
         parser_synchronize(parser);
@@ -4230,7 +4218,7 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
     while (!parser_check(parser, TOKEN_RBRACE) &&
            !parser_check(parser, TOKEN_EOF)) {
         if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-            diagnostic(ERR_P044_EXPECTED_VARIANT_NAME, parser->current.line,
+            diagnostic(g_source_file, ERR_P044_EXPECTED_VARIANT_NAME, parser->current.line,
                        parser->current.column,
                        "Expected variant name in enum");
             free(variants);
@@ -4243,7 +4231,7 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
             if (variants[i].name_length == parser->previous.length &&
                 memcmp(variants[i].name_start, parser->previous.start,
                        parser->previous.length) == 0) {
-                diagnostic(ERR_S069_DUPLICATE_ENUM_VARIANT,
+                diagnostic(g_source_file, ERR_S069_DUPLICATE_ENUM_VARIANT,
                            parser->previous.line, parser->previous.column,
                            "Duplicate variant '%.*s' in enum '%.*s'",
                            (int)parser->previous.length, parser->previous.start,
@@ -4265,7 +4253,7 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
     }
 
     if (!parser_match(parser, TOKEN_RBRACE)) {
-        diagnostic(ERR_P043_EXPECTED_RBRACE_ENUM, parser->current.line,
+        diagnostic(g_source_file, ERR_P043_EXPECTED_RBRACE_ENUM, parser->current.line,
                    parser->current.column,
                    "Expected '}' to close enum");
         free(variants);
@@ -4283,7 +4271,7 @@ static Ast *parser_parse_table_decl(Parser *parser) {
 
     /* Expect table name */
     if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-        diagnostic(ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
+        diagnostic(g_source_file, ERR_P024_EXPECTED_VALUE_NAME, parser->current.line,
                    parser->current.column,
                    "Expected table type name after 'table'");
         parser_synchronize(parser);
@@ -4294,7 +4282,7 @@ static Ast *parser_parse_table_decl(Parser *parser) {
 
     /* Expect '{' */
     if (!parser_match(parser, TOKEN_LBRACE)) {
-        diagnostic(ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
+        diagnostic(g_source_file, ERR_P025_EXPECTED_LBRACE_VALUE, parser->current.line,
                    parser->current.column,
                    "Expected '{' after table type name");
         parser_synchronize(parser);
@@ -4311,7 +4299,7 @@ static Ast *parser_parse_table_decl(Parser *parser) {
 
     /* Expect '}' */
     if (!parser_match(parser, TOKEN_RBRACE)) {
-        diagnostic(ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
+        diagnostic(g_source_file, ERR_P027_EXPECTED_RBRACE_VALUE, parser->current.line,
                    parser->current.column,
                    "Expected '}' to close table type");
         free(orig_fields);
@@ -4432,7 +4420,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
         if (parser_match(parser, TOKEN_IMPORT)) {
             /* import "path.nore" */
             if (!parser_match(parser, TOKEN_STRING)) {
-                diagnostic(ERR_P046_EXPECTED_IMPORT_PATH, parser->current.line,
+                diagnostic(g_source_file, ERR_P046_EXPECTED_IMPORT_PATH, parser->current.line,
                            parser->current.column,
                            "Expected string literal after 'import'");
                 parser_synchronize(parser);
@@ -4443,7 +4431,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
             size_t path_len = parser->previous.length - 2;
             char import_path[PATH_MAX];
             if (path_len >= sizeof(import_path)) {
-                diagnostic(ERR_P046_EXPECTED_IMPORT_PATH, parser->previous.line,
+                diagnostic(g_source_file, ERR_P046_EXPECTED_IMPORT_PATH, parser->previous.line,
                            parser->previous.column, "Import path too long");
                 continue;
             }
@@ -4454,7 +4442,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
             char resolved[PATH_MAX];
             if (!resolve_import_path(import_path, g_source_file,
                                       resolved, sizeof(resolved))) {
-                diagnostic(ERR_D007_IMPORT_NOT_FOUND, parser->previous.line,
+                diagnostic(g_source_file, ERR_D007_IMPORT_NOT_FOUND, parser->previous.line,
                            parser->previous.column,
                            "Cannot find imported file '%s'", import_path);
                 continue;
@@ -4507,7 +4495,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                 ast_program_add_statement(program, var);
             }
         } else {
-            diagnostic(ERR_P016_EXPECTED_FUNC, parser->current.line,
+            diagnostic(g_source_file, ERR_P016_EXPECTED_FUNC, parser->current.line,
                        parser->current.column,
                        "Expected declaration at top level");
             /* Skip tokens until we find a declaration or EOF */
@@ -5013,7 +5001,7 @@ static Variable *scope_add(Scope *scope, const char *name_start,
                            SourceLoc loc) {
     /* Check for duplicates in current scope only */
     if (scope_lookup_local(scope, name_start, name_length) != NULL) {
-        diagnostic(ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
+        diagnostic(loc.file, ERR_S001_DUPLICATE_VARIABLE, loc.line, loc.column,
                    "Variable '%.*s' already declared in this scope",
                    (int)name_length, name_start);
         return NULL;
@@ -5134,7 +5122,7 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
 
     /* Check for duplicates */
     if (func_table_lookup(table, name_start, name_length) != NULL) {
-        diagnostic(ERR_S008_DUPLICATE_FUNCTION, func_decl->loc.line,
+        diagnostic(func_decl->loc.file, ERR_S008_DUPLICATE_FUNCTION, func_decl->loc.line,
                    func_decl->loc.column, "Duplicate function '%.*s'",
                    (int)name_length, name_start);
         return;
@@ -5339,7 +5327,7 @@ static Ast *try_fold_binary(Ast *node, Scope *scope, bool *div_by_zero) {
             default: return NULL;
         }
         if (overflow) {
-            diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
+            diagnostic(node->loc.file, ERR_S050_LITERAL_OUT_OF_RANGE, node->loc.line,
                        node->loc.column,
                        "Integer overflow in constant expression");
             return NULL;
@@ -5508,11 +5496,11 @@ static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
                                Scope *scope) {
     if (!is_addressable(arg)) {
         if (arg->kind == AST_INDEX_ACCESS) {
-            diagnostic(ERR_S042_REF_ARRAY_ELEMENT, arg->loc.line,
+            diagnostic(arg->loc.file, ERR_S042_REF_ARRAY_ELEMENT, arg->loc.line,
                        arg->loc.column,
                        "Cannot take reference of array element");
         } else {
-            diagnostic(ERR_S039_REF_NOT_ADDRESSABLE, arg->loc.line,
+            diagnostic(arg->loc.file, ERR_S039_REF_NOT_ADDRESSABLE, arg->loc.line,
                        arg->loc.column,
                        "Cannot take reference of non-addressable expression");
         }
@@ -5520,7 +5508,7 @@ static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
     }
 
     if (arg->kind == AST_FIELD_ACCESS && type_is_scalar(arg_type)) {
-        diagnostic(ERR_S041_REF_SCALAR_FIELD, arg->loc.line,
+        diagnostic(arg->loc.file, ERR_S041_REF_SCALAR_FIELD, arg->loc.line,
                    arg->loc.column,
                    "Cannot take reference of scalar field (just copy it)");
     }
@@ -5531,7 +5519,7 @@ static void typecheck_ref_arg(Ast *arg, Type arg_type, bool is_mut,
             Variable *v = scope_lookup(scope, root->as.identifier.start,
                                         root->as.identifier.length);
             if (v && !v->is_mutable) {
-                diagnostic(ERR_S040_MUT_REF_IMMUTABLE, arg->loc.line,
+                diagnostic(arg->loc.file, ERR_S040_MUT_REF_IMMUTABLE, arg->loc.line,
                            arg->loc.column,
                            "Cannot pass 'mut ref' to immutable variable '%.*s'",
                            (int)root->as.identifier.length,
@@ -5548,7 +5536,6 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
-    DIAG_FILE(node->loc);
     switch (node->kind) {
         case AST_NUMBER:
             node->expr_type = TYPE_COMPTIME_INT;
@@ -5570,7 +5557,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Variable *v = scope_lookup(scope, node->as.identifier.start,
                                         node->as.identifier.length);
             if (v == NULL) {
-                diagnostic(ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
+                diagnostic(node->loc.file, ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
                            node->loc.column, "Undeclared variable '%.*s'",
                            (int)node->as.identifier.length,
                            node->as.identifier.start);
@@ -5578,7 +5565,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 return TYPE_I64;
             }
             if (v->is_invalidated) {
-                diagnostic(ERR_S056_SLICE_INVALIDATED, node->loc.line,
+                diagnostic(node->loc.file, ERR_S056_SLICE_INVALIDATED, node->loc.line,
                            node->loc.column,
                            "Use of slice '%.*s' after arena reset",
                            (int)node->as.identifier.length,
@@ -5600,7 +5587,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_DIV:
                 case OP_MOD: {
                     if (type_is_enum(left_type) || type_is_enum(right_type)) {
-                        diagnostic(ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
                                    "Arithmetic is not allowed on enum type %s",
                                    type_name(type_is_enum(left_type) ? left_type : right_type));
                         node->expr_type = TYPE_I64;
@@ -5608,7 +5595,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     }
                     Type result = resolve_numeric_binary_type(left_type, right_type);
                     if (result == TYPE_VOID) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
                                    "Cannot mix %s and %s in arithmetic operation",
                                    type_name(left_type), type_name(right_type));
                         node->expr_type = TYPE_I64;  /* default */
@@ -5618,7 +5605,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     /* Modulo is integer-only */
                     if (node->as.binary.op == OP_MOD &&
                         (result == TYPE_F64 || result == TYPE_COMPTIME_FLOAT)) {
-                        diagnostic(ERR_S061_MODULO_ON_FLOAT, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S061_MODULO_ON_FLOAT, node->loc.line, node->loc.column,
                                    "Modulo operator '%%' is not supported on floating-point types");
                         node->expr_type = TYPE_I64;
                         return TYPE_I64;
@@ -5628,7 +5615,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     bool div_by_zero = false;
                     Ast *folded = try_fold_binary(node, scope, &div_by_zero);
                     if (div_by_zero) {
-                        diagnostic(ERR_S019_DIVISION_BY_ZERO, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S019_DIVISION_BY_ZERO, node->loc.line, node->loc.column,
                                    "Division by zero in constant expression");
                         node->expr_type = result;
                         return result;
@@ -5656,11 +5643,11 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     /* Enum comparison: == and != only, same enum type required */
                     if (type_is_enum(left_type) || type_is_enum(right_type)) {
                         if (node->as.binary.op != OP_EQ && node->as.binary.op != OP_NEQ) {
-                            diagnostic(ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
+                            diagnostic(node->loc.file, ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
                                        "Only == and != are allowed on enum type %s",
                                        type_name(type_is_enum(left_type) ? left_type : right_type));
                         } else if (left_type != right_type) {
-                            diagnostic(ERR_S068_ENUM_COMPARE_MISMATCH, node->loc.line, node->loc.column,
+                            diagnostic(node->loc.file, ERR_S068_ENUM_COMPARE_MISMATCH, node->loc.line, node->loc.column,
                                        "Cannot compare different types %s and %s",
                                        type_name(left_type), type_name(right_type));
                         }
@@ -5670,7 +5657,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
 
                     Type result = resolve_numeric_binary_type(left_type, right_type);
                     if (result == TYPE_VOID) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
                                    "Cannot compare %s and %s",
                                    type_name(left_type), type_name(right_type));
                     }
@@ -5693,12 +5680,12 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_AND:
                 case OP_OR:
                     if (left_type != TYPE_BOOL) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
+                        diagnostic(node->as.binary.left->loc.file, ERR_S006_TYPE_MISMATCH, node->as.binary.left->loc.line,
                                    node->as.binary.left->loc.column,
                                    "Expected bool, got %s", type_name(left_type));
                     }
                     if (right_type != TYPE_BOOL) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
+                        diagnostic(node->as.binary.right->loc.file, ERR_S006_TYPE_MISMATCH, node->as.binary.right->loc.line,
                                    node->as.binary.right->loc.column,
                                    "Expected bool, got %s", type_name(right_type));
                     }
@@ -5713,7 +5700,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_SHR: {
                     Type result = resolve_numeric_binary_type(left_type, right_type);
                     if (result == TYPE_VOID) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S006_TYPE_MISMATCH, node->loc.line, node->loc.column,
                                    "Cannot mix %s and %s in bitwise operation",
                                    type_name(left_type), type_name(right_type));
                         node->expr_type = TYPE_I64;
@@ -5721,7 +5708,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     }
 
                     if (result == TYPE_F64 || result == TYPE_COMPTIME_FLOAT) {
-                        diagnostic(ERR_S062_BITWISE_ON_FLOAT, node->loc.line, node->loc.column,
+                        diagnostic(node->loc.file, ERR_S062_BITWISE_ON_FLOAT, node->loc.line, node->loc.column,
                                    "Bitwise operators are not supported on floating-point types");
                         node->expr_type = TYPE_I64;
                         return TYPE_I64;
@@ -5761,7 +5748,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 /* Negation: numeric -> numeric (preserves type) */
                 case OP_NEG:
                     if (type_is_unsigned(operand_type)) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                        diagnostic(node->as.unary.operand->loc.file, ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
                                    "Cannot negate unsigned type %s",
                                    type_name(operand_type));
@@ -5769,7 +5756,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                         return operand_type;
                     }
                     if (!type_is_numeric(operand_type)) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                        diagnostic(node->as.unary.operand->loc.file, ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
                                    "Expected numeric type for negation, got %s",
                                    type_name(operand_type));
@@ -5782,7 +5769,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 /* NOT: bool -> bool */
                 case OP_NOT:
                     if (operand_type != TYPE_BOOL) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                        diagnostic(node->as.unary.operand->loc.file, ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
                                    "Expected bool for logical NOT, got %s",
                                    type_name(operand_type));
@@ -5793,14 +5780,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 /* Bitwise NOT: integer -> integer */
                 case OP_BITNOT:
                     if (operand_type == TYPE_F64 || operand_type == TYPE_COMPTIME_FLOAT) {
-                        diagnostic(ERR_S062_BITWISE_ON_FLOAT, node->as.unary.operand->loc.line,
+                        diagnostic(node->as.unary.operand->loc.file, ERR_S062_BITWISE_ON_FLOAT, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
                                    "Bitwise NOT is not supported on floating-point types");
                         node->expr_type = TYPE_I64;
                         return TYPE_I64;
                     }
                     if (!type_is_integer(operand_type)) {
-                        diagnostic(ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
+                        diagnostic(node->as.unary.operand->loc.file, ERR_S006_TYPE_MISMATCH, node->as.unary.operand->loc.line,
                                    node->as.unary.operand->loc.column,
                                    "Expected integer type for bitwise NOT, got %s",
                                    type_name(operand_type));
@@ -5820,7 +5807,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             /* Look up function in table */
             FunctionEntry *entry = func_table_lookup(func_table, name_start, name_length);
             if (entry == NULL) {
-                diagnostic(ERR_S016_UNDEFINED_FUNCTION, node->loc.line,
+                diagnostic(node->loc.file, ERR_S016_UNDEFINED_FUNCTION, node->loc.line,
                            node->loc.column, "Undefined function '%.*s'",
                            (int)name_length, name_start);
                 node->expr_type = TYPE_I64;  /* Default to prevent cascading */
@@ -5829,7 +5816,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
 
             /* Check argument count */
             if (node->as.func_call.arg_count != entry->param_count) {
-                diagnostic(ERR_S017_WRONG_ARG_COUNT, node->loc.line,
+                diagnostic(node->loc.file, ERR_S017_WRONG_ARG_COUNT, node->loc.line,
                            node->loc.column,
                            "Function '%.*s' expects %zu arguments, got %zu",
                            (int)name_length, name_start,
@@ -5852,7 +5839,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 bool param_mut = entry->param_is_mut_ref[i];
 
                 if (call_ref != param_ref || call_mut != param_mut) {
-                    diagnostic(ERR_S038_REF_MISMATCH, arg->loc.line,
+                    diagnostic(arg->loc.file, ERR_S038_REF_MISMATCH, arg->loc.line,
                                arg->loc.column,
                                "Argument %zu: expected %s, got %s",
                                i + 1,
@@ -5870,7 +5857,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                             Variable *v = scope_lookup(scope, root->as.identifier.start,
                                                         root->as.identifier.length);
                             if (v && !v->is_mutable) {
-                                diagnostic(ERR_S040_MUT_REF_IMMUTABLE, arg->loc.line,
+                                diagnostic(arg->loc.file, ERR_S040_MUT_REF_IMMUTABLE, arg->loc.line,
                                            arg->loc.column,
                                            "Cannot pass 'mut ref' to immutable variable '%.*s'",
                                            (int)root->as.identifier.length,
@@ -5882,7 +5869,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     typecheck_ref_arg(arg, arg_type, call_mut, scope);
                 }
                 if (!type_can_coerce(arg_type, param_type)) {
-                    diagnostic(ERR_S018_ARG_TYPE_MISMATCH,
+                    diagnostic(arg->loc.file, ERR_S018_ARG_TYPE_MISMATCH,
                                arg->loc.line, arg->loc.column,
                                "Argument %zu: expected %s, got %s",
                                i + 1, type_name(param_type),
@@ -5932,7 +5919,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Type cond_type = typecheck_expression(node->as.if_stmt.condition,
                                                   scope, func_table);
             if (cond_type != TYPE_BOOL) {
-                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->as.if_stmt.condition->loc.line,
+                diagnostic(node->as.if_stmt.condition->loc.file, ERR_S007_CONDITION_NOT_BOOL, node->as.if_stmt.condition->loc.line,
                            node->as.if_stmt.condition->loc.column,
                            "Condition must be bool, got %s", type_name(cond_type));
             }
@@ -5953,7 +5940,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             /* Resolve common type */
             Type result = resolve_branch_types(then_type, else_type);
             if (result == TYPE_VOID && then_type != TYPE_VOID) {
-                diagnostic(ERR_S021_BRANCH_TYPE_MISMATCH, node->loc.line, node->loc.column,
+                diagnostic(node->loc.file, ERR_S021_BRANCH_TYPE_MISMATCH, node->loc.line, node->loc.column,
                            "If/else branches have incompatible types: %s and %s",
                            type_name(then_type), type_name(else_type));
                 node->expr_type = then_type;  /* Use then type as fallback */
@@ -5998,7 +5985,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             size_t tlen = node->as.value_constructor.type_name_length;
             ValueTypeEntry *vt = value_table_lookup(g_value_table, tname, tlen);
             if (!vt) {
-                diagnostic(ERR_S027_NOT_A_VALUE_TYPE, node->loc.line,
+                diagnostic(node->loc.file, ERR_S027_NOT_A_VALUE_TYPE, node->loc.line,
                            node->loc.column, "'%.*s' is not a value type",
                            (int)tlen, tname);
                 node->expr_type = TYPE_I64;
@@ -6016,7 +6003,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     if (fi[i].name_length == fi[j].name_length &&
                         memcmp(fi[i].name_start, fi[j].name_start,
                                fi[i].name_length) == 0) {
-                        diagnostic(ERR_S026_DUPLICATE_CTOR_FIELD, node->loc.line,
+                        diagnostic(node->loc.file, ERR_S026_DUPLICATE_CTOR_FIELD, node->loc.line,
                                    node->loc.column,
                                    "Duplicate field '%.*s' in constructor",
                                    (int)fi[i].name_length, fi[i].name_start);
@@ -6030,7 +6017,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 int fidx = value_table_find_field(vt, fi[i].name_start,
                                                    fi[i].name_length);
                 if (fidx < 0) {
-                    diagnostic(ERR_S024_UNKNOWN_CTOR_FIELD, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S024_UNKNOWN_CTOR_FIELD, node->loc.line,
                                node->loc.column,
                                "Unknown field '%.*s' in '%.*s' constructor",
                                (int)fi[i].name_length, fi[i].name_start,
@@ -6041,7 +6028,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 Type field_type = vt->fields[fidx].type;
                 Type val_type = typecheck_expression(fi[i].value, scope, func_table);
                 if (!type_can_coerce(val_type, field_type)) {
-                    diagnostic(ERR_S006_TYPE_MISMATCH,
+                    diagnostic(fi[i].value->loc.file, ERR_S006_TYPE_MISMATCH,
                                fi[i].value->loc.line,
                                fi[i].value->loc.column,
                                "Field '%.*s': expected %s, got %s",
@@ -6062,7 +6049,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     }
                 }
                 if (!found) {
-                    diagnostic(ERR_S025_MISSING_CTOR_FIELD, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S025_MISSING_CTOR_FIELD, node->loc.line,
                                node->loc.column,
                                "Missing field '%.*s' in '%.*s' constructor",
                                (int)vt->fields[i].name_length,
@@ -6079,7 +6066,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             size_t count = node->as.array_literal.element_count;
             if (count == 0) {
                 /* Empty array literal - can't infer type */
-                diagnostic(ERR_S033_ARRAY_ELEM_TYPE, node->loc.line,
+                diagnostic(node->loc.file, ERR_S033_ARRAY_ELEM_TYPE, node->loc.line,
                            node->loc.column,
                            "Empty array literal requires type context");
                 node->expr_type = TYPE_I64;
@@ -6097,7 +6084,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     resolved = resolve_branch_types(common, elem);
                 }
                 if (resolved == TYPE_VOID) {
-                    diagnostic(ERR_S033_ARRAY_ELEM_TYPE,
+                    diagnostic(node->as.array_literal.elements[i]->loc.file, ERR_S033_ARRAY_ELEM_TYPE,
                                node->as.array_literal.elements[i]->loc.line,
                                node->as.array_literal.elements[i]->loc.column,
                                "Array element type mismatch: expected %s, got %s",
@@ -6117,7 +6104,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Type idx_type = typecheck_expression(node->as.index_access.index,
                                                   scope, func_table);
             if (!type_is_array(obj_type) && !type_is_slice(obj_type)) {
-                diagnostic(ERR_S035_INDEX_ON_NON_ARRAY, node->loc.line,
+                diagnostic(node->loc.file, ERR_S035_INDEX_ON_NON_ARRAY, node->loc.line,
                            node->loc.column,
                            "Cannot index non-array type %s",
                            type_name(obj_type));
@@ -6125,7 +6112,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 return TYPE_I64;
             }
             if (!type_is_integer(idx_type)) {
-                diagnostic(ERR_S034_INDEX_NOT_INTEGER, node->as.index_access.index->loc.line,
+                diagnostic(node->as.index_access.index->loc.file, ERR_S034_INDEX_NOT_INTEGER, node->as.index_access.index->loc.line,
                            node->as.index_access.index->loc.column,
                            "Index must be integer, got %s",
                            type_name(idx_type));
@@ -6146,7 +6133,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     node->expr_type = TYPE_I64;
                     return TYPE_I64;
                 }
-                diagnostic(ERR_S029_UNKNOWN_FIELD_ACCESS, node->loc.line,
+                diagnostic(node->loc.file, ERR_S029_UNKNOWN_FIELD_ACCESS, node->loc.line,
                            node->loc.column,
                            "No field '%.*s' on slice type '%s'",
                            (int)node->as.field_access.field_length,
@@ -6156,7 +6143,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 return TYPE_I64;
             }
             if (!type_is_value(obj_type)) {
-                diagnostic(ERR_S028_FIELD_ON_NON_VALUE, node->loc.line,
+                diagnostic(node->loc.file, ERR_S028_FIELD_ON_NON_VALUE, node->loc.line,
                            node->loc.column,
                            "Cannot access field on non-value type %s",
                            type_name(obj_type));
@@ -6169,7 +6156,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                                node->as.field_access.field_start,
                                                node->as.field_access.field_length);
             if (fidx < 0) {
-                diagnostic(ERR_S029_UNKNOWN_FIELD_ACCESS, node->loc.line,
+                diagnostic(node->loc.file, ERR_S029_UNKNOWN_FIELD_ACCESS, node->loc.line,
                            node->loc.column,
                            "No field '%.*s' on type '%.*s'",
                            (int)node->as.field_access.field_length,
@@ -6190,7 +6177,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_ARENA_NEW: {
             Type cap_type = typecheck_expression(node->as.arena_new.capacity, scope, func_table);
             if (!type_is_integer(cap_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.arena_new.capacity->loc.line,
+                diagnostic(node->as.arena_new.capacity->loc.file, ERR_S006_TYPE_MISMATCH, node->as.arena_new.capacity->loc.line,
                            node->as.arena_new.capacity->loc.column,
                            "Arena capacity must be integer, got %s",
                            type_name(cap_type));
@@ -6203,7 +6190,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_ARENA_ALLOC: {
             Type arena_type = typecheck_expression(node->as.arena_alloc.arena, scope, func_table);
             if (!type_is_arena(arena_type)) {
-                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.arena_alloc.arena->loc.line,
+                diagnostic(node->as.arena_alloc.arena->loc.file, ERR_S051_ARENA_ALLOC_TYPE, node->as.arena_alloc.arena->loc.line,
                            node->as.arena_alloc.arena->loc.column,
                            "arena_alloc() requires Arena, got %s",
                            type_name(arena_type));
@@ -6214,14 +6201,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     node->as.arena_alloc.arena->as.identifier.start,
                     node->as.arena_alloc.arena->as.identifier.length);
                 if (v && !v->is_mutable) {
-                    diagnostic(ERR_S052_ARENA_IMMUTABLE, node->as.arena_alloc.arena->loc.line,
+                    diagnostic(node->as.arena_alloc.arena->loc.file, ERR_S052_ARENA_IMMUTABLE, node->as.arena_alloc.arena->loc.line,
                                node->as.arena_alloc.arena->loc.column,
                                "Cannot arena_alloc from immutable Arena, use 'mut'");
                 }
             }
             Type count_type = typecheck_expression(node->as.arena_alloc.count, scope, func_table);
             if (!type_is_integer(count_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.arena_alloc.count->loc.line,
+                diagnostic(node->as.arena_alloc.count->loc.file, ERR_S006_TYPE_MISMATCH, node->as.arena_alloc.count->loc.line,
                            node->as.arena_alloc.count->loc.column,
                            "arena_alloc() count must be integer, got %s",
                            type_name(count_type));
@@ -6235,7 +6222,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Ast *arena_node = node->as.arena_reset.arena;
             Type arena_type = typecheck_expression(arena_node, scope, func_table);
             if (!type_is_arena(arena_type)) {
-                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, arena_node->loc.line,
+                diagnostic(arena_node->loc.file, ERR_S051_ARENA_ALLOC_TYPE, arena_node->loc.line,
                            arena_node->loc.column,
                            "arena_reset() requires Arena, got %s",
                            type_name(arena_type));
@@ -6246,7 +6233,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     arena_node->as.identifier.start,
                     arena_node->as.identifier.length);
                 if (v && !v->is_mutable) {
-                    diagnostic(ERR_S055_ARENA_RESET_IMMUTABLE,
+                    diagnostic(arena_node->loc.file, ERR_S055_ARENA_RESET_IMMUTABLE,
                                arena_node->loc.line, arena_node->loc.column,
                                "Cannot arena_reset immutable Arena, use 'mut'");
                 }
@@ -6263,7 +6250,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_TABLE_ALLOC: {
             Type arena_type = typecheck_expression(node->as.table_alloc.arena, scope, func_table);
             if (!type_is_arena(arena_type)) {
-                diagnostic(ERR_S051_ARENA_ALLOC_TYPE, node->as.table_alloc.arena->loc.line,
+                diagnostic(node->as.table_alloc.arena->loc.file, ERR_S051_ARENA_ALLOC_TYPE, node->as.table_alloc.arena->loc.line,
                            node->as.table_alloc.arena->loc.column,
                            "table_alloc() requires Arena, got %s",
                            type_name(arena_type));
@@ -6274,14 +6261,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     node->as.table_alloc.arena->as.identifier.start,
                     node->as.table_alloc.arena->as.identifier.length);
                 if (v && !v->is_mutable) {
-                    diagnostic(ERR_S052_ARENA_IMMUTABLE, node->as.table_alloc.arena->loc.line,
+                    diagnostic(node->as.table_alloc.arena->loc.file, ERR_S052_ARENA_IMMUTABLE, node->as.table_alloc.arena->loc.line,
                                node->as.table_alloc.arena->loc.column,
                                "Cannot table_alloc from immutable Arena, use 'mut'");
                 }
             }
             Type count_type = typecheck_expression(node->as.table_alloc.count, scope, func_table);
             if (!type_is_integer(count_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.table_alloc.count->loc.line,
+                diagnostic(node->as.table_alloc.count->loc.file, ERR_S006_TYPE_MISMATCH, node->as.table_alloc.count->loc.line,
                            node->as.table_alloc.count->loc.column,
                            "table_alloc() count must be integer, got %s",
                            type_name(count_type));
@@ -6294,7 +6281,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_TABLE_LEN: {
             Type table_type = typecheck_expression(node->as.table_len.table, scope, func_table);
             if (!is_table_type(table_type)) {
-                diagnostic(ERR_S060_NOT_TABLE_TYPE, node->as.table_len.table->loc.line,
+                diagnostic(node->as.table_len.table->loc.file, ERR_S060_NOT_TABLE_TYPE, node->as.table_len.table->loc.line,
                            node->as.table_len.table->loc.column,
                            "table_len() requires a table type, got %s",
                            type_name(table_type));
@@ -6306,7 +6293,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_TABLE_GET: {
             Type table_type = typecheck_expression(node->as.table_get.table, scope, func_table);
             if (!is_table_type(table_type)) {
-                diagnostic(ERR_S060_NOT_TABLE_TYPE, node->as.table_get.table->loc.line,
+                diagnostic(node->as.table_get.table->loc.file, ERR_S060_NOT_TABLE_TYPE, node->as.table_get.table->loc.line,
                            node->as.table_get.table->loc.column,
                            "table_get() requires a table type, got %s",
                            type_name(table_type));
@@ -6315,7 +6302,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             }
             Type index_type = typecheck_expression(node->as.table_get.index, scope, func_table);
             if (!type_is_integer(index_type)) {
-                diagnostic(ERR_S034_INDEX_NOT_INTEGER, node->as.table_get.index->loc.line,
+                diagnostic(node->as.table_get.index->loc.file, ERR_S034_INDEX_NOT_INTEGER, node->as.table_get.index->loc.line,
                            node->as.table_get.index->loc.column,
                            "table_get() index must be integer, got %s",
                            type_name(index_type));
@@ -6328,7 +6315,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_TABLE_INSERT: {
             Type table_type = typecheck_expression(node->as.table_insert.table, scope, func_table);
             if (!is_table_type(table_type)) {
-                diagnostic(ERR_S060_NOT_TABLE_TYPE, node->as.table_insert.table->loc.line,
+                diagnostic(node->as.table_insert.table->loc.file, ERR_S060_NOT_TABLE_TYPE, node->as.table_insert.table->loc.line,
                            node->as.table_insert.table->loc.column,
                            "table_insert() requires a table type, got %s",
                            type_name(table_type));
@@ -6342,7 +6329,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     table_node->as.identifier.start,
                     table_node->as.identifier.length);
                 if (v && !v->is_mutable) {
-                    diagnostic(ERR_S052_ARENA_IMMUTABLE, table_node->loc.line,
+                    diagnostic(table_node->loc.file, ERR_S052_ARENA_IMMUTABLE, table_node->loc.line,
                                table_node->loc.column,
                                "Cannot table_insert into immutable table, use 'mut'");
                 }
@@ -6350,7 +6337,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             TableDeclEntry *te = table_decl_for_type(table_type);
             Type row_type = typecheck_expression(node->as.table_insert.row, scope, func_table);
             if (!type_can_coerce(row_type, te->row_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.table_insert.row->loc.line,
+                diagnostic(node->as.table_insert.row->loc.file, ERR_S006_TYPE_MISMATCH, node->as.table_insert.row->loc.line,
                            node->as.table_insert.row->loc.column,
                            "table_insert() row must be %s, got %s",
                            type_name(te->row_type), type_name(row_type));
@@ -6371,7 +6358,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             }
 
             if (!type_is_numeric(operand_type)) {
-                diagnostic(ERR_S063_INVALID_CAST, node->loc.line, node->loc.column,
+                diagnostic(node->loc.file, ERR_S063_INVALID_CAST, node->loc.line, node->loc.column,
                            "Cannot cast %s to %s",
                            type_name(operand_type), type_name(target));
                 node->expr_type = target;
@@ -6390,7 +6377,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     double fval = get_comptime_float(op, scope);
                     const char *tname = check_integer_range((long)fval, target);
                     if (tname) {
-                        diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, op->loc.line, op->loc.column,
+                        diagnostic(op->loc.file, ERR_S050_LITERAL_OUT_OF_RANGE, op->loc.line, op->loc.column,
                                    "Value %g out of range for %s", fval, tname);
                     }
                 }
@@ -6404,14 +6391,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_FD_WRITE: {
             Type fd_type = typecheck_expression(node->as.fd_write.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
-                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_write.fd->loc.line,
+                diagnostic(node->as.fd_write.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_write.fd->loc.line,
                            node->as.fd_write.fd->loc.column,
                            "fd_write() fd must be integer, got %s",
                            type_name(fd_type));
             }
             Type data_type = typecheck_expression(node->as.fd_write.data, scope, func_table);
             if (!type_is_byte_buffer(data_type)) {
-                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.fd_write.data->loc.line,
+                diagnostic(node->as.fd_write.data->loc.file, ERR_S065_IO_DATA_TYPE, node->as.fd_write.data->loc.line,
                            node->as.fd_write.data->loc.column,
                            "fd_write() data must be []u8, got %s",
                            type_name(data_type));
@@ -6424,14 +6411,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_FD_READ: {
             Type fd_type = typecheck_expression(node->as.fd_read.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
-                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_read.fd->loc.line,
+                diagnostic(node->as.fd_read.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_read.fd->loc.line,
                            node->as.fd_read.fd->loc.column,
                            "fd_read() fd must be integer, got %s",
                            type_name(fd_type));
             }
             Type buf_type = typecheck_expression(node->as.fd_read.buf, scope, func_table);
             if (!type_is_byte_buffer(buf_type)) {
-                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.fd_read.buf->loc.line,
+                diagnostic(node->as.fd_read.buf->loc.file, ERR_S065_IO_DATA_TYPE, node->as.fd_read.buf->loc.line,
                            node->as.fd_read.buf->loc.column,
                            "fd_read() buffer must be []u8, got %s",
                            type_name(buf_type));
@@ -6442,7 +6429,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     node->as.fd_read.buf->as.identifier.start,
                     node->as.fd_read.buf->as.identifier.length);
                 if (v && !v->is_mutable) {
-                    diagnostic(ERR_S066_IO_BUF_IMMUTABLE, node->as.fd_read.buf->loc.line,
+                    diagnostic(node->as.fd_read.buf->loc.file, ERR_S066_IO_BUF_IMMUTABLE, node->as.fd_read.buf->loc.line,
                                node->as.fd_read.buf->loc.column,
                                "fd_read() buffer must be mutable, use 'mut'");
                 }
@@ -6455,14 +6442,14 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_FD_OPEN: {
             Type path_type = typecheck_expression(node->as.fd_open.path, scope, func_table);
             if (!type_is_byte_buffer(path_type)) {
-                diagnostic(ERR_S065_IO_DATA_TYPE, node->as.fd_open.path->loc.line,
+                diagnostic(node->as.fd_open.path->loc.file, ERR_S065_IO_DATA_TYPE, node->as.fd_open.path->loc.line,
                            node->as.fd_open.path->loc.column,
                            "fd_open() path must be []u8, got %s",
                            type_name(path_type));
             }
             Type flags_type = typecheck_expression(node->as.fd_open.flags, scope, func_table);
             if (!type_is_integer(flags_type)) {
-                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_open.flags->loc.line,
+                diagnostic(node->as.fd_open.flags->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_open.flags->loc.line,
                            node->as.fd_open.flags->loc.column,
                            "fd_open() flags must be integer, got %s",
                            type_name(flags_type));
@@ -6475,7 +6462,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_FD_CLOSE: {
             Type fd_type = typecheck_expression(node->as.fd_close.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
-                diagnostic(ERR_S064_IO_FD_TYPE, node->as.fd_close.fd->loc.line,
+                diagnostic(node->as.fd_close.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_close.fd->loc.line,
                            node->as.fd_close.fd->loc.column,
                            "fd_close() fd must be integer, got %s",
                            type_name(fd_type));
@@ -6488,7 +6475,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         case AST_EXIT: {
             Type code_type = typecheck_expression(node->as.exit_call.code, scope, func_table);
             if (!type_is_integer(code_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.exit_call.code->loc.line,
+                diagnostic(node->as.exit_call.code->loc.file, ERR_S006_TYPE_MISMATCH, node->as.exit_call.code->loc.line,
                            node->as.exit_call.code->loc.column,
                            "exit() code must be integer, got %s",
                            type_name(code_type));
@@ -6530,7 +6517,7 @@ static void typecheck_comptime_range(Ast *init, Type target, Scope *scope) {
     long value = get_comptime_int(init, scope);
     const char *tname = check_integer_range(value, target);
     if (tname) {
-        diagnostic(ERR_S050_LITERAL_OUT_OF_RANGE, init->loc.line, init->loc.column,
+        diagnostic(init->loc.file, ERR_S050_LITERAL_OUT_OF_RANGE, init->loc.line, init->loc.column,
                    "Value %ld out of range for %s", value, tname);
     }
 }
@@ -6541,13 +6528,13 @@ static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc lo
         ArrayTypeEntry *fa = array_table_get(init_type);
         ArrayTypeEntry *ta = array_table_get(declared);
         if (fa && ta && fa->size != ta->size) {
-            diagnostic(ERR_S032_ARRAY_LENGTH_MISMATCH, loc.line, loc.column,
+            diagnostic(loc.file, ERR_S032_ARRAY_LENGTH_MISMATCH, loc.line, loc.column,
                        "Array literal has %zu elements, expected %zu",
                        fa->size, ta->size);
             return;
         }
     }
-    diagnostic(ERR_S006_TYPE_MISMATCH, loc.line, loc.column,
+    diagnostic(loc.file, ERR_S006_TYPE_MISMATCH, loc.line, loc.column,
                "Cannot assign %s to variable of type %s",
                type_name(init_type), type_name(declared));
 }
@@ -6557,7 +6544,7 @@ static void typecheck_struct_copy(Type type, Ast *init) {
     if (type_is_struct(type) &&
         init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL &&
         init->kind != AST_ARENA_NEW && init->kind != AST_TABLE_ALLOC) {
-        diagnostic(ERR_S043_STRUCT_COPY, init->loc.line, init->loc.column,
+        diagnostic(init->loc.file, ERR_S043_STRUCT_COPY, init->loc.line, init->loc.column,
                    "Cannot copy %s (not copyable)", type_name(type));
     }
 }
@@ -6615,7 +6602,7 @@ static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope,
                                     value->as.identifier.length);
         if (sv && sv->arena_source_start) {
             if (sv->arena_is_local) {
-                diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+                diagnostic(value->loc.file, ERR_S053_SLICE_ESCAPES_ARENA,
                            value->loc.line, value->loc.column,
                            "Slice '%.*s' escapes local arena",
                            (int)value->as.identifier.length,
@@ -6670,7 +6657,7 @@ static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope,
         Variable *sv = scope_lookup(scope, fi[i].value->as.identifier.start,
                                     fi[i].value->as.identifier.length);
         if (sv && sv->arena_is_local) {
-            diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+            diagnostic(fi[i].value->loc.file, ERR_S053_SLICE_ESCAPES_ARENA,
                        fi[i].value->loc.line, fi[i].value->loc.column,
                        "Slice '%.*s' in returned struct escapes local arena",
                        (int)fi[i].value->as.identifier.length,
@@ -6682,7 +6669,6 @@ static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope,
 }
 
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table) {
-    DIAG_FILE(node->loc);
     switch (node->kind) {
         case AST_VAL_DECL: {
             Type init_type = typecheck_expression(node->as.val_decl.initializer, *scope, func_table);
@@ -6729,7 +6715,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
             /* Slice locals only allowed via alloc or function call */
             if (type_is_slice(declared)) {
-                diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
+                diagnostic(node->loc.file, ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
                            "Slice type not allowed as local variable (use arena_alloc)");
             }
@@ -6739,7 +6725,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 if (type_is_enum(init_type)) {
                     declared = init_type;
                 } else if (!type_is_comptime(init_type)) {
-                    diagnostic(ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
+                    diagnostic(node->loc.file, ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
                                "Type annotation required (expression is not compile-time constant)");
                     declared = TYPE_I64;  /* fallback */
                 } else {
@@ -6813,7 +6799,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             /* String literal with mut is an error — mutating static memory is UB */
             if (type_is_str(declared) &&
                 node->as.mut_decl.initializer->kind == AST_STRING_LITERAL) {
-                diagnostic(ERR_S054_STRING_LITERAL_MUT, node->loc.line,
+                diagnostic(node->loc.file, ERR_S054_STRING_LITERAL_MUT, node->loc.line,
                            node->loc.column,
                            "String literals cannot be mutable (use 'val')");
                 /* Still add to scope for error recovery */
@@ -6832,7 +6818,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
             /* Slice locals only allowed via alloc or function call */
             if (type_is_slice(declared)) {
-                diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
+                diagnostic(node->loc.file, ERR_S046_SLICE_LOCAL_VAR, node->loc.line,
                            node->loc.column,
                            "Slice type not allowed as local variable (use arena_alloc)");
             }
@@ -6874,19 +6860,19 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 }
                 if (!v->is_mutable) {
                     if (target->kind == AST_FIELD_ACCESS) {
-                        diagnostic(ERR_S030_FIELD_IMMUTABLE, node->loc.line,
+                        diagnostic(node->loc.file, ERR_S030_FIELD_IMMUTABLE, node->loc.line,
                                    node->loc.column,
                                    "Cannot assign to field of immutable variable '%.*s'",
                                    (int)root->as.identifier.length,
                                    root->as.identifier.start);
                     } else if (target->kind == AST_INDEX_ACCESS) {
-                        diagnostic(ERR_S036_INDEX_IMMUTABLE, node->loc.line,
+                        diagnostic(node->loc.file, ERR_S036_INDEX_IMMUTABLE, node->loc.line,
                                    node->loc.column,
                                    "Cannot assign to element of immutable variable '%.*s'",
                                    (int)root->as.identifier.length,
                                    root->as.identifier.start);
                     } else {
-                        diagnostic(ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
+                        diagnostic(node->loc.file, ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
                                    node->loc.column,
                                    "Cannot assign to immutable variable '%.*s'",
                                    (int)root->as.identifier.length,
@@ -6897,7 +6883,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
             /* Prevent whole-struct reassignment (struct is not copyable) */
             if (target->kind == AST_IDENTIFIER && type_is_struct(target_type)) {
-                diagnostic(ERR_S043_STRUCT_COPY, node->loc.line,
+                diagnostic(node->loc.file, ERR_S043_STRUCT_COPY, node->loc.line,
                            node->loc.column,
                            "Cannot assign to %s variable (not copyable)",
                            type_name(target_type));
@@ -6905,7 +6891,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
             Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
             if (!type_can_coerce(value_type, target_type)) {
-                diagnostic(ERR_S006_TYPE_MISMATCH, node->as.assignment.value->loc.line,
+                diagnostic(node->as.assignment.value->loc.file, ERR_S006_TYPE_MISMATCH, node->as.assignment.value->loc.line,
                            node->as.assignment.value->loc.column,
                            "Cannot assign %s to %s",
                            type_name(value_type), type_name(target_type));
@@ -6922,21 +6908,21 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             if (return_type == TYPE_VOID) {
                 /* Void function should not return a value */
                 if (value != NULL) {
-                    diagnostic(ERR_S014_VOID_RETURN_VALUE, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S014_VOID_RETURN_VALUE, node->loc.line,
                                node->loc.column,
                                "Void function cannot return a value");
                 }
             } else {
                 /* Non-void function must return a value */
                 if (value == NULL) {
-                    diagnostic(ERR_S015_MISSING_RETURN_VALUE, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S015_MISSING_RETURN_VALUE, node->loc.line,
                                node->loc.column,
                                "Function must return a value of type %s",
                                type_name(return_type));
                 } else {
                     Type value_type = typecheck_expression(value, *scope, func_table);
                     if (!type_can_coerce(value_type, return_type)) {
-                        diagnostic(ERR_S013_RETURN_TYPE_MISMATCH, node->loc.line,
+                        diagnostic(node->loc.file, ERR_S013_RETURN_TYPE_MISMATCH, node->loc.line,
                                    node->loc.column,
                                    "Return type mismatch: expected %s, got %s",
                                    type_name(return_type), type_name(value_type));
@@ -6953,7 +6939,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_ASSERT: {
             Type cond_type = typecheck_expression(node->as.assert_stmt.condition, *scope, func_table);
             if (cond_type != TYPE_BOOL) {
-                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
+                diagnostic(node->loc.file, ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
                            node->loc.column,
                            "Assert condition must be bool, got %s",
                            type_name(cond_type));
@@ -6964,7 +6950,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_IF: {
             Type cond_type = typecheck_expression(node->as.if_stmt.condition, *scope, func_table);
             if (cond_type != TYPE_BOOL) {
-                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
+                diagnostic(node->loc.file, ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
                            node->loc.column,
                            "If condition must be bool, got %s",
                            type_name(cond_type));
@@ -6993,7 +6979,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_WHILE: {
             Type cond_type = typecheck_expression(node->as.while_stmt.condition, *scope, func_table);
             if (cond_type != TYPE_BOOL) {
-                diagnostic(ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
+                diagnostic(node->loc.file, ERR_S007_CONDITION_NOT_BOOL, node->loc.line,
                            node->loc.column,
                            "While condition must be bool, got %s",
                            type_name(cond_type));
@@ -7014,14 +7000,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             /* Typecheck start and end — both must be integer types */
             Type start_type = typecheck_expression(node->as.for_stmt.start, *scope, func_table);
             if (!type_is_integer(start_type)) {
-                diagnostic(ERR_S058_FOR_RANGE_NOT_INTEGER, node->as.for_stmt.start->loc.line,
+                diagnostic(node->as.for_stmt.start->loc.file, ERR_S058_FOR_RANGE_NOT_INTEGER, node->as.for_stmt.start->loc.line,
                            node->as.for_stmt.start->loc.column,
                            "For-loop range bound must be integer, got %s",
                            type_name(start_type));
             }
             Type end_type = typecheck_expression(node->as.for_stmt.end, *scope, func_table);
             if (!type_is_integer(end_type)) {
-                diagnostic(ERR_S058_FOR_RANGE_NOT_INTEGER, node->as.for_stmt.end->loc.line,
+                diagnostic(node->as.for_stmt.end->loc.file, ERR_S058_FOR_RANGE_NOT_INTEGER, node->as.for_stmt.end->loc.line,
                            node->as.for_stmt.end->loc.column,
                            "For-loop range bound must be integer, got %s",
                            type_name(end_type));
@@ -7042,14 +7028,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
         case AST_BREAK:
             if ((*scope)->loop_depth == 0) {
-                diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
+                diagnostic(node->loc.file, ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'break' outside of loop");
             }
             break;
 
         case AST_CONTINUE:
             if ((*scope)->loop_depth == 0) {
-                diagnostic(ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
+                diagnostic(node->loc.file, ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'continue' outside of loop");
             }
             break;
@@ -7151,7 +7137,6 @@ static Variable *scope_add_global(Scope *scope, const char *name_start,
 
 /* Type check a global variable declaration */
 static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_table) {
-    DIAG_FILE(node->loc);
     if (node->kind == AST_VAL_DECL) {
         Type init_type = typecheck_expression(node->as.val_decl.initializer, scope, func_table);
         Type declared = node->as.val_decl.type;
@@ -7168,13 +7153,13 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
 
         /* Check initializer is a constant expression */
         if (!is_global_initializer(init, scope)) {
-            diagnostic(ERR_S057_GLOBAL_NOT_CONSTANT, node->loc.line, node->loc.column,
+            diagnostic(node->loc.file, ERR_S057_GLOBAL_NOT_CONSTANT, node->loc.line, node->loc.column,
                        "Global variable initializer must be a constant expression");
         }
 
         /* Reject slice globals (except string literals handled above) */
         if (type_is_slice(declared)) {
-            diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line, node->loc.column,
+            diagnostic(node->loc.file, ERR_S046_SLICE_LOCAL_VAR, node->loc.line, node->loc.column,
                        "Slice type not allowed as global variable");
         }
 
@@ -7182,7 +7167,7 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
             if (type_is_enum(init_type)) {
                 declared = init_type;
             } else if (!type_is_comptime(init_type)) {
-                diagnostic(ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
+                diagnostic(node->loc.file, ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
                            "Type annotation required (expression is not compile-time constant)");
                 declared = TYPE_I64;
             } else {
@@ -7227,7 +7212,7 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
 
         /* String literal with mut is an error */
         if (type_is_str(declared) && init->kind == AST_STRING_LITERAL) {
-            diagnostic(ERR_S054_STRING_LITERAL_MUT, node->loc.line,
+            diagnostic(node->loc.file, ERR_S054_STRING_LITERAL_MUT, node->loc.line,
                        node->loc.column,
                        "String literals cannot be mutable (use 'val')");
             scope_add_global(scope, node->as.mut_decl.name_start,
@@ -7238,13 +7223,13 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
 
         /* Check initializer is a constant expression (arena() handled above) */
         if (!is_global_initializer(init, scope)) {
-            diagnostic(ERR_S057_GLOBAL_NOT_CONSTANT, node->loc.line, node->loc.column,
+            diagnostic(node->loc.file, ERR_S057_GLOBAL_NOT_CONSTANT, node->loc.line, node->loc.column,
                        "Global variable initializer must be a constant expression (or arena constructor)");
         }
 
         /* Reject slice globals */
         if (type_is_slice(declared)) {
-            diagnostic(ERR_S046_SLICE_LOCAL_VAR, node->loc.line, node->loc.column,
+            diagnostic(node->loc.file, ERR_S046_SLICE_LOCAL_VAR, node->loc.line, node->loc.column,
                        "Slice type not allowed as global variable");
         }
 
@@ -7274,14 +7259,14 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table,
 
         /* Check for duplicate parameter names */
         if (scope_lookup_local(scope, param->name_start, param->name_length)) {
-            diagnostic(ERR_S011_DUPLICATE_PARAM, func_decl->loc.line,
+            diagnostic(func_decl->loc.file, ERR_S011_DUPLICATE_PARAM, func_decl->loc.line,
                        func_decl->loc.column, "Duplicate parameter '%.*s'",
                        (int)param->name_length, param->name_start);
         }
 
         /* Struct/Arena parameters must use ref or mut ref */
         if (type_is_struct(param->type) && !param->is_ref) {
-            diagnostic(ERR_S044_STRUCT_BY_VALUE, func_decl->loc.line,
+            diagnostic(func_decl->loc.file, ERR_S044_STRUCT_BY_VALUE, func_decl->loc.line,
                        func_decl->loc.column,
                        "%s parameter '%.*s' must use 'ref' or 'mut ref'",
                        type_name(param->type),
@@ -7290,7 +7275,7 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table,
 
         /* Slice parameters must use ref or mut ref */
         if (type_is_slice(param->type) && !param->is_ref) {
-            diagnostic(ERR_S049_SLICE_NO_REF, func_decl->loc.line,
+            diagnostic(func_decl->loc.file, ERR_S049_SLICE_NO_REF, func_decl->loc.line,
                        func_decl->loc.column,
                        "Slice parameter '%.*s' must use 'ref' or 'mut ref'",
                        (int)param->name_length, param->name_start);
@@ -7336,7 +7321,6 @@ static void typecheck_program(Ast *program) {
     /* Validate value/struct type declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
-        DIAG_FILE(node->loc);
         if (node->kind == AST_VALUE_DECL) {
             Parameter *fields = node->as.value_decl.fields;
             size_t field_count = node->as.value_decl.field_count;
@@ -7349,7 +7333,7 @@ static void typecheck_program(Ast *program) {
                     if (fields[f].name_length == fields[g].name_length &&
                         memcmp(fields[f].name_start, fields[g].name_start,
                                fields[f].name_length) == 0) {
-                        diagnostic(ERR_S022_DUPLICATE_FIELD, node->loc.line,
+                        diagnostic(node->loc.file, ERR_S022_DUPLICATE_FIELD, node->loc.line,
                                    node->loc.column,
                                    "Duplicate field '%.*s' in %s type '%.*s'",
                                    (int)fields[f].name_length, fields[f].name_start,
@@ -7361,7 +7345,7 @@ static void typecheck_program(Ast *program) {
                 }
                 /* Reject ref on fields */
                 if (fields[f].is_ref || fields[f].is_mut_ref) {
-                    diagnostic(ERR_S037_REF_ON_FIELD, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S037_REF_ON_FIELD, node->loc.line,
                                node->loc.column,
                                "'ref' not allowed on %s type field '%.*s'",
                                kind_label,
@@ -7369,7 +7353,7 @@ static void typecheck_program(Ast *program) {
                 }
                 /* Check field type is valid (not void, not unknown) */
                 if (fields[f].type == TYPE_VOID || fields[f].type == TYPE_UNKNOWN) {
-                    diagnostic(ERR_S023_UNKNOWN_FIELD_TYPE, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S023_UNKNOWN_FIELD_TYPE, node->loc.line,
                                node->loc.column,
                                "Invalid type for field '%.*s' in %s type '%.*s'",
                                (int)fields[f].name_length, fields[f].name_start,
@@ -7379,7 +7363,7 @@ static void typecheck_program(Ast *program) {
                 }
                 /* Reject struct types as fields */
                 if (type_is_struct(fields[f].type)) {
-                    diagnostic(ERR_S045_EMBED_STRUCT, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S045_EMBED_STRUCT, node->loc.line,
                                node->loc.column,
                                "Cannot embed struct type '%s' as field in %s type '%.*s'",
                                type_name(fields[f].type), kind_label,
@@ -7388,7 +7372,7 @@ static void typecheck_program(Ast *program) {
                 }
                 /* Reject slice types as fields in value types (allowed in structs) */
                 if (type_is_slice(fields[f].type) && !node->as.value_decl.is_struct) {
-                    diagnostic(ERR_S047_SLICE_AS_FIELD, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S047_SLICE_AS_FIELD, node->loc.line,
                                node->loc.column,
                                "Slice type not allowed as field '%.*s' in %s type '%.*s'",
                                (int)fields[f].name_length, fields[f].name_start,
@@ -7406,7 +7390,7 @@ static void typecheck_program(Ast *program) {
         for (size_t f = 0; f < te->field_count; f++) {
             Type ft = te->fields[f].type;
             if (type_is_slice(ft) || type_is_struct(ft)) {
-                diagnostic(ERR_S059_TABLE_FIELD_TYPE, 0, 0,
+                diagnostic(g_source_file, ERR_S059_TABLE_FIELD_TYPE, 0, 0,
                            "Table field '%.*s' in table '%.*s' must be a value type (no slices, structs, or Arena)",
                            (int)te->fields[f].name_length, te->fields[f].name_start,
                            (int)te->name_length, te->name_start);
@@ -7417,7 +7401,6 @@ static void typecheck_program(Ast *program) {
     /* First pass: register all functions */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
-        DIAG_FILE(node->loc);
         if (node->kind == AST_FUNC_DECL) {
             func_table_add(func_table, node);
 
@@ -7428,11 +7411,11 @@ static void typecheck_program(Ast *program) {
 
                 /* Verify main signature: no parameters, void return */
                 if (node->as.func_decl.param_count != 0) {
-                    diagnostic(ERR_S010_INVALID_MAIN_SIG, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S010_INVALID_MAIN_SIG, node->loc.line,
                                node->loc.column, "main must have no parameters");
                 }
                 if (node->as.func_decl.return_type != TYPE_VOID) {
-                    diagnostic(ERR_S010_INVALID_MAIN_SIG, node->loc.line,
+                    diagnostic(node->loc.file, ERR_S010_INVALID_MAIN_SIG, node->loc.line,
                                node->loc.column, "main must return void");
                 }
             }
@@ -7441,13 +7424,12 @@ static void typecheck_program(Ast *program) {
 
     /* Check for main function */
     if (!has_main) {
-        diagnostic(ERR_S009_MISSING_MAIN, 1, 1, "No 'main' function defined");
+        diagnostic(g_source_file, ERR_S009_MISSING_MAIN, 1, 1, "No 'main' function defined");
     }
 
     /* Global variable pass: typecheck top-level val/mut declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
-        DIAG_FILE(node->loc);
         if (node->kind == AST_VAL_DECL || node->kind == AST_MUT_DECL) {
             typecheck_global_decl(node, global_scope, func_table);
         }
@@ -7456,7 +7438,6 @@ static void typecheck_program(Ast *program) {
     /* Second pass: type check each function */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
-        DIAG_FILE(node->loc);
         if (node->kind == AST_FUNC_DECL) {
             typecheck_function(node, func_table, global_scope);
         }
@@ -7488,7 +7469,7 @@ static void typecheck_program(Ast *program) {
             FunctionEntry *callee = func_table_lookup(func_table,
                 c->callee_name_start, c->callee_name_length);
             if (callee && callee->returns_arena_slices) {
-                diagnostic(ERR_S053_SLICE_ESCAPES_ARENA,
+                diagnostic(c->loc.file, ERR_S053_SLICE_ESCAPES_ARENA,
                            c->loc.line, c->loc.column,
                            "Return value of '%.*s' contains slices that escape local arena '%.*s'",
                            (int)c->callee_name_length, c->callee_name_start,
@@ -8507,7 +8488,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_BREAK: {
             if ((*scope)->loop_depth == 0) {
-                diagnostic(ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
+                diagnostic(node->loc.file, ERR_S004_BREAK_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'break' outside of loop");
                 break;  /* Skip code generation */
             }
@@ -8519,7 +8500,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_CONTINUE: {
             if ((*scope)->loop_depth == 0) {
-                diagnostic(ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
+                diagnostic(node->loc.file, ERR_S005_CONTINUE_OUTSIDE_LOOP, node->loc.line,
                            node->loc.column, "'continue' outside of loop");
                 break;  /* Skip code generation */
             }
