@@ -8,7 +8,9 @@ Nore's standard library should be the thinnest possible layer that makes real pr
 
 **The compiler grows only when it must. Everything else is written in Nore.**
 
-Built-in primitives provide the minimum bridge to the operating system. The rest — string operations, formatting, file helpers — is ordinary Nore code that users could write themselves. The stdlib just saves them the trouble.
+Built-in primitives provide the minimum bridge to the operating system. The rest, string operations, formatting, file helpers, is ordinary Nore code that users could write themselves. The stdlib just saves them the trouble.
+
+Stdlib modules should import and reuse each other to avoid code duplication and ensure consistency. Higher-level modules build on lower-level ones (e.g., `std/io.nore` imports `std/string.nore` for number formatting).
 
 ---
 
@@ -18,9 +20,9 @@ Built-in primitives provide the minimum bridge to the operating system. The rest
 
 Things that require compiler support because they cannot be expressed in Nore today:
 
-- **I/O primitives** — writing bytes to a file descriptor, reading bytes, opening/closing files. These need syscall access that Nore source code cannot express.
-- **Process control** — `exit(code)` to terminate with a status code.
-- **Command-line arguments** — access to argc/argv requires compiler-level wiring.
+- **I/O primitives**: writing bytes to a file descriptor, reading bytes, opening/closing files. These need syscall access that Nore source code cannot express.
+- **Process control**: `exit(code)` to terminate with a status code.
+- **Command-line arguments**: access to argc/argv requires compiler-level wiring.
 
 ### In the Standard Library (.nore files)
 
@@ -34,17 +36,17 @@ Everything that *can* be a Nore function *should* be. Once the language has the 
 
 ### Not in the Standard Library
 
-Things that don't belong — at least not yet:
+Things that don't belong, at least not yet:
 
-- Networking, HTTP, JSON — these are ecosystem libraries, not core stdlib
-- Concurrency primitives — the language needs a concurrency story first
-- Generic collections (hash map, dynamic array) — need generics or code generation
+- Networking, HTTP, JSON. These are ecosystem libraries, not core stdlib.
+- Concurrency primitives. The language needs a concurrency story first.
+- Generic collections (hash map, dynamic array). Need generics or code generation.
 
 ---
 
 ## Language Prerequisites
 
-The stdlib cannot be written until certain language features exist. These come first — each one is a compiler change, not a library.
+The stdlib cannot be written until certain language features exist. These come first. Each one is a compiler change, not a library.
 
 ### Layer 0: Missing Operators and Types
 
@@ -55,9 +57,9 @@ Small additions with outsized impact. These unblock string processing, hashing, 
 | `%` modulo operator | Number formatting, hash functions, circular buffers |
 | `&` `\|` `^` `~` `<<` `>>` bitwise ops | Hash functions, flag manipulation, binary protocols |
 | Character literals (`'A'`, `'\n'`) | String processing without magic numbers |
-| Numeric type casting | I/O works in bytes (`u8`), lengths are `i64` — must convert between them |
+| Numeric type casting | I/O works in bytes (`u8`), lengths are `i64`. Must convert between them |
 
-**Numeric casting design note:** Nore already has comptime coercion (a literal `42` adapts to any integer type). Runtime casting between concrete types is the gap. The syntax should be explicit — something like `x as u8` or `u8(x)` — and truncation/overflow behavior must be defined. This deserves a focused design decision before implementation.
+**Numeric casting design note:** Nore already has comptime coercion (a literal `42` adapts to any integer type). Runtime casting between concrete types is the gap. The syntax should be explicit (something like `x as u8` or `u8(x)`) and truncation/overflow behavior must be defined. This deserves a focused design decision before implementation.
 
 ### Layer 1: Enums (DONE)
 
@@ -118,43 +120,45 @@ func exit(code: i32): void
 ```
 
 **Design notes:**
-- File descriptors are plain integers — no wrapper types, no handles. This matches POSIX and keeps things simple.
-- `fd_write` / `fd_read` work with byte slices — Nore's natural data type for buffers.
+- File descriptors are plain integers. No wrapper types, no handles. This matches POSIX and keeps things simple.
+- `fd_write` / `fd_read` work with byte slices, Nore's natural data type for buffers.
 - Error handling through return codes initially. Once enums/tagged unions exist, these can return `Result` types.
 - String literals are `str` (which is `[u8]`) so printing a string literal is just `fd_write(STDOUT, ref "hello")`.
 
-### Layer B: String Operations
+### Layer B: String Operations (DONE)
 
-Written in Nore. Depends on Layer A (I/O) and Layer 0 (casting, character literals).
+Shipped as `std/string.nore`. Depends on Layer 0 (casting, character literals).
 
+```nore
+import "std/string.nore"
+
+assert str_eq(ref "hello", ref "hello")
+assert str_find(ref "abcdef", ref "cd") == 2
+assert is_digit('5')
+
+mut mem: Arena = arena(256)
+val s: str = i64_to_str(mut ref mem, 42)
+assert str_eq(ref s, ref "42")
+val hw: str = str_concat(mut ref mem, ref "hello", ref " world")
 ```
-// Comparison
-func str_eq(ref a: str, ref b: str): bool
-func str_starts_with(ref s: str, ref prefix: str): bool
-func str_ends_with(ref s: str, ref suffix: str): bool
 
-// Searching
-func str_find(ref s: str, ref needle: str): i64       // -1 if not found
-func str_contains(ref s: str, ref needle: str): bool
-
-// Conversion (allocates into caller's arena)
-func i64_to_str(mut ref mem: Arena, n: i64): str
-func str_to_i64(ref s: str): i64                       // 0 on invalid input, or Result later
-
-// Character classification
-func is_digit(c: u8): bool
-func is_alpha(c: u8): bool
-func is_space(c: u8): bool
-```
+Provides:
+- **Character classification:** `is_digit`, `is_alpha`, `is_space`
+- **Comparison:** `str_eq`, `str_starts_with`, `str_ends_with`
+- **Searching:** `str_find` (returns -1 if not found), `str_contains`
+- **Concatenation:** `str_concat` (arena-allocated)
+- **Conversion:** `i64_to_str` (arena-allocated), `str_to_i64` (returns 0 on invalid input)
 
 **Design notes:**
-- Functions that produce strings take an `Arena` parameter — explicit allocation, no hidden malloc.
+- Functions that produce strings take an `Arena` parameter, explicit allocation, no hidden malloc.
 - `str` is `[u8]`, so these all work on byte slices. No separate string type.
-- Character functions work on `u8` — a character is just a byte.
+- Character functions work on `u8`, a character is just a byte.
+- `str_to_i64` returns 0 for both empty/invalid input and actual "0". Revisit with `Result` type when tagged unions exist.
+- Tested via `tests/std/string.nore`.
 
 ### Layer C: Formatted Output (DONE)
 
-Shipped as `std/io.nore`. Moved from compiler built-ins to regular Nore functions that call `fd_write`.
+Shipped as `std/io.nore`. Imports `std/string.nore`. Moved from compiler built-ins to regular Nore functions.
 
 ```nore
 import "std/io.nore"
@@ -168,10 +172,10 @@ Provides: `print`, `println`, `print_i64`.
 
 **Design notes:**
 - `print` and `println` are thin wrappers around `fd_write(STDOUT, ...)`.
-- `print_i64` fills a 21-byte buffer right-to-left and writes via a single `fd_write(STDOUT, ref buf[pos..])` sub-slice call. Handles i64 min correctly by working with negative remainders (no overflow from negation).
+- `print_i64` reuses `i64_to_str` from `std/string.nore` with a small local arena, keeping number formatting logic in one place.
 - No format strings. Call the function that matches your type.
 - `eprint`/`eprintln` (stderr variants) can be added to the same file.
-- Tested via `tests/std/io.nore`. Current tests only verify the code runs without crashing (exit 0), not that the output is correct. Proper assertions require `str_eq` and `i64_to_str` from Layer B, e.g. `assert str_eq(ref i64_to_str(mut ref mem, 42), ref "42")`. Revisit test coverage after Layer B ships.
+- Tested via `tests/std/io.nore`. Tests verify the functions compile and run without crashing (exit 0). Conversion correctness is covered by `tests/std/string.nore`.
 
 ### Layer D: File Operations
 
@@ -186,7 +190,7 @@ func write_file(ref path: str, ref data: [u8]): bool
 ```
 
 **Design notes:**
-- `read_file` takes an arena — the caller controls where the file contents live and how long they survive.
+- `read_file` takes an arena. The caller controls where the file contents live and how long they survive.
 - Error handling through return values initially (empty slice / false). Migrate to `Result` when enums exist.
 
 ### Layer E: Math and Utilities (DONE)
@@ -229,13 +233,13 @@ Phase 1: Language completeness (DONE)
 Phase 2: Standard library (.nore files, importable)
   9.  ✓ Math utilities              ← std/math.nore (first stdlib file)
   10. ✓ Move print/println/print_i64 ← from compiler built-ins to std/io.nore
-  11. String operations             ← Layer B
+  11. ✓ String operations            ← std/string.nore (Layer B)
   12. File operations               ← Layer D
 ```
 
 Phases 0 and 1 are complete. All compiler prerequisites are done: operators, casting, I/O built-ins, enums, and the import system.
 
-Phase 2 is underway. `std/math.nore` and `std/io.nore` are shipped and tested. The print functions (`print`, `println`, `print_i64`) have been moved from compiler built-ins to `std/io.nore` as regular Nore functions that call `fd_write`. The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access). The next step is string operations (Layer B).
+Phase 2 is nearly complete. Three stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), and `std/io.nore` (Layer C). The modules reuse each other: `std/io.nore` imports `std/string.nore` so `print_i64` delegates to `i64_to_str` rather than duplicating buffer logic. The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access). The next step is file operations (Layer D).
 
 ---
 
@@ -255,8 +259,8 @@ val contents: [u8] = read_file(mut ref file_arena, ref "data.txt")
 
 This means:
 - No global allocator hidden inside the stdlib
-- No surprise OOM from a stdlib call — the arena's capacity is set by the caller
-- Batch deallocation works naturally — reset the arena, free all stdlib-produced data at once
+- No surprise OOM from a stdlib call. The arena's capacity is set by the caller.
+- Batch deallocation works naturally. Reset the arena, free all stdlib-produced data at once.
 - The stdlib cannot "leak" memory because arenas have scoped lifetimes
 
 Functions that don't allocate (comparisons, searches, math) take no arena parameter.
@@ -269,8 +273,8 @@ Many stdlib designs lean on generics: `Vec<T>`, `HashMap<K, V>`, `sort<T>()`. No
 
 The pragmatic path:
 - **Write type-specific functions now** (`min_i64`, `str_eq`, `sort_i64`)
-- **Keep the API surface small** — don't write 4 variants of everything just because you might need them
-- **Let real programs reveal which variants matter** — if nobody needs `sort_u8`, don't write it
+- **Keep the API surface small**. Don't write 4 variants of everything just because you might need them.
+- **Let real programs reveal which variants matter**. If nobody needs `sort_u8`, don't write it.
 - **Replace with generics later** when the language supports it
 
 Generics are not a prerequisite for a useful stdlib. They're a cleanup that comes after real programs have validated the API.
@@ -281,13 +285,13 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 
 The stdlib is "done enough" when Nore can write a non-trivial program. Good intermediate milestones:
 
-1. **"Hello, World"** — `print("hello")` works (Layer A + C)
-2. **Cat clone** — read file, write to stdout (Layer A + D)
-3. **Word count** — read file, split on whitespace, count (Layer B + D)
-4. **Brainfuck interpreter** — parsing, state machine, I/O (all layers)
-5. **JSON parser** — string processing, recursive data, error reporting
+1. **"Hello, World"**: `print("hello")` works (Layer A + C)
+2. **Cat clone**: read file, write to stdout (Layer A + D)
+3. **Word count**: read file, split on whitespace, count (Layer B + D)
+4. **Brainfuck interpreter**: parsing, state machine, I/O (all layers)
+5. **JSON parser**: string processing, recursive data, error reporting
 
-Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting — writing the Nore compiler in Nore — but that requires language features (recursive data structures, tagged unions) beyond what the stdlib alone provides.
+Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, tagged unions) beyond what the stdlib alone provides.
 
 ---
 
@@ -298,4 +302,4 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - **I/O error model before enums**: return negative error codes for now. Revisit with tagged unions.
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
 - **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
-- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore` as regular Nore functions. `print_i64` uses buffer + sub-slice for single-syscall output.
+- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore` as regular Nore functions. `print_i64` reuses `i64_to_str` from `std/string.nore`.

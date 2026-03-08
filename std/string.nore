@@ -1,0 +1,175 @@
+// Standard string utilities for Nore
+
+// Character classification
+
+func is_digit(c: u8): bool = {
+    c >= '0' && c <= '9'
+}
+
+func is_alpha(c: u8): bool = {
+    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func is_space(c: u8): bool = {
+    c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// Comparison
+
+func str_eq(ref a: str, ref b: str): bool = {
+    if (a.len != b.len) {
+        return false
+    }
+    mut i: i64 = 0
+    while (i < a.len) {
+        if (a[i] != b[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func str_starts_with(ref s: str, ref prefix: str): bool = {
+    if (prefix.len > s.len) {
+        return false
+    }
+    mut i: i64 = 0
+    while (i < prefix.len) {
+        if (s[i] != prefix[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+func str_ends_with(ref s: str, ref suffix: str): bool = {
+    if (suffix.len > s.len) {
+        return false
+    }
+    val offset: i64 = s.len - suffix.len
+    mut i: i64 = 0
+    while (i < suffix.len) {
+        if (s[offset + i] != suffix[i]) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Searching
+
+func str_find(ref s: str, ref needle: str): i64 = {
+    if (needle.len == 0) {
+        return 0
+    }
+    if (needle.len > s.len) {
+        return 0 - 1
+    }
+    val last: i64 = s.len - needle.len
+    mut i: i64 = 0
+    while (i <= last) {
+        mut found: bool = true
+        mut j: i64 = 0
+        while (j < needle.len) {
+            if (s[i + j] != needle[j]) {
+                found = false
+                j = needle.len
+            } else {
+                j = j + 1
+            }
+        }
+        if (found) {
+            return i
+        }
+        i = i + 1
+    }
+    return 0 - 1
+}
+
+func str_contains(ref s: str, ref needle: str): bool = {
+    str_find(ref s, ref needle) >= 0
+}
+
+// Concatenation
+
+func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
+    val total: i64 = a.len + b.len
+    mut result: str = arena_alloc(mut ref mem, total)
+    mut i: i64 = 0
+    while (i < a.len) {
+        result[i] = a[i]
+        i = i + 1
+    }
+    i = 0
+    while (i < b.len) {
+        result[a.len + i] = b[i]
+        i = i + 1
+    }
+    return result
+}
+
+// Conversion
+
+func i64_to_str(mut ref mem: Arena, n: i64): str = {
+    if (n == 0) {
+        mut result: str = arena_alloc(mut ref mem, 1)
+        result[0] = '0'
+        return result
+    }
+
+    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    mut pos: i64 = 20
+    val neg: bool = n < 0
+
+    mut v: i64 = n
+    while (v != 0) {
+        mut d: i64 = v % 10
+        if (d < 0) {
+            d = 0 - d
+        }
+        pos = pos - 1
+        buf[pos] = u8(d + 48)
+        v = v / 10
+    }
+
+    if (neg) {
+        pos = pos - 1
+        buf[pos] = '-'
+    }
+
+    val len: i64 = 20 - pos
+    mut result: str = arena_alloc(mut ref mem, len)
+    mut i: i64 = 0
+    while (i < len) {
+        result[i] = buf[pos + i]
+        i = i + 1
+    }
+    return result
+}
+
+func str_to_i64(ref s: str): i64 = {
+    if (s.len == 0) {
+        return 0
+    }
+    mut i: i64 = 0
+    val neg: bool = s[0] == '-'
+    if (neg) {
+        i = 1
+    }
+    mut result: i64 = 0
+    while (i < s.len) {
+        val c: u8 = s[i]
+        if (c < '0' || c > '9') {
+            return 0
+        }
+        result = result * 10 + i64(c - '0')
+        i = i + 1
+    }
+    if (neg) {
+        return 0 - result
+    }
+    return result
+}
