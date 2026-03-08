@@ -111,17 +111,19 @@ func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
     return result
 }
 
-// Conversion
+// Formatting
 
-func i64_to_str(mut ref mem: Arena, n: i64): str = {
+// Format n into buf (right-to-left, 21-byte buffer expected).
+// Returns the start position. The result is buf[pos..20].
+func fmt_i64(mut ref buf: [u8], n: i64): i64 = {
+    mut pos: i64 = 20
+
     if (n == 0) {
-        mut result: str = arena_alloc(mut ref mem, 1)
-        result[0] = '0'
-        return result
+        pos = pos - 1
+        buf[pos] = '0'
+        return pos
     }
 
-    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    mut pos: i64 = 20
     val neg: bool = n < 0
 
     mut v: i64 = n
@@ -140,6 +142,14 @@ func i64_to_str(mut ref mem: Arena, n: i64): str = {
         buf[pos] = '-'
     }
 
+    return pos
+}
+
+// Conversion
+
+func i64_to_str(mut ref mem: Arena, n: i64): str = {
+    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val pos: i64 = fmt_i64(mut ref buf, n)
     val len: i64 = 20 - pos
     mut result: str = arena_alloc(mut ref mem, len)
     mut i: i64 = 0

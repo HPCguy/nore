@@ -12,7 +12,7 @@ func println(ref s: str): void = {
 }
 
 func print_i64(n: i64): void = {
-    mut mem: Arena = arena(64)
-    val s: str = i64_to_str(mut ref mem, n)
-    fd_write(STDOUT, ref s)
+    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val pos: i64 = fmt_i64(mut ref buf, n)
+    fd_write(STDOUT, ref buf[pos..20])
 }

@@ -6330,6 +6330,9 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                            "arena_alloc() count must be integer, got %s",
                            type_name(count_type));
             }
+            /* Ensure arena runtime is emitted (imported functions may use arena_alloc
+               without an arena() constructor in the importing program) */
+            g_has_arena = true;
             /* expr_type set to TYPE_UNKNOWN — propagated from declaration context */
             node->expr_type = TYPE_UNKNOWN;
             return TYPE_UNKNOWN;

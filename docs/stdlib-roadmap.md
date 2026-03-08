@@ -147,7 +147,8 @@ Provides:
 - **Comparison:** `str_eq`, `str_starts_with`, `str_ends_with`
 - **Searching:** `str_find` (returns -1 if not found), `str_contains`
 - **Concatenation:** `str_concat` (arena-allocated)
-- **Conversion:** `i64_to_str` (arena-allocated), `str_to_i64` (returns 0 on invalid input)
+- **Formatting:** `fmt_i64` (writes into caller-provided buffer, no allocation)
+- **Conversion:** `i64_to_str` (arena-allocated, uses `fmt_i64`), `str_to_i64` (returns 0 on invalid input)
 
 **Design notes:**
 - Functions that produce strings take an `Arena` parameter, explicit allocation, no hidden malloc.
@@ -158,7 +159,7 @@ Provides:
 
 ### Layer C: Formatted Output (DONE)
 
-Shipped as `std/io.nore`. Imports `std/string.nore`. Moved from compiler built-ins to regular Nore functions.
+Shipped as `std/io.nore`. Imports `std/string.nore` for shared formatting. Moved from compiler built-ins to regular Nore functions.
 
 ```nore
 import "std/io.nore"
@@ -172,7 +173,7 @@ Provides: `print`, `println`, `print_i64`.
 
 **Design notes:**
 - `print` and `println` are thin wrappers around `fd_write(STDOUT, ...)`.
-- `print_i64` reuses `i64_to_str` from `std/string.nore` with a small local arena, keeping number formatting logic in one place.
+- `print_i64` calls `fmt_i64` from `std/string.nore` into a stack buffer, then writes via `fd_write`. No allocation, no hidden costs, no duplicated formatting logic.
 - No format strings. Call the function that matches your type.
 - `eprint`/`eprintln` (stderr variants) can be added to the same file.
 - Tested via `tests/std/io.nore`. Tests verify the functions compile and run without crashing (exit 0). Conversion correctness is covered by `tests/std/string.nore`.
@@ -239,7 +240,7 @@ Phase 2: Standard library (.nore files, importable)
 
 Phases 0 and 1 are complete. All compiler prerequisites are done: operators, casting, I/O built-ins, enums, and the import system.
 
-Phase 2 is nearly complete. Three stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), and `std/io.nore` (Layer C). The modules reuse each other: `std/io.nore` imports `std/string.nore` so `print_i64` delegates to `i64_to_str` rather than duplicating buffer logic. The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access). The next step is file operations (Layer D).
+Phase 2 is nearly complete. Three stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), and `std/io.nore` (Layer C). The modules reuse each other where it makes sense: `std/io.nore` imports `std/string.nore` so `print_i64` delegates formatting to `fmt_i64` while keeping its own stack buffer (no hidden allocation). The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access). The next step is file operations (Layer D).
 
 ---
 
@@ -302,4 +303,4 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - **I/O error model before enums**: return negative error codes for now. Revisit with tagged unions.
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
 - **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
-- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore` as regular Nore functions. `print_i64` reuses `i64_to_str` from `std/string.nore`.
+- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore`. `print_i64` reuses `fmt_i64` from `std/string.nore` with a stack buffer (no allocation).
