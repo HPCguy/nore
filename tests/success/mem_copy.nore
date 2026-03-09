@@ -1,0 +1,77 @@
+// Test mem_copy built-in
+
+func main(): void = {
+    // Basic copy between arrays
+    mut dst: [u8; 5] = [0, 0, 0, 0, 0]
+    val src: [u8; 3] = [65, 66, 67]
+    val n: i64 = mem_copy(mut ref dst, ref src)
+    assert n == 3
+    assert dst[0] == 65
+    assert dst[1] == 66
+    assert dst[2] == 67
+    assert dst[3] == 0
+    assert dst[4] == 0
+
+    // Copy where dst is shorter (truncation)
+    mut small: [u8; 2] = [0, 0]
+    val big: [u8; 5] = [1, 2, 3, 4, 5]
+    val n2: i64 = mem_copy(mut ref small, ref big)
+    assert n2 == 2
+    assert small[0] == 1
+    assert small[1] == 2
+
+    // Copy where src is shorter
+    mut large: [u8; 4] = [10, 20, 30, 40]
+    val tiny: [u8; 1] = [99]
+    val n3: i64 = mem_copy(mut ref large, ref tiny)
+    assert n3 == 1
+    assert large[0] == 99
+    assert large[1] == 20
+    assert large[2] == 30
+    assert large[3] == 40
+
+    // Copy with string literal as source
+    mut buf: [u8; 10] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val n4: i64 = mem_copy(mut ref buf, ref "hello")
+    assert n4 == 5
+    assert buf[0] == 104
+    assert buf[1] == 101
+    assert buf[2] == 108
+    assert buf[3] == 108
+    assert buf[4] == 111
+    assert buf[5] == 0
+
+    // Using as bare statement (discard return value)
+    mut a: [u8; 3] = [0, 0, 0]
+    mem_copy(mut ref a, ref "abc")
+    assert a[0] == 97
+    assert a[1] == 98
+    assert a[2] == 99
+
+    // Copy between slices (sub-slices)
+    mut data: [u8; 6] = [1, 2, 3, 4, 5, 6]
+    val first: [u8] = data[0..3]
+    val n5: i64 = mem_copy(mut ref data[3..6], ref first)
+    assert n5 == 3
+    assert data[3] == 1
+    assert data[4] == 2
+    assert data[5] == 3
+
+    // Overlapping sub-slices (memmove handles this correctly)
+    mut overlap: [u8; 6] = [1, 2, 3, 4, 5, 6]
+    val n7: i64 = mem_copy(mut ref overlap[1..4], ref overlap[0..3])
+    assert n7 == 3
+    assert overlap[0] == 1
+    assert overlap[1] == 1
+    assert overlap[2] == 2
+    assert overlap[3] == 3
+    assert overlap[4] == 5
+    assert overlap[5] == 6
+
+    // Zero-length copy
+    mut z: [u8; 3] = [1, 2, 3]
+    val empty: [u8] = z[0..0]
+    val n6: i64 = mem_copy(mut ref z, ref empty)
+    assert n6 == 0
+    assert z[0] == 1
+}

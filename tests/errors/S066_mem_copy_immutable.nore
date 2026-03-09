@@ -1,0 +1,6 @@
+// mem_copy() dst must be mutable
+func main(): void = {
+    val dst: [u8; 3] = [0, 0, 0]
+    val src: [u8; 2] = [10, 20]
+    mem_copy(mut ref dst, ref src)
+}

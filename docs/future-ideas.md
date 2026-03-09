@@ -164,3 +164,18 @@ Concrete model:
 This is analogous to C compiler optimization levels: `-O0` gives you what you wrote, `-O2` lets the compiler rearrange, and `volatile` or `__attribute__((noinline))` override specific decisions. The key insight from RAJA's evolution: a complete inability to direct the system step by step is a barrier to adoption. Users need to be able to debug, override, and fall back to direct control at any granularity.
 
 **Source:** Design discussion following r/ProgrammingLanguages feedback on native vs stdlib optimization capabilities. Manual override principle from TALC/RAJA experience (Figure 6 in the TALC paper shows only one override was needed for the full functionality covered).
+
+## Release Mode (`--release` flag)
+
+A `--release` flag that trades safety checks for performance. Today Nore is safe by default: bounds checks on array/slice access, `memmove` for `mem_copy` (handles overlapping buffers), runtime overflow detection on casts. A release mode could relax these:
+
+- **Bounds checks**: skip `NI_SLICE_BOUNDS_CHECK` and array index checks (biggest win)
+- **`mem_copy`**: emit `memcpy` instead of `memmove` (minor, single pointer comparison saved)
+- **Assert removal**: strip `assert` statements
+- **Cast overflow checks**: skip R003 range validation
+
+The pattern follows C optimization levels: debug is safe and predictable, release trusts the programmer. Each relaxation should be individually toggleable if possible, so users can keep bounds checks but drop asserts, etc.
+
+**Not worth adding yet.** Today there is exactly one case (`mem_copy`) where this matters, and the performance difference is negligible. Wait until real programs reveal actual bottlenecks from safety checks. The bounds-check removal will be the real driver for this flag.
+
+**Source:** Design discussion during `mem_copy` implementation (memcpy vs memmove trade-off).

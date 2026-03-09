@@ -1207,6 +1207,7 @@ static SliceTypeTable *g_slice_table = NULL;
 static bool g_has_arena = false;
 static bool g_has_casts = false;
 static bool g_has_io = false;
+static bool g_has_mem = false;
 
 /* Deferred arena escape checks — processed after all functions are typechecked */
 typedef struct {
@@ -1549,6 +1550,7 @@ typedef enum {
     AST_FD_OPEN,
     AST_FD_CLOSE,
     AST_EXIT,
+    AST_MEM_COPY,
     AST_ENUM_DECL,
     AST_ENUM_VARIANT,
     AST_PROGRAM
@@ -1757,6 +1759,7 @@ typedef struct Ast {
         struct { struct Ast *path; struct Ast *flags; } fd_open;
         struct { struct Ast *fd; } fd_close;
         struct { struct Ast *code; } exit_call;
+        struct { struct Ast *dst; struct Ast *src; } mem_copy;
 
         struct {
             const char *name_start;
@@ -2308,6 +2311,16 @@ static Ast *ast_make_exit(Ast *code, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_mem_copy(Ast *dst, Ast *src, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_MEM_COPY;
+    node->loc = loc;
+    node->as.mem_copy.dst = dst;
+    node->as.mem_copy.src = src;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2463,6 +2476,10 @@ static void ast_free(Ast *node) {
             break;
         case AST_EXIT:
             ast_free(node->as.exit_call.code);
+            break;
+        case AST_MEM_COPY:
+            ast_free(node->as.mem_copy.dst);
+            ast_free(node->as.mem_copy.src);
             break;
         case AST_ENUM_DECL:
         case AST_ENUM_VARIANT:
@@ -3203,6 +3220,50 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_exit(code, loc);
         }
 
+        /* mem_copy(mut ref dst, ref src) — built-in memory copy */
+        if (name_length == 8 && memcmp(name_start, "mem_copy", 8) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before dst argument in mem_copy()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in mem_copy()");
+                return NULL;
+            }
+            Ast *dst = parser_parse_expression(parser);
+            if (!dst) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column,
+                           "Expected ',' after dst argument in mem_copy()");
+                ast_free(dst);
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' before src argument in mem_copy()");
+                ast_free(dst);
+                return NULL;
+            }
+            Ast *src = parser_parse_expression(parser);
+            if (!src) { ast_free(dst); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after mem_copy src");
+                ast_free(dst);
+                ast_free(src);
+                return NULL;
+            }
+            return ast_make_mem_copy(dst, src, loc);
+        }
+
         /* Check for enum variant: EnumName.Variant */
         if (parser_check(parser, TOKEN_DOT)) {
             EnumTypeEntry *et = enum_table_lookup(name_start, name_length);
@@ -3697,6 +3758,7 @@ static Ast *parser_parse_block(Parser *parser) {
                            expr->kind == AST_FD_WRITE ||
                            expr->kind == AST_FD_READ ||
                            expr->kind == AST_FD_CLOSE ||
+                           expr->kind == AST_MEM_COPY ||
                            expr->kind == AST_EXIT) {
                     /* Bare function call or built-in as statement */
                     ast_block_add_statement(block, expr);
@@ -4961,6 +5023,16 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("CODE:\n");
             parser_print_ast_step(node->as.exit_call.code, indent + 2);
+            break;
+
+        case AST_MEM_COPY:
+            printf("MEM_COPY\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("DST:\n");
+            parser_print_ast_step(node->as.mem_copy.dst, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("SRC:\n");
+            parser_print_ast_step(node->as.mem_copy.src, indent + 2);
             break;
 
         case AST_ENUM_DECL:
@@ -6604,6 +6676,36 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_VOID;
         }
 
+        case AST_MEM_COPY: {
+            Type dst_type = typecheck_expression(node->as.mem_copy.dst, scope, func_table);
+            if (!type_is_byte_buffer(dst_type)) {
+                diagnostic(node->as.mem_copy.dst->loc.file, ERR_S065_IO_DATA_TYPE, node->as.mem_copy.dst->loc.line,
+                           node->as.mem_copy.dst->loc.column,
+                           "mem_copy() dst must be []u8, got %s",
+                           type_name(dst_type));
+            }
+            if (node->as.mem_copy.dst->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.mem_copy.dst->as.identifier.start,
+                    node->as.mem_copy.dst->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(node->as.mem_copy.dst->loc.file, ERR_S066_IO_BUF_IMMUTABLE, node->as.mem_copy.dst->loc.line,
+                               node->as.mem_copy.dst->loc.column,
+                               "mem_copy() dst must be mutable, use 'mut'");
+                }
+            }
+            Type src_type = typecheck_expression(node->as.mem_copy.src, scope, func_table);
+            if (!type_is_byte_buffer(src_type)) {
+                diagnostic(node->as.mem_copy.src->loc.file, ERR_S065_IO_DATA_TYPE, node->as.mem_copy.src->loc.line,
+                           node->as.mem_copy.src->loc.column,
+                           "mem_copy() src must be []u8, got %s",
+                           type_name(src_type));
+            }
+            g_has_mem = true;
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+        }
+
         default:
             break;
     }
@@ -7191,6 +7293,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_FD_WRITE:
         case AST_FD_READ:
         case AST_FD_CLOSE:
+        case AST_MEM_COPY:
         case AST_EXIT:
             typecheck_expression(node, *scope, func_table);
             break;
@@ -8235,6 +8338,14 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
 
+        case AST_MEM_COPY:
+            fprintf(out, "ni_mem_copy(");
+            codegen_emit_byte_buf(out, node->as.mem_copy.dst);
+            fprintf(out, ", ");
+            codegen_emit_byte_buf(out, node->as.mem_copy.src);
+            fprintf(out, ")");
+            break;
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -8723,6 +8834,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_FD_WRITE:
         case AST_FD_READ:
         case AST_FD_CLOSE:
+        case AST_MEM_COPY:
         case AST_EXIT:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
@@ -8943,7 +9055,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
     if (g_has_casts) fprintf(out, "#include <limits.h>\n");
-    if (g_has_arena || g_has_io) fprintf(out, "#include <string.h>\n");
+    if (g_has_arena || g_has_io || g_has_mem) fprintf(out, "#include <string.h>\n");
     if (g_has_io) {
         fprintf(out, "#include <unistd.h>\n");
         fprintf(out, "#include <fcntl.h>\n");
@@ -9123,6 +9235,15 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "    return (int32_t)open(tmp, flags, 0644);\n");
         fprintf(out, "}\n");
         fprintf(out, "static void ni_fd_close(int32_t fd) { close(fd); }\n\n");
+    }
+
+    /* Emit mem_copy runtime helper if used */
+    if (g_has_mem) {
+        fprintf(out, "static int64_t ni_mem_copy(ni_slice_0 dst, ni_slice_0 src) {\n");
+        fprintf(out, "    int64_t n = dst.len < src.len ? dst.len : src.len;\n");
+        fprintf(out, "    memmove(dst.data, src.data, (size_t)n);\n");
+        fprintf(out, "    return n;\n");
+        fprintf(out, "}\n\n");
     }
 
     /* Emit per-table helper functions */

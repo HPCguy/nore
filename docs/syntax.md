@@ -981,10 +981,24 @@ exit(1)      // failure
 - Returns `void` (never returns)
 - Used as a bare statement
 
+**mem_copy(mut ref dst, ref src)** — copy bytes between byte buffers:
+```nore
+mut buf: [u8; 4] = [0, 0, 0, 0]
+val src: [u8; 3] = [65, 66, 67]
+val n: i64 = mem_copy(mut ref buf, ref src)
+assert n == 3    // min(4, 3)
+```
+- `dst` must be `[u8]` or `[u8; N]`, passed with `mut ref` (must be mutable)
+- `src` must be `[u8]` or `[u8; N]`, passed with `ref`
+- Copies `min(dst.len, src.len)` bytes from src to dst
+- Returns `i64`: number of bytes copied
+- Uses `memmove` internally (safe with overlapping buffers)
+- Can be used as a bare statement or expression
+
 **Type errors**:
 - Non-integer fd: error S064
-- Non-byte-buffer data/buf/path: error S065
-- Immutable buffer for fd_read: error S066
+- Non-byte-buffer data/buf/path/dst/src: error S065
+- Immutable buffer for fd_read/mem_copy dst: error S066
 
 ### Control Flow
 
@@ -1215,6 +1229,7 @@ func main(): void = {
 - `fd_read(fd, mut ref buf)` - Read bytes from a file descriptor, returns `i64` bytes read
 - `fd_open(ref path, flags)` - Open a file, returns `i32` file descriptor
 - `fd_close(fd)` - Close a file descriptor
+- `mem_copy(mut ref dst, ref src)` - Copy bytes between buffers, returns `i64` bytes copied
 - `exit(code)` - Terminate the process
 
 ### Standard Library Functions

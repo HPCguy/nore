@@ -98,16 +98,8 @@ func str_contains(ref s: str, ref needle: str): bool = {
 func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
     val total: i64 = a.len + b.len
     mut result: str = arena_alloc(mut ref mem, total)
-    mut i: i64 = 0
-    while (i < a.len) {
-        result[i] = a[i]
-        i = i + 1
-    }
-    i = 0
-    while (i < b.len) {
-        result[a.len + i] = b[i]
-        i = i + 1
-    }
+    mem_copy(mut ref result[0..a.len], ref a)
+    mem_copy(mut ref result[a.len..total], ref b)
     return result
 }
 
@@ -152,11 +144,7 @@ func i64_to_str(mut ref mem: Arena, n: i64): str = {
     val pos: i64 = fmt_i64(mut ref buf, n)
     val len: i64 = 20 - pos
     mut result: str = arena_alloc(mut ref mem, len)
-    mut i: i64 = 0
-    while (i < len) {
-        result[i] = buf[pos + i]
-        i = i + 1
-    }
+    mem_copy(mut ref result, ref buf[pos..20])
     return result
 }
 

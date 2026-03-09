@@ -1,0 +1,6 @@
+// mem_copy() dst must be []u8
+func main(): void = {
+    mut data: [i64; 3] = [1, 2, 3]
+    val src: [u8; 2] = [10, 20]
+    mem_copy(mut ref data, ref src)
+}
