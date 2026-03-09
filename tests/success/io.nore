@@ -1,20 +1,12 @@
 // Test I/O built-in functions
 
+import "std/file.nore"
+
 func main(): void = {
     // Predefined constants
     assert STDIN == 0
     assert STDOUT == 1
     assert STDERR == 2
-
-    // Open flag constants
-    assert O_RDONLY == 0
-    assert O_WRONLY == 1
-    assert O_RDWR == 2
-
-    // Seek whence constants
-    assert SEEK_SET == 0
-    assert SEEK_CUR == 1
-    assert SEEK_END == 2
 
     // fd_write returns bytes written
     val n: i64 = fd_write(STDOUT, ref "hello")

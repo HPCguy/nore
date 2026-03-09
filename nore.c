@@ -5268,28 +5268,42 @@ static void scope_add_comptime_float(Scope *scope, const char *name_start,
     }
 }
 
-static void scope_inject_io_constants(Scope *scope) {
-    SourceLoc builtin_loc = {0, 0, NULL};
-    scope_add_comptime_int(scope, "STDIN", 5, 0, builtin_loc);
-    scope_add_comptime_int(scope, "STDOUT", 6, 1, builtin_loc);
-    scope_add_comptime_int(scope, "STDERR", 6, 2, builtin_loc);
-    /* Open flags (POSIX) */
-    scope_add_comptime_int(scope, "O_RDONLY", 8, 0, builtin_loc);
-    scope_add_comptime_int(scope, "O_WRONLY", 8, 1, builtin_loc);
-    scope_add_comptime_int(scope, "O_RDWR", 6, 2, builtin_loc);
+static const SourceLoc BUILTIN_LOC = {0, 0, NULL};
+
+static void scope_add_comptime_enum(Scope *scope, const char *name_start,
+                                    size_t name_length, Type enum_type,
+                                    long value, SourceLoc loc) {
+    Variable *v = scope_add(scope, name_start, name_length, false,
+                            enum_type, loc);
+    if (v != NULL) {
+        v->is_comptime = true;
+        v->comptime_value.int_value = value;
+    }
+}
+
+/* OS enum type, registered once before parsing */
+static Type g_os_enum_type = TYPE_UNKNOWN;
+
+static void platform_inject_os_enum(void) {
+    EnumVariant *variants = malloc(2 * sizeof(EnumVariant));
+    if (!variants) panic(ERR_I001_OUT_OF_MEMORY, "allocating OS enum variants");
+    variants[0] = (EnumVariant){"Linux", 5, 0};
+    variants[1] = (EnumVariant){"MacOS", 5, 1};
+    g_os_enum_type = enum_table_add("OS", 2, variants, 2, BUILTIN_LOC);
+}
+
+static void scope_inject_platform_constants(Scope *scope) {
 #ifdef __APPLE__
-    scope_add_comptime_int(scope, "O_CREAT", 7, 0x0200, builtin_loc);
-    scope_add_comptime_int(scope, "O_TRUNC", 7, 0x0400, builtin_loc);
-    scope_add_comptime_int(scope, "O_APPEND", 8, 0x0008, builtin_loc);
+    scope_add_comptime_enum(scope, "TARGET_OS", 9, g_os_enum_type, 1, BUILTIN_LOC);
 #else
-    scope_add_comptime_int(scope, "O_CREAT", 7, 64, builtin_loc);
-    scope_add_comptime_int(scope, "O_TRUNC", 7, 512, builtin_loc);
-    scope_add_comptime_int(scope, "O_APPEND", 8, 1024, builtin_loc);
+    scope_add_comptime_enum(scope, "TARGET_OS", 9, g_os_enum_type, 0, BUILTIN_LOC);
 #endif
-    /* Seek whence (universal POSIX values) */
-    scope_add_comptime_int(scope, "SEEK_SET", 8, 0, builtin_loc);
-    scope_add_comptime_int(scope, "SEEK_CUR", 8, 1, builtin_loc);
-    scope_add_comptime_int(scope, "SEEK_END", 8, 2, builtin_loc);
+}
+
+static void scope_inject_io_constants(Scope *scope) {
+    scope_add_comptime_int(scope, "STDIN", 5, 0, BUILTIN_LOC);
+    scope_add_comptime_int(scope, "STDOUT", 6, 1, BUILTIN_LOC);
+    scope_add_comptime_int(scope, "STDERR", 6, 2, BUILTIN_LOC);
 }
 
 /* ========================== Function Table ========================== */
@@ -5403,7 +5417,7 @@ static FunctionEntry *g_current_func_entry = NULL;
 /* Returns true if node is a compile-time constant (literal or comptime variable) */
 static bool is_comptime_constant(Ast *node, Scope *scope) {
     if (node->kind == AST_NUMBER || node->kind == AST_FLOAT ||
-        node->kind == AST_BOOLEAN) {
+        node->kind == AST_BOOLEAN || node->kind == AST_ENUM_VARIANT) {
         return true;
     }
     if (node->kind == AST_IDENTIFIER && scope != NULL) {
@@ -5418,6 +5432,7 @@ static bool is_comptime_constant(Ast *node, Scope *scope) {
 static long get_comptime_int(Ast *node, Scope *scope) {
     if (node->kind == AST_NUMBER) return node->as.number.value;
     if (node->kind == AST_FLOAT) return (long)node->as.float_lit.value;
+    if (node->kind == AST_ENUM_VARIANT) return node->as.enum_variant.value;
     if (node->kind == AST_IDENTIFIER && scope != NULL) {
         Variable *v = scope_lookup(scope, node->as.identifier.start,
                                    node->as.identifier.length);
@@ -5450,11 +5465,12 @@ static double get_comptime_float(Ast *node, Scope *scope) {
 static bool is_comptime_int_type(Ast *node, Scope *scope) {
     if (node->kind == AST_NUMBER) return true;
     if (node->kind == AST_FLOAT) return false;
+    if (node->kind == AST_ENUM_VARIANT) return true;
     if (node->kind == AST_IDENTIFIER && scope != NULL) {
         Variable *v = scope_lookup(scope, node->as.identifier.start,
                                    node->as.identifier.length);
         if (v != NULL && v->is_comptime) {
-            return v->type == TYPE_COMPTIME_INT;
+            return v->type == TYPE_COMPTIME_INT || type_is_enum(v->type);
         }
     }
     return true;  /* default to int */
@@ -5881,6 +5897,17 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                        "Cannot compare different types %s and %s",
                                        type_name(left_type), type_name(right_type));
                         }
+
+                        /* Try constant folding for enum comparisons */
+                        Ast *folded = try_fold_comparison(node, scope);
+                        if (folded) {
+                            ast_free(node->as.binary.left);
+                            ast_free(node->as.binary.right);
+                            *node = *folded;
+                            free(folded);
+                            return TYPE_BOOL;
+                        }
+
                         node->expr_type = TYPE_BOOL;
                         return TYPE_BOOL;
                     }
@@ -7455,6 +7482,15 @@ static bool is_global_initializer(Ast *node, Scope *scope) {
             }
             return true;
         }
+        case AST_IF: {
+            /* Comptime if/else: both branches must be value expressions */
+            if (!node->as.if_stmt.else_block) return false;
+            if (!node->as.if_stmt.then_block->as.block.value_expr) return false;
+            if (!node->as.if_stmt.else_block->as.block.value_expr) return false;
+            return is_global_initializer(node->as.if_stmt.condition, scope) &&
+                   is_global_initializer(node->as.if_stmt.then_block->as.block.value_expr, scope) &&
+                   is_global_initializer(node->as.if_stmt.else_block->as.block.value_expr, scope);
+        }
         default:
             return false;
     }
@@ -7665,7 +7701,8 @@ static void typecheck_program(Ast *program) {
     /* Create global scope for top-level variables */
     Scope *global_scope = scope_create(NULL);
 
-    /* Inject predefined I/O constants */
+    /* Inject predefined constants */
+    scope_inject_platform_constants(global_scope);
     scope_inject_io_constants(global_scope);
 
     /* Validate value/struct type declarations */
@@ -7888,7 +7925,7 @@ static void codegen_emit_identifier(FILE *out, const char *name_start, size_t na
     if (g_codegen_scope) {
         Variable *v = scope_lookup(g_codegen_scope, name_start, name_length);
         if (v && v->is_comptime) {
-            if (v->type == TYPE_COMPTIME_INT) {
+            if (v->type == TYPE_COMPTIME_INT || type_is_enum(v->type)) {
                 fprintf(out, "%ldL", v->comptime_value.int_value);
             } else {
                 fprintf(out, "%g", v->comptime_value.float_value);
@@ -9434,7 +9471,8 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     g_global_codegen_scope = global_codegen_scope;
     g_codegen_scope = global_codegen_scope;
 
-    /* Inject predefined I/O constants into codegen scope */
+    /* Inject predefined constants into codegen scope */
+    scope_inject_platform_constants(global_codegen_scope);
     scope_inject_io_constants(global_codegen_scope);
 
     for (size_t i = 0; i < ast->as.program.count; i++) {
@@ -9662,6 +9700,8 @@ int main(int argc, char **argv) {
     g_value_table = value_table_create();
     g_array_table = array_table_create();
     g_slice_table = slice_table_create();
+    /* Register OS enum before parsing (so OS.Linux etc. are available) */
+    platform_inject_os_enum();
     /* Parse program */
     Parser parser;
     parser_init(&parser, &lexer);

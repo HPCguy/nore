@@ -6,6 +6,20 @@ import "std/string.nore"
 func main(): void = {
     mut mem: Arena = arena(4096)
 
+    // TARGET_OS is a valid OS enum value
+    assert TARGET_OS == OS.Linux || TARGET_OS == OS.MacOS
+
+    // Open flag constants
+    assert O_RDONLY == 0
+    assert O_WRONLY == 1
+    assert O_RDWR == 2
+    // O_CREAT, O_TRUNC, O_APPEND are platform-specific (tested via file I/O below)
+
+    // Seek whence constants
+    assert SEEK_SET == 0
+    assert SEEK_CUR == 1
+    assert SEEK_END == 2
+
     // Write a file and read it back
     val msg: str = "Hello, Nore!"
     val ok: bool = write_file(ref "/tmp/nore_file_test.txt", ref msg)

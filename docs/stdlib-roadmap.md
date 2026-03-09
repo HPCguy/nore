@@ -125,9 +125,12 @@ func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
 func exit(code: i32): void
 ```
 
-Predefined constants for I/O:
+Compiler-injected constants:
+- `TARGET_OS: OS` (compiler-injected enum, `OS.Linux` or `OS.MacOS`)
 - `STDIN=0`, `STDOUT=1`, `STDERR=2` (file descriptors)
-- `O_RDONLY=0`, `O_WRONLY=1`, `O_RDWR=2`, `O_CREAT`, `O_TRUNC`, `O_APPEND` (open flags, platform-specific values for create/trunc/append)
+
+Constants from `std/file.nore`:
+- `O_RDONLY=0`, `O_WRONLY=1`, `O_RDWR=2`, `O_CREAT`, `O_TRUNC`, `O_APPEND` (open flags, platform-specific via `TARGET_OS`)
 - `SEEK_SET=0`, `SEEK_CUR=1`, `SEEK_END=2` (seek whence)
 
 **Design notes:**
@@ -135,7 +138,7 @@ Predefined constants for I/O:
 - `fd_write` / `fd_read` work with byte slices, Nore's natural data type for buffers.
 - Error handling through return codes initially. Once enums/tagged unions exist, these can return `Result` types.
 - String literals are `str` (which is `[u8]`) so printing a string literal is just `fd_write(STDOUT, ref "hello")`.
-- Open flag constants use platform-specific values (`#ifdef __APPLE__` in the compiler) since generated C is always compiled on the same platform.
+- Platform-specific open flags use comptime if/else on `TARGET_OS` in `std/file.nore`, folded at compile time.
 
 ### Layer B: String Operations (DONE)
 
@@ -210,7 +213,7 @@ Provides:
 - `read_file` takes an arena. The caller controls where the file contents live and how long they survive.
 - Error handling through return values (empty slice / false). Migrate to `Result` when tagged unions exist.
 - `fd_seek` built-in added to support size detection. Maps to POSIX `lseek()`.
-- Predefined constants (`O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_RDWR`, `SEEK_SET`, `SEEK_CUR`, `SEEK_END`) make flag usage readable and portable.
+- I/O constants (`O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_RDWR`, `SEEK_SET`, `SEEK_CUR`, `SEEK_END`) are defined in `std/file.nore` with platform-specific values resolved via `TARGET_OS`.
 - Tested via `tests/std/file.nore`.
 
 ### Layer E: Math and Utilities (DONE)

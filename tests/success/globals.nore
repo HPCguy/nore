@@ -9,6 +9,10 @@ mut counter: i64 = 0
 value Point { x: f64, y: f64 }
 val ORIGIN: Point = Point { x: 0.0, y: 0.0 }
 
+// Comptime if/else globals (uses compiler-injected TARGET_OS enum)
+val PLATFORM_CODE: i32 = if (TARGET_OS == OS.MacOS) { 1 } else { 2 }
+val NESTED_COMPTIME: i64 = if (TARGET_OS == OS.Linux) { 10 + 20 } else { 30 + 40 }
+
 func increment(): void = {
     counter = counter + 1
 }
@@ -38,4 +42,19 @@ func main(): void = {
     // Value type globals
     assert ORIGIN.x == 0.0
     assert ORIGIN.y == 0.0
+
+    // TARGET_OS enum (compiler-injected)
+    assert TARGET_OS == OS.Linux || TARGET_OS == OS.MacOS
+    val os_val: i64 = i64(TARGET_OS)
+    assert os_val >= 0
+    assert os_val <= 1
+
+    // Comptime if/else globals
+    if (TARGET_OS == OS.MacOS) {
+        assert PLATFORM_CODE == 1
+        assert NESTED_COMPTIME == 70
+    } else {
+        assert PLATFORM_CODE == 2
+        assert NESTED_COMPTIME == 30
+    }
 }

@@ -516,6 +516,16 @@ assert i64(Color.Blue) == 2
 ```
 - Cast to any integer type with `i64()`, `i32()`, `u8()`, `u32()`
 
+**Built-in OS enum and TARGET_OS**:
+
+The compiler injects `enum OS { Linux, MacOS }` and a comptime constant `TARGET_OS: OS` set at compile time based on the host platform. This enables platform-specific constants using comptime if/else:
+
+```nore
+val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
+```
+
+Comptime if/else expressions with enum conditions are folded at compile time.
+
 ### Arrays
 
 Fixed-size arrays with compile-time known size, value semantics, and bounds checking.
@@ -916,36 +926,30 @@ assert length(ref msg) == 5
 
 ### Predefined Constants
 
-Constants are predefined in every program for use with I/O built-ins. All are `comptime_int` and inlined at use sites (no C variable emitted).
+**Compiler-injected constants** are available in every program without imports:
 
-**File descriptor constants:**
+| Name | Type | Value |
+|------|------|-------|
+| `TARGET_OS` | `OS` | `OS.Linux` or `OS.MacOS` (set at compile time) |
+| `STDIN` | `comptime_int` | 0 |
+| `STDOUT` | `comptime_int` | 1 |
+| `STDERR` | `comptime_int` | 2 |
 
-| Name | Value |
-|------|-------|
-| `STDIN` | 0 |
-| `STDOUT` | 1 |
-| `STDERR` | 2 |
-
-**Open flag constants (POSIX):**
+**I/O constants from `std/file.nore`** (require `import "std/file.nore"`):
 
 | Name | Value |
 |------|-------|
 | `O_RDONLY` | 0 |
 | `O_WRONLY` | 1 |
 | `O_RDWR` | 2 |
-| `O_CREAT` | platform-specific |
-| `O_TRUNC` | platform-specific |
-| `O_APPEND` | platform-specific |
-
-Flags can be combined with bitwise OR: `O_WRONLY | O_CREAT | O_TRUNC`
-
-**Seek whence constants:**
-
-| Name | Value |
-|------|-------|
+| `O_CREAT` | platform-specific (via `TARGET_OS`) |
+| `O_TRUNC` | platform-specific (via `TARGET_OS`) |
+| `O_APPEND` | platform-specific (via `TARGET_OS`) |
 | `SEEK_SET` | 0 |
 | `SEEK_CUR` | 1 |
 | `SEEK_END` | 2 |
+
+Flags can be combined with bitwise OR: `O_WRONLY | O_CREAT | O_TRUNC`
 
 ### I/O Built-in Functions
 
