@@ -916,15 +916,36 @@ assert length(ref msg) == 5
 
 ### Predefined Constants
 
-Three constants are predefined in every program for use with I/O built-ins:
+Constants are predefined in every program for use with I/O built-ins. All are `comptime_int` and inlined at use sites (no C variable emitted).
 
-| Name | Type | Value |
-|------|------|-------|
-| `STDIN` | comptime_int | 0 |
-| `STDOUT` | comptime_int | 1 |
-| `STDERR` | comptime_int | 2 |
+**File descriptor constants:**
 
-These are inlined at use sites (no C variable emitted).
+| Name | Value |
+|------|-------|
+| `STDIN` | 0 |
+| `STDOUT` | 1 |
+| `STDERR` | 2 |
+
+**Open flag constants (POSIX):**
+
+| Name | Value |
+|------|-------|
+| `O_RDONLY` | 0 |
+| `O_WRONLY` | 1 |
+| `O_RDWR` | 2 |
+| `O_CREAT` | platform-specific |
+| `O_TRUNC` | platform-specific |
+| `O_APPEND` | platform-specific |
+
+Flags can be combined with bitwise OR: `O_WRONLY | O_CREAT | O_TRUNC`
+
+**Seek whence constants:**
+
+| Name | Value |
+|------|-------|
+| `SEEK_SET` | 0 |
+| `SEEK_CUR` | 1 |
+| `SEEK_END` | 2 |
 
 ### I/O Built-in Functions
 
@@ -955,11 +976,13 @@ val n: i64 = fd_read(STDIN, mut ref buf)
 
 **fd_open(ref path, flags)** — open a file:
 ```nore
-val fd: i32 = fd_open(ref "file.txt", 0)    // O_RDONLY
+val fd: i32 = fd_open(ref "file.txt", O_RDONLY)
 assert fd >= 0
+
+val wfd: i32 = fd_open(ref "out.txt", O_WRONLY | O_CREAT | O_TRUNC)
 ```
 - `path` must be `[]u8` or string literal, passed with `ref`
-- `flags` must be an integer type (POSIX open flags, e.g., 0 = O_RDONLY, 577 = O_WRONLY|O_CREAT|O_TRUNC)
+- `flags` must be an integer type (use predefined `O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`, etc.)
 - Returns `i32`: file descriptor (negative on error)
 - Path is null-terminated internally (max 4095 bytes)
 - File permissions default to 0644
@@ -971,6 +994,17 @@ fd_close(fd)
 - `fd` must be an integer type
 - Returns `void`
 - Used as a bare statement
+
+**fd_seek(fd, offset, whence)** — reposition file offset:
+```nore
+val size: i64 = fd_seek(fd, 0, SEEK_END)   // get file size
+fd_seek(fd, 0, SEEK_SET)                    // seek back to start
+```
+- `fd` must be an integer type (file descriptor)
+- `offset` must be an integer type (byte offset)
+- `whence` must be an integer type (`SEEK_SET`, `SEEK_CUR`, or `SEEK_END`)
+- Returns `i64`: new file position (negative on error)
+- Can be used as a bare statement or expression
 
 **exit(code)** — terminate the process:
 ```nore
@@ -1229,6 +1263,7 @@ func main(): void = {
 - `fd_read(fd, mut ref buf)` - Read bytes from a file descriptor, returns `i64` bytes read
 - `fd_open(ref path, flags)` - Open a file, returns `i32` file descriptor
 - `fd_close(fd)` - Close a file descriptor
+- `fd_seek(fd, offset, whence)` - Seek in a file, returns `i64` new position
 - `mem_copy(mut ref dst, ref src)` - Copy bytes between buffers, returns `i64` bytes copied
 - `exit(code)` - Terminate the process
 
@@ -1243,10 +1278,16 @@ Available via `import "std/math.nore"`:
 - `min_i64(a, b)`, `max_i64(a, b)`, `abs_i64(a)`, `clamp_i64(x, lo, hi)`
 - `min_f64(a, b)`, `max_f64(a, b)`, `abs_f64(a)`, `clamp_f64(x, lo, hi)`
 
+Available via `import "std/file.nore"`:
+- `read_file(mut ref mem, ref path)` - Read entire file into arena, returns `[u8]`
+- `write_file(ref path, ref data)` - Write bytes to file (create/overwrite), returns `bool`
+
 ### Predefined Constants
 - `STDIN` - Standard input (0)
 - `STDOUT` - Standard output (1)
 - `STDERR` - Standard error (2)
+- `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND` - POSIX open flags
+- `SEEK_SET`, `SEEK_CUR`, `SEEK_END` - Seek whence constants
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)

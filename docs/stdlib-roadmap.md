@@ -115,6 +115,9 @@ func fd_open(ref path: str, flags: i32): i32
 // Close a file descriptor.
 func fd_close(fd: i32): void
 
+// Seek in a file. Returns new position (-1 on error).
+func fd_seek(fd: i32, offset: i64, whence: i32): i64
+
 // Copy bytes between buffers. Returns bytes copied (min of lengths).
 func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
 
@@ -122,11 +125,17 @@ func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
 func exit(code: i32): void
 ```
 
+Predefined constants for I/O:
+- `STDIN=0`, `STDOUT=1`, `STDERR=2` (file descriptors)
+- `O_RDONLY=0`, `O_WRONLY=1`, `O_RDWR=2`, `O_CREAT`, `O_TRUNC`, `O_APPEND` (open flags, platform-specific values for create/trunc/append)
+- `SEEK_SET=0`, `SEEK_CUR=1`, `SEEK_END=2` (seek whence)
+
 **Design notes:**
 - File descriptors are plain integers. No wrapper types, no handles. This matches POSIX and keeps things simple.
 - `fd_write` / `fd_read` work with byte slices, Nore's natural data type for buffers.
 - Error handling through return codes initially. Once enums/tagged unions exist, these can return `Result` types.
 - String literals are `str` (which is `[u8]`) so printing a string literal is just `fd_write(STDOUT, ref "hello")`.
+- Open flag constants use platform-specific values (`#ifdef __APPLE__` in the compiler) since generated C is always compiled on the same platform.
 
 ### Layer B: String Operations (DONE)
 
@@ -181,21 +190,28 @@ Provides: `print`, `println`, `print_i64`.
 - `eprint`/`eprintln` (stderr variants) can be added to the same file.
 - Tested via `tests/std/io.nore`. Tests verify the functions compile and run without crashing (exit 0). Conversion correctness is covered by `tests/std/string.nore`.
 
-### Layer D: File Operations
+### Layer D: File Operations (DONE)
 
-Written in Nore. Depends on Layer A (I/O built-ins) and Layer B (strings).
+Shipped as `std/file.nore`. Depends on Layer A (I/O built-ins, including `fd_seek`) and Layer B (strings).
 
+```nore
+import "std/file.nore"
+
+mut mem: Arena = arena(4096)
+val contents: [u8] = read_file(mut ref mem, ref "data.txt")
+val ok: bool = write_file(ref "output.txt", ref contents)
 ```
-// Read an entire file into a byte slice (allocated from the arena)
-func read_file(mut ref mem: Arena, ref path: str): [u8]
 
-// Write a byte slice to a file (creates/overwrites)
-func write_file(ref path: str, ref data: [u8]): bool
-```
+Provides:
+- **`read_file(mut ref mem, ref path)`** - Read entire file into arena-allocated `[u8]`. Uses `fd_seek` to determine file size, allocates exactly, reads in a loop. Returns empty slice on error.
+- **`write_file(ref path, ref data)`** - Write `[u8]` to file (create/overwrite via `O_WRONLY | O_CREAT | O_TRUNC`). Returns `true` on success, `false` on error.
 
 **Design notes:**
 - `read_file` takes an arena. The caller controls where the file contents live and how long they survive.
-- Error handling through return values initially (empty slice / false). Migrate to `Result` when enums exist.
+- Error handling through return values (empty slice / false). Migrate to `Result` when tagged unions exist.
+- `fd_seek` built-in added to support size detection. Maps to POSIX `lseek()`.
+- Predefined constants (`O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_RDWR`, `SEEK_SET`, `SEEK_CUR`, `SEEK_END`) make flag usage readable and portable.
+- Tested via `tests/std/file.nore`.
 
 ### Layer E: Math and Utilities (DONE)
 
@@ -239,12 +255,11 @@ Phase 2: Standard library (.nore files, importable)
   10. ✓ Move print/println/print_i64 ← from compiler built-ins to std/io.nore
   11. ✓ String operations            ← std/string.nore (Layer B)
   12. ✓ mem_copy built-in            ← efficient bulk byte copy (memcpy)
-  13. File operations               ← Layer D
+  13. ✓ fd_seek built-in + constants ← file size detection, portable open flags
+  14. ✓ File operations              ← std/file.nore (Layer D)
 ```
 
-Phases 0 and 1 are complete. All compiler prerequisites are done: operators, casting, I/O built-ins, enums, and the import system.
-
-Phase 2 is nearly complete. Three stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), and `std/io.nore` (Layer C). The modules reuse each other where it makes sense: `std/io.nore` imports `std/string.nore` so `print_i64` delegates formatting to `fmt_i64` while keeping its own stack buffer (no hidden allocation). The fd_write/fd_read/fd_open/fd_close/mem_copy primitives stay as compiler built-ins (they need syscall or C library access). The next step is file operations (Layer D).
+All phases complete. Four stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), `std/io.nore` (Layer C), and `std/file.nore` (Layer D). The modules reuse each other where it makes sense: `std/io.nore` imports `std/string.nore` so `print_i64` delegates formatting to `fmt_i64` while keeping its own stack buffer (no hidden allocation). The fd_write/fd_read/fd_open/fd_close/fd_seek/mem_copy primitives stay as compiler built-ins (they need syscall or C library access).
 
 ---
 

@@ -1549,6 +1549,7 @@ typedef enum {
     AST_FD_READ,
     AST_FD_OPEN,
     AST_FD_CLOSE,
+    AST_FD_SEEK,
     AST_EXIT,
     AST_MEM_COPY,
     AST_ENUM_DECL,
@@ -1758,6 +1759,7 @@ typedef struct Ast {
         struct { struct Ast *fd; struct Ast *buf; } fd_read;
         struct { struct Ast *path; struct Ast *flags; } fd_open;
         struct { struct Ast *fd; } fd_close;
+        struct { struct Ast *fd; struct Ast *offset; struct Ast *whence; } fd_seek;
         struct { struct Ast *code; } exit_call;
         struct { struct Ast *dst; struct Ast *src; } mem_copy;
 
@@ -2302,6 +2304,17 @@ static Ast *ast_make_fd_close(Ast *fd, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_fd_seek(Ast *fd, Ast *offset, Ast *whence, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_FD_SEEK;
+    node->loc = loc;
+    node->as.fd_seek.fd = fd;
+    node->as.fd_seek.offset = offset;
+    node->as.fd_seek.whence = whence;
+    return node;
+}
+
 static Ast *ast_make_exit(Ast *code, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -2473,6 +2486,11 @@ static void ast_free(Ast *node) {
             break;
         case AST_FD_CLOSE:
             ast_free(node->as.fd_close.fd);
+            break;
+        case AST_FD_SEEK:
+            ast_free(node->as.fd_seek.fd);
+            ast_free(node->as.fd_seek.offset);
+            ast_free(node->as.fd_seek.whence);
             break;
         case AST_EXIT:
             ast_free(node->as.exit_call.code);
@@ -3205,6 +3223,40 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_fd_close(fd, loc);
         }
 
+        /* fd_seek(fd, offset, whence) — built-in file descriptor seek */
+        if (name_length == 7 && memcmp(name_start, "fd_seek", 7) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *fd = parser_parse_expression(parser);
+            if (!fd) return NULL;
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ',' after fd in fd_seek()");
+                ast_free(fd);
+                return NULL;
+            }
+            Ast *offset = parser_parse_expression(parser);
+            if (!offset) { ast_free(fd); return NULL; }
+            if (!parser_match(parser, TOKEN_COMMA)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ',' after offset in fd_seek()");
+                ast_free(fd);
+                ast_free(offset);
+                return NULL;
+            }
+            Ast *whence = parser_parse_expression(parser);
+            if (!whence) { ast_free(fd); ast_free(offset); return NULL; }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after fd_seek whence");
+                ast_free(fd);
+                ast_free(offset);
+                ast_free(whence);
+                return NULL;
+            }
+            return ast_make_fd_seek(fd, offset, whence, loc);
+        }
+
         /* exit(code) — built-in process exit */
         if (name_length == 4 && memcmp(name_start, "exit", 4) == 0 &&
             parser_check(parser, TOKEN_LPAREN)) {
@@ -3758,6 +3810,7 @@ static Ast *parser_parse_block(Parser *parser) {
                            expr->kind == AST_FD_WRITE ||
                            expr->kind == AST_FD_READ ||
                            expr->kind == AST_FD_CLOSE ||
+                           expr->kind == AST_FD_SEEK ||
                            expr->kind == AST_MEM_COPY ||
                            expr->kind == AST_EXIT) {
                     /* Bare function call or built-in as statement */
@@ -5018,6 +5071,19 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.fd_close.fd, indent + 2);
             break;
 
+        case AST_FD_SEEK:
+            printf("FD_SEEK\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("FD:\n");
+            parser_print_ast_step(node->as.fd_seek.fd, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("OFFSET:\n");
+            parser_print_ast_step(node->as.fd_seek.offset, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("WHENCE:\n");
+            parser_print_ast_step(node->as.fd_seek.whence, indent + 2);
+            break;
+
         case AST_EXIT:
             printf("EXIT\n");
             for (int i = 0; i < indent + 1; i++) printf("  ");
@@ -5207,6 +5273,23 @@ static void scope_inject_io_constants(Scope *scope) {
     scope_add_comptime_int(scope, "STDIN", 5, 0, builtin_loc);
     scope_add_comptime_int(scope, "STDOUT", 6, 1, builtin_loc);
     scope_add_comptime_int(scope, "STDERR", 6, 2, builtin_loc);
+    /* Open flags (POSIX) */
+    scope_add_comptime_int(scope, "O_RDONLY", 8, 0, builtin_loc);
+    scope_add_comptime_int(scope, "O_WRONLY", 8, 1, builtin_loc);
+    scope_add_comptime_int(scope, "O_RDWR", 6, 2, builtin_loc);
+#ifdef __APPLE__
+    scope_add_comptime_int(scope, "O_CREAT", 7, 0x0200, builtin_loc);
+    scope_add_comptime_int(scope, "O_TRUNC", 7, 0x0400, builtin_loc);
+    scope_add_comptime_int(scope, "O_APPEND", 8, 0x0008, builtin_loc);
+#else
+    scope_add_comptime_int(scope, "O_CREAT", 7, 64, builtin_loc);
+    scope_add_comptime_int(scope, "O_TRUNC", 7, 512, builtin_loc);
+    scope_add_comptime_int(scope, "O_APPEND", 8, 1024, builtin_loc);
+#endif
+    /* Seek whence (universal POSIX values) */
+    scope_add_comptime_int(scope, "SEEK_SET", 8, 0, builtin_loc);
+    scope_add_comptime_int(scope, "SEEK_CUR", 8, 1, builtin_loc);
+    scope_add_comptime_int(scope, "SEEK_END", 8, 2, builtin_loc);
 }
 
 /* ========================== Function Table ========================== */
@@ -6664,6 +6747,33 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_VOID;
         }
 
+        case AST_FD_SEEK: {
+            Type fd_type = typecheck_expression(node->as.fd_seek.fd, scope, func_table);
+            if (!type_is_integer(fd_type)) {
+                diagnostic(node->as.fd_seek.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_seek.fd->loc.line,
+                           node->as.fd_seek.fd->loc.column,
+                           "fd_seek() fd must be integer, got %s",
+                           type_name(fd_type));
+            }
+            Type offset_type = typecheck_expression(node->as.fd_seek.offset, scope, func_table);
+            if (!type_is_integer(offset_type)) {
+                diagnostic(node->as.fd_seek.offset->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_seek.offset->loc.line,
+                           node->as.fd_seek.offset->loc.column,
+                           "fd_seek() offset must be integer, got %s",
+                           type_name(offset_type));
+            }
+            Type whence_type = typecheck_expression(node->as.fd_seek.whence, scope, func_table);
+            if (!type_is_integer(whence_type)) {
+                diagnostic(node->as.fd_seek.whence->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_seek.whence->loc.line,
+                           node->as.fd_seek.whence->loc.column,
+                           "fd_seek() whence must be integer, got %s",
+                           type_name(whence_type));
+            }
+            g_has_io = true;
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+        }
+
         case AST_EXIT: {
             Type code_type = typecheck_expression(node->as.exit_call.code, scope, func_table);
             if (!type_is_integer(code_type)) {
@@ -7293,6 +7403,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_FD_WRITE:
         case AST_FD_READ:
         case AST_FD_CLOSE:
+        case AST_FD_SEEK:
         case AST_MEM_COPY:
         case AST_EXIT:
             typecheck_expression(node, *scope, func_table);
@@ -8332,6 +8443,16 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
 
+        case AST_FD_SEEK:
+            fprintf(out, "ni_fd_seek(");
+            codegen_emit_expression(out, node->as.fd_seek.fd);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.fd_seek.offset);
+            fprintf(out, ", ");
+            codegen_emit_expression(out, node->as.fd_seek.whence);
+            fprintf(out, ")");
+            break;
+
         case AST_EXIT:
             fprintf(out, "exit(");
             codegen_emit_expression(out, node->as.exit_call.code);
@@ -8834,6 +8955,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_FD_WRITE:
         case AST_FD_READ:
         case AST_FD_CLOSE:
+        case AST_FD_SEEK:
         case AST_MEM_COPY:
         case AST_EXIT:
             codegen_indent(out, indent);
@@ -9234,7 +9356,10 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "    tmp[path.len] = '\\0';\n");
         fprintf(out, "    return (int32_t)open(tmp, flags, 0644);\n");
         fprintf(out, "}\n");
-        fprintf(out, "static void ni_fd_close(int32_t fd) { close(fd); }\n\n");
+        fprintf(out, "static void ni_fd_close(int32_t fd) { close(fd); }\n");
+        fprintf(out, "static int64_t ni_fd_seek(int32_t fd, int64_t offset, int32_t whence) {\n");
+        fprintf(out, "    return (int64_t)lseek(fd, (off_t)offset, whence);\n");
+        fprintf(out, "}\n\n");
     }
 
     /* Emit mem_copy runtime helper if used */

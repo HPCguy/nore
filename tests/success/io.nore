@@ -6,6 +6,16 @@ func main(): void = {
     assert STDOUT == 1
     assert STDERR == 2
 
+    // Open flag constants
+    assert O_RDONLY == 0
+    assert O_WRONLY == 1
+    assert O_RDWR == 2
+
+    // Seek whence constants
+    assert SEEK_SET == 0
+    assert SEEK_CUR == 1
+    assert SEEK_END == 2
+
     // fd_write returns bytes written
     val n: i64 = fd_write(STDOUT, ref "hello")
     assert n == 5
@@ -16,15 +26,14 @@ func main(): void = {
     assert n2 == 3
 
     // File round-trip: write then read back
-    // O_WRONLY | O_CREAT | O_TRUNC = 577 on macOS/Linux
-    val wfd: i32 = fd_open(ref "/tmp/nore_io_test.txt", 577)
+    val wfd: i32 = fd_open(ref "/tmp/nore_io_test.txt", O_WRONLY | O_CREAT | O_TRUNC)
     assert wfd >= 0
     val written: i64 = fd_write(wfd, ref "Test123")
     assert written == 7
     fd_close(wfd)
 
     // Read it back
-    val rfd: i32 = fd_open(ref "/tmp/nore_io_test.txt", 0)
+    val rfd: i32 = fd_open(ref "/tmp/nore_io_test.txt", O_RDONLY)
     assert rfd >= 0
     mut buf: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     val nread: i64 = fd_read(rfd, mut ref buf)
@@ -36,6 +45,31 @@ func main(): void = {
     assert buf[4] == 49
     assert buf[5] == 50
     assert buf[6] == 51
+
+    // fd_seek: get file size via seek to end
+    val size: i64 = fd_seek(rfd, 0, SEEK_END)
+    assert size == 7
+
+    // fd_seek: seek back to start
+    val pos: i64 = fd_seek(rfd, 0, SEEK_SET)
+    assert pos == 0
+
+    // fd_seek: read again after seeking back
+    mut buf2: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val nread2: i64 = fd_read(rfd, mut ref buf2)
+    assert nread2 == 7
+    assert buf2[0] == 84
+
+    // fd_seek: seek to middle
+    val mid: i64 = fd_seek(rfd, 4, SEEK_SET)
+    assert mid == 4
+    mut buf3: [u8; 4] = [0, 0, 0, 0]
+    val nread3: i64 = fd_read(rfd, mut ref buf3)
+    assert nread3 == 3
+    assert buf3[0] == 49
+    assert buf3[1] == 50
+    assert buf3[2] == 51
+
     fd_close(rfd)
 
     // exit(0) at the end

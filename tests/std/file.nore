@@ -1,0 +1,47 @@
+// Test std/file.nore
+
+import "std/file.nore"
+import "std/string.nore"
+
+func main(): void = {
+    mut mem: Arena = arena(4096)
+
+    // Write a file and read it back
+    val msg: str = "Hello, Nore!"
+    val ok: bool = write_file(ref "/tmp/nore_file_test.txt", ref msg)
+    assert ok
+
+    val contents: [u8] = read_file(mut ref mem, ref "/tmp/nore_file_test.txt")
+    assert contents.len == 12
+    assert str_eq(ref contents, ref "Hello, Nore!")
+
+    // Read non-existent file returns empty slice
+    val missing: [u8] = read_file(mut ref mem, ref "/tmp/nore_no_such_file_xyz.txt")
+    assert missing.len == 0
+
+    // Overwrite existing file with different content
+    val ok2: bool = write_file(ref "/tmp/nore_file_test.txt", ref "short")
+    assert ok2
+    val contents2: [u8] = read_file(mut ref mem, ref "/tmp/nore_file_test.txt")
+    assert contents2.len == 5
+    assert str_eq(ref contents2, ref "short")
+
+    // Write empty data
+    val ok3: bool = write_file(ref "/tmp/nore_file_test_empty.txt", ref "")
+    assert ok3
+    val contents3: [u8] = read_file(mut ref mem, ref "/tmp/nore_file_test_empty.txt")
+    assert contents3.len == 0
+
+    // Write and read binary data
+    val binary: [u8; 4] = [0, 127, 128, 255]
+    val ok4: bool = write_file(ref "/tmp/nore_file_test_bin.txt", ref binary)
+    assert ok4
+    val contents4: [u8] = read_file(mut ref mem, ref "/tmp/nore_file_test_bin.txt")
+    assert contents4.len == 4
+    assert contents4[0] == 0
+    assert contents4[1] == 127
+    assert contents4[2] == 128
+    assert contents4[3] == 255
+
+    exit(0)
+}
