@@ -115,6 +115,9 @@ func fd_open(ref path: str, flags: i32): i32
 // Close a file descriptor.
 func fd_close(fd: i32): void
 
+// Copy bytes between buffers. Returns bytes copied (min of lengths).
+func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
+
 // Terminate the process with a status code.
 func exit(code: i32): void
 ```
@@ -235,12 +238,13 @@ Phase 2: Standard library (.nore files, importable)
   9.  ✓ Math utilities              ← std/math.nore (first stdlib file)
   10. ✓ Move print/println/print_i64 ← from compiler built-ins to std/io.nore
   11. ✓ String operations            ← std/string.nore (Layer B)
-  12. File operations               ← Layer D
+  12. ✓ mem_copy built-in            ← efficient bulk byte copy (memcpy)
+  13. File operations               ← Layer D
 ```
 
 Phases 0 and 1 are complete. All compiler prerequisites are done: operators, casting, I/O built-ins, enums, and the import system.
 
-Phase 2 is nearly complete. Three stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), and `std/io.nore` (Layer C). The modules reuse each other where it makes sense: `std/io.nore` imports `std/string.nore` so `print_i64` delegates formatting to `fmt_i64` while keeping its own stack buffer (no hidden allocation). The fd_write/fd_read/fd_open/fd_close primitives stay as compiler built-ins (they need syscall access). The next step is file operations (Layer D).
+Phase 2 is nearly complete. Three stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), and `std/io.nore` (Layer C). The modules reuse each other where it makes sense: `std/io.nore` imports `std/string.nore` so `print_i64` delegates formatting to `fmt_i64` while keeping its own stack buffer (no hidden allocation). The fd_write/fd_read/fd_open/fd_close/mem_copy primitives stay as compiler built-ins (they need syscall or C library access). The next step is file operations (Layer D).
 
 ---
 
@@ -304,3 +308,4 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
 - **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
 - **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore`. `print_i64` reuses `fmt_i64` from `std/string.nore` with a stack buffer (no allocation).
+- **Bulk memory operations**: resolved. `mem_copy(mut ref dst, ref src): i64` built-in added, maps to C `memcpy`. Copies `min(dst.len, src.len)` bytes, returns count. Uses non-overlapping semantics (memcpy, not memmove). Available for `std/file.nore` and can be adopted by `str_concat`/`i64_to_str` to replace byte-by-byte loops.
