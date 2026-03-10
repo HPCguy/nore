@@ -1,8 +1,11 @@
-# Nore Programming Language
+<h1>
+  <img src="docs/logo/logo.svg" alt="Nore logo" width="96" height="96" valign="middle">
+  Nore
+</h1>
 
-## Overview
+Nore is a systems programming language that makes data-oriented design the path of least resistance. 
 
-Nore is a systems programming language that makes data-oriented design the path of least resistance. Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
+Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
 
 The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
 
