@@ -5,7 +5,7 @@ enum Direction { North, South, East, West }
 
 // Global enum variables
 val DEFAULT_COLOR: Color = Color.Red
-val DEFAULT_DIR = Direction.North
+val DEFAULT_DIR: Direction = Direction.North
 mut current_color: Color = Color.Green
 
 func get_color(): Color = {
@@ -29,8 +29,8 @@ func main(): void = {
     d = Color.Blue
     assert d == Color.Blue
 
-    // Type inference with val
-    val e = Color.Red
+    // Explicit type required for enum
+    val e: Color = Color.Red
     assert e == Color.Red
 
     // Integer values auto-numbered from 0

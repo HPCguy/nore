@@ -1,4 +1,5 @@
+enum Color { Red, Green, Blue }
 func foo(): i64 = { return 42 }
 func main(): void = {
-    val x = foo()
+    val x = Color.Red
 }

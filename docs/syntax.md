@@ -496,7 +496,7 @@ mut d: Color = Color.Green
 d = Color.Blue
 ```
 - Access variants with dot syntax: `EnumName.Variant`
-- Type annotation optional for `val` (inferred from variant)
+- Type annotation required (enum types are not compile-time constants)
 - Can be used as function parameters and return types
 
 **Comparison**:

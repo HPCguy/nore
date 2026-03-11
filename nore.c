@@ -7082,10 +7082,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             }
 
             if (declared == TYPE_UNKNOWN) {
-                /* No explicit type — must be comptime or enum variant */
-                if (type_is_enum(init_type)) {
-                    declared = init_type;
-                } else if (!type_is_comptime(init_type)) {
+                /* No explicit type — must be comptime */
+                if (!type_is_comptime(init_type)) {
                     diagnostic(node->loc.file, ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
                                "Type annotation required (expression is not compile-time constant)");
                     declared = TYPE_I64;  /* fallback */
@@ -7544,9 +7542,7 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
         }
 
         if (declared == TYPE_UNKNOWN) {
-            if (type_is_enum(init_type)) {
-                declared = init_type;
-            } else if (!type_is_comptime(init_type)) {
+            if (!type_is_comptime(init_type)) {
                 diagnostic(node->loc.file, ERR_S020_TYPE_REQUIRED, node->loc.line, node->loc.column,
                            "Type annotation required (expression is not compile-time constant)");
                 declared = TYPE_I64;
