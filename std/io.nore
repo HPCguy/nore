@@ -2,6 +2,11 @@
 
 import "std/string.nore"
 
+// Standard file descriptors
+val STDIN: i32 = 0
+val STDOUT: i32 = 1
+val STDERR: i32 = 2
+
 func print(ref s: str): void = {
     fd_write(STDOUT, ref s)
 }

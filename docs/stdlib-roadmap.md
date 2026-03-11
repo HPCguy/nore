@@ -32,7 +32,7 @@ Things that require compiler support because they cannot be expressed in Nore:
 | `mem_copy(mut ref dst, ref src)` | Bulk byte copy (maps to C `memmove`) |
 | `exit(code)` | Terminate the process |
 
-Compiler-injected constants: `STDIN`, `STDOUT`, `STDERR` (to be moved to `std/io.nore`), `TARGET_OS`.
+Compiler-injected constants: `TARGET_OS`.
 
 ### Standard Library Modules
 
@@ -40,7 +40,7 @@ Compiler-injected constants: `STDIN`, `STDOUT`, `STDERR` (to be moved to `std/io
 |--------|-----------------|
 | `std/math.nore` | `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64` |
 | `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`) |
-| `std/io.nore` | `print`, `println`, `print_i64` (imports `std/string.nore`) |
+| `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64` (imports `std/string.nore`) |
 | `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`) |
 
 All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
@@ -98,7 +98,7 @@ The foundation phase was built bottom-up: language features first, then stdlib l
 
 Before writing new programs, fix the existing stdlib. This is real work that validates new language features against existing code.
 
-**Move I/O constants to stdlib:** `STDIN`, `STDOUT`, `STDERR` are currently compiler-injected. They are plain integer constants (0, 1, 2) that can be defined in `std/io.nore`, just like `O_RDONLY` and `SEEK_SET` are already defined in `std/file.nore`. This removes special-casing from the compiler and follows the principle that the compiler grows only when it must.
+**Move I/O constants to stdlib:** Done. `STDIN`, `STDOUT`, `STDERR` are now defined in `std/io.nore` as plain `i32` constants, just like `O_RDONLY` and `SEEK_SET` in `std/file.nore`. Removed from compiler injection.
 
 **Tagged unions:** Add `Result` and `Option` types, then retrofit all stdlib modules:
 - `read_file` returns `Result` instead of empty slice on error
@@ -120,6 +120,7 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 Read a file, write it to stdout. The simplest useful program.
 
 ```nore
+import "std/io.nore"
 import "std/file.nore"
 
 mut mem: Arena = arena(65536)

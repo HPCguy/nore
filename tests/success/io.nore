@@ -1,5 +1,6 @@
 // Test I/O built-in functions
 
+import "std/io.nore"
 import "std/file.nore"
 
 func main(): void = {

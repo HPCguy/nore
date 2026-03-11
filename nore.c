@@ -5300,12 +5300,6 @@ static void scope_inject_platform_constants(Scope *scope) {
 #endif
 }
 
-static void scope_inject_io_constants(Scope *scope) {
-    scope_add_comptime_int(scope, "STDIN", 5, 0, BUILTIN_LOC);
-    scope_add_comptime_int(scope, "STDOUT", 6, 1, BUILTIN_LOC);
-    scope_add_comptime_int(scope, "STDERR", 6, 2, BUILTIN_LOC);
-}
-
 /* ========================== Function Table ========================== */
 
 typedef struct {
@@ -7703,7 +7697,6 @@ static void typecheck_program(Ast *program) {
 
     /* Inject predefined constants */
     scope_inject_platform_constants(global_scope);
-    scope_inject_io_constants(global_scope);
 
     /* Validate value/struct type declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
@@ -9473,7 +9466,6 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
 
     /* Inject predefined constants into codegen scope */
     scope_inject_platform_constants(global_codegen_scope);
-    scope_inject_io_constants(global_codegen_scope);
 
     for (size_t i = 0; i < ast->as.program.count; i++) {
         Ast *node = ast->as.program.statements[i];
