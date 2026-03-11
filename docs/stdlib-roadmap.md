@@ -111,7 +111,9 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 - Namespace access: dot-qualified (`string.eq`) vs current prefix convention
 - Backward compatibility: can existing code migrate incrementally?
 
-**Requires:** Tagged unions (language prereq #1), Module system v2 (language prereq #2).
+**Gate built-ins behind imports:** Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. They should only become available when the right stdlib module is imported. For example, `fd_write` and `fd_read` are only visible after `import "std/io.nore"`, while `fd_open`, `fd_close`, `fd_seek` require `import "std/file.nore"`. The compiler still provides the implementation, but the import acts as the gate. This gives the stdlib modules full control over what low-level primitives are exposed, keeps user programs clean, and provides a natural place to document each built-in. Needs design alongside module system v2.
+
+**Requires:** Tagged unions (language prereq #1), Module system v2 (language prereq #2), Built-in gating (language prereq #2b).
 
 ### Milestone 1: Cat Clone
 
@@ -216,6 +218,20 @@ The current import system merges all declarations into a flat global scope. Ever
 - Namespace access: dot-qualified (`string.eq`) vs current prefix convention
 - Backward compatibility: can existing code migrate incrementally?
 - Interaction with transitive imports: if A imports B imports C, what does A see from C?
+
+### 2b. Gate Built-ins Behind Imports
+
+**Priority: right after module system v2. Needs design.**
+
+Compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are currently injected into every program's global namespace, even programs that never do I/O. They should only become available when the relevant stdlib module is imported. The compiler still provides the implementation (these need syscall access), but the import acts as the gate that controls visibility.
+
+**Blocks:** Milestone 0 (clean global namespace).
+
+**Design space:**
+- Which module gates which built-in? Natural split: `std/io.nore` gates `fd_write`/`fd_read`, `std/file.nore` gates `fd_open`/`fd_close`/`fd_seek`, etc.
+- What about `exit` and `mem_copy`? They don't fit neatly into I/O or file. A `std/sys.nore` or `std/core.nore`?
+- Mechanism: does the compiler check which files have been imported and conditionally inject? Or does the stdlib `.nore` file declare the built-in signature and the compiler fills in the implementation?
+- Interaction with module v2: if built-ins are gated by import, they benefit from the same namespace/visibility rules as regular functions.
 
 ### 3. Command-Line Arguments
 
