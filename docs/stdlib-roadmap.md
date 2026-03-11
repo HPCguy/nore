@@ -111,7 +111,7 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 - Namespace access: dot-qualified (`string.eq`) vs current prefix convention
 - Backward compatibility: can existing code migrate incrementally?
 
-**Gate built-ins behind imports:** Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. They should only become available when the right stdlib module is imported. For example, `fd_write` and `fd_read` are only visible after `import "std/io.nore"`, while `fd_open`, `fd_close`, `fd_seek` require `import "std/file.nore"`. The compiler still provides the implementation, but the import acts as the gate. This gives the stdlib modules full control over what low-level primitives are exposed, keeps user programs clean, and provides a natural place to document each built-in. Needs design alongside module system v2.
+**Gate built-ins behind `native` declarations:** Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. Instead, a `native` keyword would let any `.nore` module declare a built-in's signature, and the compiler provides the implementation only when the signature matches a known built-in. For example, `std/io.nore` would declare `native func fd_write(fd: i32, ref data: [u8]): i64` and the function becomes available only to code that imports that module. This means built-ins are not a prerogative of any specific compiler path; they live in whatever domain module makes sense. The `.nore` file becomes the documentation, the compiler just has a table of known native signatures to match against.
 
 **Requires:** Tagged unions (language prereq #1), Module system v2 (language prereq #2), Built-in gating (language prereq #2b).
 
@@ -219,19 +219,30 @@ The current import system merges all declarations into a flat global scope. Ever
 - Backward compatibility: can existing code migrate incrementally?
 - Interaction with transitive imports: if A imports B imports C, what does A see from C?
 
-### 2b. Gate Built-ins Behind Imports
+### 2b. Native Keyword for Built-in Declarations
 
 **Priority: right after module system v2. Needs design.**
 
-Compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are currently injected into every program's global namespace, even programs that never do I/O. They should only become available when the relevant stdlib module is imported. The compiler still provides the implementation (these need syscall access), but the import acts as the gate that controls visibility.
+A `native` keyword lets `.nore` modules declare built-in function signatures. The compiler maintains a table of known native functions and provides the implementation when a declaration's signature matches. No match means a compile error.
+
+```nore
+// in std/io.nore
+native func fd_write(fd: i32, ref data: [u8]): i64
+native func fd_read(fd: i32, mut ref buf: [u8]): i64
+
+// in std/file.nore
+native func fd_open(ref path: str, flags: i32): i32
+native func fd_close(fd: i32): void
+native func fd_seek(fd: i32, offset: i64, whence: i32): i64
+```
 
 **Blocks:** Milestone 0 (clean global namespace).
 
 **Design space:**
-- Which module gates which built-in? Natural split: `std/io.nore` gates `fd_write`/`fd_read`, `std/file.nore` gates `fd_open`/`fd_close`/`fd_seek`, etc.
-- What about `exit` and `mem_copy`? They don't fit neatly into I/O or file. A `std/sys.nore` or `std/core.nore`?
-- Mechanism: does the compiler check which files have been imported and conditionally inject? Or does the stdlib `.nore` file declare the built-in signature and the compiler fills in the implementation?
-- Interaction with module v2: if built-ins are gated by import, they benefit from the same namespace/visibility rules as regular functions.
+- Built-ins are not a prerogative of any specific module. They live in whatever domain module makes sense. `fd_write` belongs in `std/io.nore`, `fd_open` in `std/file.nore`, etc.
+- Where do `exit` and `mem_copy` live? Possibly `std/sys.nore` or `std/core.nore`, or in existing modules where they're most relevant.
+- The `.nore` file becomes the documentation for each built-in. The signature is visible, the `native` keyword signals compiler-provided implementation.
+- Interaction with module v2: native declarations follow the same namespace/visibility rules as regular functions. If a module doesn't export a native function, importers don't see it.
 
 ### 3. Command-Line Arguments
 
