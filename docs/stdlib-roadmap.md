@@ -14,6 +14,52 @@ Stdlib modules should import and reuse each other to avoid code duplication and 
 
 ---
 
+## What We Shipped (v1)
+
+The foundation is complete. Four stdlib modules and a set of compiler built-ins provide the minimum viable platform for real programs.
+
+### Compiler Built-ins
+
+Things that require compiler support because they cannot be expressed in Nore:
+
+| Built-in | Purpose |
+|----------|---------|
+| `fd_write(fd, ref data)` | Write bytes to a file descriptor |
+| `fd_read(fd, mut ref buf)` | Read bytes from a file descriptor |
+| `fd_open(ref path, flags)` | Open a file, returns fd or negative error |
+| `fd_close(fd)` | Close a file descriptor |
+| `fd_seek(fd, offset, whence)` | Seek within a file |
+| `mem_copy(mut ref dst, ref src)` | Bulk byte copy (maps to C `memmove`) |
+| `exit(code)` | Terminate the process |
+
+Compiler-injected constants: `STDIN`, `STDOUT`, `STDERR` (to be moved to `std/io.nore`), `TARGET_OS`.
+
+### Standard Library Modules
+
+| Module | What it provides |
+|--------|-----------------|
+| `std/math.nore` | `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64` |
+| `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`) |
+| `std/io.nore` | `print`, `println`, `print_i64` (imports `std/string.nore`) |
+| `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`) |
+
+All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
+
+### Known Error Handling Debt
+
+The v1 stdlib uses sentinel values for errors because tagged unions did not exist yet:
+
+| Function | Current error behavior | Problem |
+|----------|----------------------|---------|
+| `read_file` | Returns empty `[u8]` on error | Indistinguishable from reading an actual empty file |
+| `write_file` | Returns `false` on error | No error detail (permission denied? disk full?) |
+| `str_to_i64` | Returns `0` on invalid input | Indistinguishable from parsing the string `"0"` |
+| `fd_open` | Returns negative error code | Caller must check `< 0`, easy to forget |
+
+This debt is addressed in Milestone 0 below.
+
+---
+
 ## What Belongs Where
 
 ### In the Compiler (built-ins)
@@ -26,11 +72,11 @@ Things that require compiler support because they cannot be expressed in Nore to
 
 ### In the Standard Library (.nore files)
 
-Everything that *can* be a Nore function *should* be. Once the language has the necessary primitives (I/O, casting, enums, modulo), these are all regular Nore code:
+Everything that *can* be a Nore function *should* be:
 
-- String comparison, searching, slicing
+- String comparison, searching, slicing, splitting
 - Number-to-string and string-to-number conversion
-- Formatted output (`print`, `println`)
+- Formatted output (`print`, `println`, and future format functions)
 - File reading helpers (`read_file`, `read_lines`)
 - Math utilities (`min`, `max`, `abs`, `clamp`)
 
@@ -38,231 +84,173 @@ Everything that *can* be a Nore function *should* be. Once the language has the 
 
 Things that don't belong, at least not yet:
 
-- Networking, HTTP, JSON. These are ecosystem libraries, not core stdlib.
+- Networking, HTTP. These are ecosystem libraries, not core stdlib.
 - Concurrency primitives. The language needs a concurrency story first.
 - Generic collections (hash map, dynamic array). Need generics or code generation.
 
 ---
 
-## Language Prerequisites
+## Next: Program-Driven Development
 
-The stdlib cannot be written until certain language features exist. These come first. Each one is a compiler change, not a library.
+The foundation phase was built bottom-up: language features first, then stdlib layers on top. The next phase combines both approaches. Some language features are needed immediately to fix what already exists (tagged unions, modules). Others will be driven top-down by attempting real programs.
 
-### Layer 0: Missing Operators and Types
+### Milestone 0: Fix the Foundation
 
-Small additions with outsized impact. These unblock string processing, hashing, and real algorithms.
+Before writing new programs, fix the existing stdlib. This is real work that validates new language features against existing code.
 
-| Feature | Why It's Needed |
-|---------|----------------|
-| `%` modulo operator | Number formatting, hash functions, circular buffers |
-| `&` `\|` `^` `~` `<<` `>>` bitwise ops | Hash functions, flag manipulation, binary protocols |
-| Character literals (`'A'`, `'\n'`) | String processing without magic numbers |
-| Numeric type casting | I/O works in bytes (`u8`), lengths are `i64`. Must convert between them |
+**Move I/O constants to stdlib:** `STDIN`, `STDOUT`, `STDERR` are currently compiler-injected. They are plain integer constants (0, 1, 2) that can be defined in `std/io.nore`, just like `O_RDONLY` and `SEEK_SET` are already defined in `std/file.nore`. This removes special-casing from the compiler and follows the principle that the compiler grows only when it must.
 
-**Numeric casting design note:** Nore already has comptime coercion (a literal `42` adapts to any integer type). Runtime casting between concrete types is the gap. The syntax should be explicit (something like `x as u8` or `u8(x)`) and truncation/overflow behavior must be defined. This deserves a focused design decision before implementation.
+**Tagged unions:** Add `Result` and `Option` types, then retrofit all stdlib modules:
+- `read_file` returns `Result` instead of empty slice on error
+- `write_file` returns `Result` with error detail instead of bare bool
+- `str_to_i64` returns `Option` to distinguish "0" from parse failure
+- `fd_open` wrapped in a stdlib helper returning `Result`
 
-### Layer 1: Enums (DONE)
+**Module namespaces and visibility:** Refactor the import system so modules have proper boundaries. The problems are clear (name collisions from flat scope, no way to hide internal helpers), but the solution needs design. Starting points for discussion:
+- Visibility: explicit exports (`pub func`) vs explicit privacy (`private func`) vs unexported-by-default
+- Namespace access: dot-qualified (`string.eq`) vs current prefix convention
+- Backward compatibility: can existing code migrate incrementally?
 
-Simple C-style enums with named integer constants, auto-numbered from 0. Dot-qualified variant access (`Color.Red`), equality comparison, casting to `i64`.
+**Requires:** Tagged unions (language prereq #1), Module system v2 (language prereq #2).
 
-```
-enum Color { Red, Green, Blue }
-val c: Color = Color.Red
-val n: i64 = i64(c)    // 0
-```
+### Milestone 1: Cat Clone
 
-**What shipped:** named integer constants, type-safe comparison (no cross-enum, no ordering), no arithmetic on enums. Tagged unions for `Result`/`Option` patterns are a future addition.
-
-### Layer 2: Module System (DONE)
-
-The stdlib is shipped as `.nore` files. The import system uses string literal paths:
-
-```
-import "std/math.nore"
-import "utils.nore"
-import "../shared/helpers.nore"
-```
-
-**Path resolution:** paths starting with `std/` resolve relative to the compiler binary's directory. All other paths resolve relative to the importing file's directory. Each file is imported at most once (duplicates are silently skipped). All declarations from the imported file are merged into the importing program's scope. Imports are transitive.
-
-**What shipped:** flat file-based import, no namespaces, no visibility modifiers. Error diagnostics track the correct source file per error. First stdlib file: `std/math.nore`.
-
----
-
-## The Standard Library Itself
-
-Once the prerequisites exist, the stdlib is built in layers. Each layer depends only on the ones below it.
-
-### Layer A: I/O Foundation
-
-The thinnest possible bridge to the operating system. These are **built-in functions** because they require syscall access.
-
-```
-// File descriptors (predefined constants)
-val STDIN: i32 = 0
-val STDOUT: i32 = 1
-val STDERR: i32 = 2
-
-// Write bytes to a file descriptor. Returns bytes written.
-func fd_write(fd: i32, ref data: [u8]): i64
-
-// Read bytes from a file descriptor into a buffer. Returns bytes read (0 = EOF).
-func fd_read(fd: i32, mut ref buf: [u8]): i64
-
-// Open a file. Returns a file descriptor or negative error code.
-func fd_open(ref path: str, flags: i32): i32
-
-// Close a file descriptor.
-func fd_close(fd: i32): void
-
-// Seek in a file. Returns new position (-1 on error).
-func fd_seek(fd: i32, offset: i64, whence: i32): i64
-
-// Copy bytes between buffers. Returns bytes copied (min of lengths).
-func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
-
-// Terminate the process with a status code.
-func exit(code: i32): void
-```
-
-Compiler-injected constants:
-- `TARGET_OS: OS` (compiler-injected enum, `OS.Linux` or `OS.MacOS`)
-- `STDIN=0`, `STDOUT=1`, `STDERR=2` (file descriptors)
-
-Constants from `std/file.nore`:
-- `O_RDONLY=0`, `O_WRONLY=1`, `O_RDWR=2`, `O_CREAT`, `O_TRUNC`, `O_APPEND` (open flags, platform-specific via `TARGET_OS`)
-- `SEEK_SET=0`, `SEEK_CUR=1`, `SEEK_END=2` (seek whence)
-
-**Design notes:**
-- File descriptors are plain integers. No wrapper types, no handles. This matches POSIX and keeps things simple.
-- `fd_write` / `fd_read` work with byte slices, Nore's natural data type for buffers.
-- Error handling through return codes initially. Once enums/tagged unions exist, these can return `Result` types.
-- String literals are `str` (which is `[u8]`) so printing a string literal is just `fd_write(STDOUT, ref "hello")`.
-- Platform-specific open flags use comptime if/else on `TARGET_OS` in `std/file.nore`, folded at compile time.
-
-### Layer B: String Operations (DONE)
-
-Shipped as `std/string.nore`. Depends on Layer 0 (casting, character literals).
-
-```nore
-import "std/string.nore"
-
-assert str_eq(ref "hello", ref "hello")
-assert str_find(ref "abcdef", ref "cd") == 2
-assert is_digit('5')
-
-mut mem: Arena = arena(256)
-val s: str = i64_to_str(mut ref mem, 42)
-assert str_eq(ref s, ref "42")
-val hw: str = str_concat(mut ref mem, ref "hello", ref " world")
-```
-
-Provides:
-- **Character classification:** `is_digit`, `is_alpha`, `is_space`
-- **Comparison:** `str_eq`, `str_starts_with`, `str_ends_with`
-- **Searching:** `str_find` (returns -1 if not found), `str_contains`
-- **Concatenation:** `str_concat` (arena-allocated)
-- **Formatting:** `fmt_i64` (writes into caller-provided buffer, no allocation)
-- **Conversion:** `i64_to_str` (arena-allocated, uses `fmt_i64`), `str_to_i64` (returns 0 on invalid input)
-
-**Design notes:**
-- Functions that produce strings take an `Arena` parameter, explicit allocation, no hidden malloc.
-- `str` is `[u8]`, so these all work on byte slices. No separate string type.
-- Character functions work on `u8`, a character is just a byte.
-- `str_to_i64` returns 0 for both empty/invalid input and actual "0". Revisit with `Result` type when tagged unions exist.
-- Tested via `tests/std/string.nore`.
-
-### Layer C: Formatted Output (DONE)
-
-Shipped as `std/io.nore`. Imports `std/string.nore` for shared formatting. Moved from compiler built-ins to regular Nore functions.
-
-```nore
-import "std/io.nore"
-
-print(ref "Hello, ")
-println(ref "World!")
-print_i64(42)
-```
-
-Provides: `print`, `println`, `print_i64`.
-
-**Design notes:**
-- `print` and `println` are thin wrappers around `fd_write(STDOUT, ...)`.
-- `print_i64` calls `fmt_i64` from `std/string.nore` into a stack buffer, then writes via `fd_write`. No allocation, no hidden costs, no duplicated formatting logic.
-- No format strings. Call the function that matches your type.
-- `eprint`/`eprintln` (stderr variants) can be added to the same file.
-- Tested via `tests/std/io.nore`. Tests verify the functions compile and run without crashing (exit 0). Conversion correctness is covered by `tests/std/string.nore`.
-
-### Layer D: File Operations (DONE)
-
-Shipped as `std/file.nore`. Depends on Layer A (I/O built-ins, including `fd_seek`) and Layer B (strings).
+Read a file, write it to stdout. The simplest useful program.
 
 ```nore
 import "std/file.nore"
 
-mut mem: Arena = arena(4096)
-val contents: [u8] = read_file(mut ref mem, ref "data.txt")
-val ok: bool = write_file(ref "output.txt", ref contents)
+mut mem: Arena = arena(65536)
+val contents: [u8] = read_file(mut ref mem, ref "input.txt")
+fd_write(STDOUT, ref contents)
 ```
 
-Provides:
-- **`read_file(mut ref mem, ref path)`** - Read entire file into arena-allocated `[u8]`. Uses `fd_seek` to determine file size, allocates exactly, reads in a loop. Returns empty slice on error.
-- **`write_file(ref path, ref data)`** - Write `[u8]` to file (create/overwrite via `O_WRONLY | O_CREAT | O_TRUNC`). Returns `true` on success, `false` on error.
+**What it needs:**
+- Read a filename from command-line arguments
+- Read file contents, write to stdout
+- Handle errors properly (file not found, read failure)
 
-**Design notes:**
-- `read_file` takes an arena. The caller controls where the file contents live and how long they survive.
-- Error handling through return values (empty slice / false). Migrate to `Result` when tagged unions exist.
-- `fd_seek` built-in added to support size detection. Maps to POSIX `lseek()`.
-- I/O constants (`O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`, `O_APPEND`, `O_RDWR`, `SEEK_SET`, `SEEK_CUR`, `SEEK_END`) are defined in `std/file.nore` with platform-specific values resolved via `TARGET_OS`.
-- Tested via `tests/std/file.nore`.
+**Known gaps:**
+- **Command-line arguments** (compiler built-in): access to argc/argv. Without this, the filename is hardcoded.
 
-### Layer E: Math and Utilities (DONE)
+**Stdlib additions:** None expected. `read_file` and `fd_write` already exist. Error handling already fixed in Milestone 0.
 
-Shipped as `std/math.nore`. No dependencies beyond the base language.
+### Milestone 2: Word Count
+
+Read a file, count lines, words, and characters. Print formatted results.
 
 ```nore
-import "std/math.nore"
-
-val x: i64 = min_i64(3, 5)          // 3
-val y: f64 = clamp_f64(x, 0.0, 1.0) // 1.0
+// Desired output: "  42  108  723 input.txt"
 ```
 
-Provides: `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64`.
+**What it needs:**
+- Everything from Milestone 1
+- Split text on whitespace boundaries
+- Count lines, words, characters
+- Print multiple values in a formatted line
 
-**Design notes:**
-- Type-suffixed names because Nore has no generics or overloading.
-- When generics arrive, these become `min(a: T, b: T): T`. Until then, explicit names.
-- Tested via `tests/std/math.nore`.
+**Known gaps:**
+- **Formatted output** (stdlib or language): printing `"  42  108  723 input.txt"` currently requires multiple `print`/`print_i64` calls with manual padding. This is where varargs or a format/writer pattern becomes necessary.
+
+**Stdlib additions likely needed:**
+- String splitting or tokenization (iterate words in a string)
+- Number padding/formatting for aligned output
+- Possibly `eprint`/`eprintln` for stderr output
+
+### Milestone 3: JSON Parser
+
+Parse a JSON string into a structured representation. This is the big jump: it requires recursive data structures and non-trivial string processing.
+
+```nore
+// Desired: parse '{"name": "nore", "version": 1}' into a tree
+```
+
+**What it needs:**
+- Everything from Milestone 2
+- Recursive data types (a JSON value can contain other JSON values)
+- Tagged unions for variant types (a JSON value is one of: string, number, bool, null, array, object)
+- Error reporting (line/column of parse failure)
+
+**Known gaps:**
+- **Recursive data structures** (compiler feature): self-referential types for trees
+- Possibly dynamic arrays or growable buffers for unknown-size JSON arrays/objects
+
+**Stdlib additions likely needed:**
+- String escaping/unescaping
+- More string manipulation (trim, split on delimiter)
 
 ---
 
-## Implementation Sequence
+## Language Prerequisites
 
-The order matters. Each step unlocks the next.
+Features the compiler needs, ordered by priority. Each is a compiler change, not a library.
+
+### 1. Tagged Unions
+
+**Priority: immediate.** The existing stdlib already needs this.
+
+Extend enums to carry associated data. Required for `Result`, `Option`, and any variant type.
 
 ```
-Phase 0: Primitives (DONE)
-  1. ✓ Modulo operator (%)          ← unblocks hashing/formatting
-  2. ✓ Bitwise operators            ← unblocks binary operations
-  3. ✓ Character literals           ← unblocks string processing
-  4. ✓ Numeric type casting         ← unblocks I/O (u8 ↔ i64)
-  5. ✓ I/O built-ins (fd_write..)  ← THE unlock for real programs
-  6. ✓ print / println / print_i64 ← first programs can print output
-
-Phase 1: Language completeness (DONE)
-  7. ✓ Enums                        ← unblocks error handling, Result/Option
-  8. ✓ Module system (import)       ← unblocks shipping stdlib as .nore files
-
-Phase 2: Standard library (.nore files, importable)
-  9.  ✓ Math utilities              ← std/math.nore (first stdlib file)
-  10. ✓ Move print/println/print_i64 ← from compiler built-ins to std/io.nore
-  11. ✓ String operations            ← std/string.nore (Layer B)
-  12. ✓ mem_copy built-in            ← efficient bulk byte copy (memcpy)
-  13. ✓ fd_seek built-in + constants ← file size detection, portable open flags
-  14. ✓ File operations              ← std/file.nore (Layer D)
+enum Result { Ok(i64), Err(i32) }
+enum Option { Some(i64), None }
 ```
 
-All phases complete. Four stdlib modules are shipped and tested: `std/math.nore` (Layer E), `std/string.nore` (Layer B), `std/io.nore` (Layer C), and `std/file.nore` (Layer D). The modules reuse each other where it makes sense: `std/io.nore` imports `std/string.nore` so `print_i64` delegates formatting to `fmt_i64` while keeping its own stack buffer (no hidden allocation). The fd_write/fd_read/fd_open/fd_close/fd_seek/mem_copy primitives stay as compiler built-ins (they need syscall or C library access).
+**Blocks:** Milestone 0 (stdlib error handling retrofit), Milestone 3 (JSON value variants).
+
+**Design space:** Pattern matching (`match` expression), exhaustiveness checking, memory layout. This is the biggest language addition on the horizon.
+
+### 2. Module Namespaces and Visibility
+
+**Priority: immediate, right after tagged unions. Needs design.**
+
+The current import system merges all declarations into a flat global scope. Every function in every imported module is visible to everyone. This creates two problems that will only get worse:
+
+- **Name collisions:** Functions use manual prefixes (`str_eq`, `min_i64`) as a workaround for missing namespaces. As more modules are added, collisions become inevitable.
+- **No privacy:** A module cannot have internal helper functions. Every helper leaks into the importer's scope. A JSON parser's `skip_whitespace` would be visible to every file that imports it.
+
+**Blocks:** Milestone 0 (stdlib cleanup), and any non-trivial module with internal helpers.
+
+**Design space:** The problems are well understood, but the solution needs careful thought:
+- Visibility: explicit exports (`pub func`) vs explicit privacy (`private func`) vs unexported-by-default
+- Namespace access: dot-qualified (`string.eq`) vs current prefix convention
+- Backward compatibility: can existing code migrate incrementally?
+- Interaction with transitive imports: if A imports B imports C, what does A see from C?
+
+### 3. Command-Line Arguments
+
+**Priority: needed for Milestone 1.**
+
+Access to argc/argv. Required for any program that takes input from the command line.
+
+**Blocks:** Milestone 1 (cat clone), Milestone 2 (word count).
+
+**Design space:** Could be a built-in function returning a slice of strings, or compiler-injected globals. Should follow the same pattern as `TARGET_OS`: simple, no magic.
+
+### 4. Varargs / Formatted Output
+
+**Priority: needed for Milestone 2. Needs design.**
+
+The current model (one function per type: `print`, `print_i64`) does not scale. Printing `"lines: 42 words: 108"` requires six separate calls. Real programs need a better pattern.
+
+**Blocks:** Milestone 2 (word count needs formatted output).
+
+**Design space:** This needs careful thought. Options include:
+- **Varargs with type dispatch**: `println(ref "count: ", n, ref " items")`. Requires variadic parameters and some form of runtime or comptime type dispatch. May depend on tagged unions.
+- **Writer/buffer pattern**: `write(mut ref w, ref "count: ") ; write_i64(mut ref w, n)`. No new language feature, but verbose.
+- **String interpolation**: `println(ref f"count: {n}")`. Compiler desugars into format calls. Powerful but a significant compiler addition.
+
+The right answer may emerge from attempting Milestone 2. Listed as "needs design" until then.
+
+### 5. Recursive Data Structures
+
+**Priority: needed for Milestone 3.**
+
+Self-referential types for trees, linked lists, and other recursive structures.
+
+**Blocks:** Milestone 3 (JSON tree).
+
+**Design space:** Requires heap-allocated nodes (arena or explicit). Interacts with tagged unions (a JSON value contains a slice of JSON values).
 
 ---
 
@@ -306,24 +294,24 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 
 ## North Star: The Self-Hosting Test
 
-The stdlib is "done enough" when Nore can write a non-trivial program. Good intermediate milestones:
+The stdlib is "done enough" when Nore can write a non-trivial program. The milestones form the progression:
 
-1. **"Hello, World"**: `print("hello")` works (Layer A + C)
-2. **Cat clone**: read file, write to stdout (Layer A + D)
-3. **Word count**: read file, split on whitespace, count (Layer B + D)
-4. **Brainfuck interpreter**: parsing, state machine, I/O (all layers)
-5. **JSON parser**: string processing, recursive data, error reporting
+1. **"Hello, World"**: done. `print(ref "hello")` works.
+2. **Milestone 0**: fix existing stdlib with tagged unions and proper modules.
+3. **Cat clone**: file I/O end-to-end, command-line arguments.
+4. **Word count**: string processing, counting, formatted output.
+5. **JSON parser**: recursive data, tagged unions, error reporting.
 
-Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, tagged unions) beyond what the stdlib alone provides.
+Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, tagged unions, generics) beyond what the stdlib alone provides.
 
 ---
 
 ## Open Questions
 
-- **Casting syntax**: resolved. Function-call style `u8(x)`, `i64(x)`, etc.
-- **Overflow behavior on cast**: runtime error (R003) on out-of-range values. Safe by default.
-- **I/O error model before enums**: return negative error codes for now. Revisit with tagged unions.
+- **Tagged union memory layout**: how are variants stored? Inline (max size of all variants) or heap-allocated? Affects arena interaction.
+- **Pattern matching syntax**: `match` expression with exhaustiveness checking? How verbose should it be?
+- **Module visibility default**: export-by-default (add `private`) or private-by-default (add `pub`)? Nore's explicit philosophy suggests private-by-default.
+- **Command-line arguments API**: built-in function vs compiler-injected globals? Slice of strings or raw argc/argv?
+- **Varargs design**: language feature or stdlib pattern? Depends on tagged unions? Let Milestone 2 drive this.
+- **Error model migration**: when `Result`/`Option` arrive, how do existing stdlib APIs evolve? Breaking change or parallel APIs?
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
-- **Module system scope**: resolved. Textual inclusion via `import "path.nore"` with `std/` prefix for stdlib. Proper modules with scoping/visibility can come later.
-- **`print`/`println`/`print_i64` migration**: resolved. Moved to `std/io.nore`. `print_i64` reuses `fmt_i64` from `std/string.nore` with a stack buffer (no allocation).
-- **Bulk memory operations**: resolved. `mem_copy(mut ref dst, ref src): i64` built-in added, maps to C `memmove`. Copies `min(dst.len, src.len)` bytes, returns count. Safe with overlapping buffers. Available for `std/file.nore` and can be adopted by `str_concat`/`i64_to_str` to replace byte-by-byte loops.
