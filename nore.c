@@ -1342,6 +1342,7 @@ typedef struct {
     size_t variant_count;
     SourceLoc loc;
     bool has_data;          /* true if any variant has a payload */
+    bool has_slice_payload; /* true if any variant has a slice type */
 } EnumTypeEntry;
 
 static EnumTypeEntry *g_enum_table = NULL;
@@ -1364,10 +1365,14 @@ static Type enum_table_add(const char *name_start, size_t name_length,
     entry->variant_count = variant_count;
     entry->loc = loc;
     entry->has_data = false;
+    entry->has_slice_payload = false;
     for (size_t i = 0; i < variant_count; i++) {
         if (variants[i].payload_type != TYPE_VOID) {
             entry->has_data = true;
-            break;
+            if (type_is_slice(variants[i].payload_type)) {
+                entry->has_slice_payload = true;
+                break;
+            }
         }
     }
     return (Type)(TYPE_ENUM_BASE + (int)g_enum_count++);
@@ -1393,6 +1398,15 @@ static EnumTypeEntry *enum_table_lookup(const char *name, size_t length) {
 static Type enum_table_type_for(EnumTypeEntry *entry) {
     int idx = (int)(entry - g_enum_table);
     return (Type)(TYPE_ENUM_BASE + idx);
+}
+
+static bool enum_has_slice_payload(Type type) {
+    EnumTypeEntry *et = enum_table_get(type);
+    return et && et->has_slice_payload;
+}
+
+static bool type_is_non_copyable(Type type) {
+    return type_is_struct(type) || enum_has_slice_payload(type);
 }
 
 /* ============================== Table Decl Table =========================== */
@@ -6114,6 +6128,14 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
     Type common_type = TYPE_VOID;
     bool first_arm = true;
 
+    /* Pre-lookup scrutinee variable for arena tracking propagation */
+    Variable *scrut_var = NULL;
+    Ast *scrut = node->as.match_expr.scrutinee;
+    if (scrut->kind == AST_IDENTIFIER) {
+        scrut_var = scope_lookup(scope,
+            scrut->as.identifier.start, scrut->as.identifier.length);
+    }
+
     for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
         Ast *arm = node->as.match_expr.arms[i];
         const char *vname = arm->as.match_arm.variant_name;
@@ -6147,11 +6169,18 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
         Scope *arm_scope = scope_create(scope);
         if (arm->as.match_arm.binding_name &&
             arm->as.match_arm.binding_type != TYPE_VOID) {
-            scope_add(arm_scope,
+            Variable *bv = scope_add(arm_scope,
                       arm->as.match_arm.binding_name,
                       arm->as.match_arm.binding_length,
                       false, arm->as.match_arm.binding_type,
                       arm->loc);
+            /* Propagate arena tracking from scrutinee to slice binding */
+            if (bv && type_is_slice(arm->as.match_arm.binding_type) &&
+                scrut_var && scrut_var->arena_source_start) {
+                bv->arena_source_start = scrut_var->arena_source_start;
+                bv->arena_source_length = scrut_var->arena_source_length;
+                bv->arena_is_local = scrut_var->arena_is_local;
+            }
         }
         for (size_t s = 0; s < body->as.block.count; s++) {
             typecheck_statement(body->as.block.statements[s],
@@ -7353,9 +7382,10 @@ static void typecheck_coercion_error(Type init_type, Type declared, SourceLoc lo
 
 /* Emit S043 if a non-copyable type is initialized from a copy (not a constructor, call, or arena) */
 static void typecheck_struct_copy(Type type, Ast *init) {
-    if (type_is_struct(type) &&
+    if (type_is_non_copyable(type) &&
         init->kind != AST_VALUE_CONSTRUCTOR && init->kind != AST_FUNC_CALL &&
-        init->kind != AST_ARENA_NEW && init->kind != AST_TABLE_ALLOC) {
+        init->kind != AST_ARENA_NEW && init->kind != AST_TABLE_ALLOC &&
+        init->kind != AST_ENUM_VARIANT && init->kind != AST_MATCH) {
         diagnostic(init->loc.file, ERR_S043_STRUCT_COPY, init->loc.line, init->loc.column,
                    "Cannot copy %s (not copyable)", type_name(type));
     }
@@ -7368,7 +7398,7 @@ static void typecheck_invalidate_arena_slices(Scope *scope,
     while (scope != NULL) {
         for (size_t i = 0; i < scope->count; i++) {
             Variable *v = &scope->vars[i];
-            if ((type_is_slice(v->type) || is_table_type(v->type)) &&
+            if ((type_is_slice(v->type) || is_table_type(v->type) || type_is_non_copyable(v->type)) &&
                 v->arena_source_start != NULL &&
                 v->arena_source_length == arena_length &&
                 memcmp(v->arena_source_start, arena_start, arena_length) == 0) {
@@ -7395,6 +7425,7 @@ static void typecheck_mark_arena_locality(Variable *sv, Ast *arena_node, Scope *
 /* Check if a return type contains slices (bare slice, or struct with slice fields) */
 static bool type_return_has_slices(Type type) {
     if (type_is_slice(type)) return true;
+    if (enum_has_slice_payload(type)) return true;
     if (!type_is_struct(type) || type == TYPE_ARENA) return false;
     ValueTypeEntry *vt = value_table_get(type);
     if (!vt) return false;
@@ -7540,6 +7571,18 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                            "Slice type not allowed as local variable (use arena_alloc)");
             }
 
+            /* Slice-bearing enum via function call — allowed (escape checked at call site) */
+            if (enum_has_slice_payload(declared) &&
+                node->as.val_decl.initializer->kind == AST_FUNC_CALL) {
+                if (!type_can_coerce(init_type, declared)) {
+                    typecheck_coercion_error(init_type, declared,
+                                             node->as.val_decl.initializer->loc);
+                }
+                scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                break;
+            }
+
             if (declared == TYPE_UNKNOWN) {
                 /* No explicit type — must be comptime */
                 if (!type_is_comptime(init_type)) {
@@ -7649,6 +7692,18 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                            "Slice type not allowed as local variable (use arena_alloc)");
             }
 
+            /* Slice-bearing enum via function call — allowed (escape checked at call site) */
+            if (enum_has_slice_payload(declared) &&
+                node->as.mut_decl.initializer->kind == AST_FUNC_CALL) {
+                if (!type_can_coerce(init_type, declared)) {
+                    typecheck_coercion_error(init_type, declared,
+                                             node->as.mut_decl.initializer->loc);
+                }
+                scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                break;
+            }
+
             if (!type_can_coerce(init_type, declared)) {
                 typecheck_coercion_error(init_type, declared,
                                          node->as.mut_decl.initializer->loc);
@@ -7707,8 +7762,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 }
             }
 
-            /* Prevent whole-struct reassignment (struct is not copyable) */
-            if (target->kind == AST_IDENTIFIER && type_is_struct(target_type)) {
+            /* Prevent reassignment of non-copyable types */
+            if (target->kind == AST_IDENTIFIER && type_is_non_copyable(target_type)) {
                 diagnostic(node->loc.file, ERR_S043_STRUCT_COPY, node->loc.line,
                            node->loc.column,
                            "Cannot assign to %s variable (not copyable)",
@@ -8105,8 +8160,8 @@ static void typecheck_function(Ast *func_decl, FunctionTable *func_table,
                        (int)param->name_length, param->name_start);
         }
 
-        /* Struct/Arena parameters must use ref or mut ref */
-        if (type_is_struct(param->type) && !param->is_ref) {
+        /* Non-copyable parameters must use ref or mut ref */
+        if (type_is_non_copyable(param->type) && !param->is_ref) {
             diagnostic(func_decl->loc.file, ERR_S044_STRUCT_BY_VALUE, func_decl->loc.line,
                        func_decl->loc.column,
                        "%s parameter '%.*s' must use 'ref' or 'mut ref'",
@@ -8202,11 +8257,11 @@ static void typecheck_program(Ast *program) {
                                (int)node->as.value_decl.name_length,
                                node->as.value_decl.name_start);
                 }
-                /* Reject struct types as fields */
-                if (type_is_struct(fields[f].type)) {
+                /* Reject non-copyable types as fields */
+                if (type_is_non_copyable(fields[f].type)) {
                     diagnostic(node->loc.file, ERR_S045_EMBED_STRUCT, node->loc.line,
                                node->loc.column,
-                               "Cannot embed struct type '%s' as field in %s type '%.*s'",
+                               "Cannot embed type '%s' as field in %s type '%.*s' (not copyable)",
                                type_name(fields[f].type), kind_label,
                                (int)node->as.value_decl.name_length,
                                node->as.value_decl.name_start);
@@ -8230,7 +8285,7 @@ static void typecheck_program(Ast *program) {
         TableDeclEntry *te = &g_table_decls[i];
         for (size_t f = 0; f < te->field_count; f++) {
             Type ft = te->fields[f].type;
-            if (type_is_slice(ft) || type_is_struct(ft)) {
+            if (type_is_slice(ft) || type_is_non_copyable(ft)) {
                 diagnostic(g_source_file, ERR_S059_TABLE_FIELD_TYPE, 0, 0,
                            "Table field '%.*s' in table '%.*s' must be a value type (no slices, structs, or Arena)",
                            (int)te->fields[f].name_length, te->fields[f].name_start,
@@ -8244,12 +8299,12 @@ static void typecheck_program(Ast *program) {
         EnumTypeEntry *et = &g_enum_table[i];
         for (size_t v = 0; v < et->variant_count; v++) {
             Type pt = et->variants[v].payload_type;
-            if (pt != TYPE_VOID && (type_is_slice(pt) || type_is_struct(pt))) {
+            if (pt != TYPE_VOID && type_is_non_copyable(pt)) {
                 diagnostic(et->loc.file, ERR_S082_PAYLOAD_NOT_VALUE,
                            et->loc.line, et->loc.column,
                            "Variant '%.*s' in enum '%.*s' has payload type '%s'"
                            " which is not value-compatible"
-                           " (no slices, structs, or Arena)",
+                           " (no structs or Arena)",
                            (int)et->variants[v].name_length,
                            et->variants[v].name_start,
                            (int)et->name_length, et->name_start,

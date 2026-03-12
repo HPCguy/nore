@@ -1,0 +1,7 @@
+// Error: cannot embed slice-bearing tagged union in value type
+enum Result { Ok([i64]), Err(i32) }
+
+value Wrapper { r: Result }
+
+func main(): void = {
+}

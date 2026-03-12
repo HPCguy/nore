@@ -13,42 +13,50 @@ val SEEK_SET: i32 = 0
 val SEEK_CUR: i32 = 1
 val SEEK_END: i32 = 2
 
+// Result types for file operations
+enum ReadResult { Ok([u8]), Err(i32) }
+enum WriteResult { Ok(i64), Err(i32) }
+
 // Read an entire file into a byte slice (arena-allocated).
-// Returns empty slice on error or empty file.
-func read_file(mut ref mem: Arena, ref path: str): [u8] = {
-    mut total: i64 = 0
+// Returns ReadResult.Ok(data) on success, ReadResult.Err(fd) on error.
+func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
     val fd: i32 = fd_open(ref path, O_RDONLY)
-    if (fd >= 0) {
-        val size: i64 = fd_seek(fd, 0, SEEK_END)
-        if (size > 0) {
-            fd_seek(fd, 0, SEEK_SET)
-            mut buf: [u8] = arena_alloc(mut ref mem, size)
-            mut done: bool = false
-            while (!done && total < size) {
-                mut remaining: [u8] = buf[total..size]
-                val n: i64 = fd_read(fd, mut ref remaining)
-                if (n <= 0) {
-                    done = true
-                } else {
-                    total = total + n
-                }
-            }
-            fd_close(fd)
-            return buf[0..total]
-        }
-        fd_close(fd)
+    if (fd < 0) {
+        return ReadResult.Err(fd)
     }
-    // Error or empty file: return zero-length slice
-    mut empty: [u8] = arena_alloc(mut ref mem, 1)
-    return empty[0..0]
+    val size: i64 = fd_seek(fd, 0, SEEK_END)
+    if (size <= 0) {
+        fd_close(fd)
+        if (size < 0) {
+            return ReadResult.Err(i32(0 - 1))
+        }
+        // Empty file
+        mut empty: [u8] = arena_alloc(mut ref mem, 1)
+        return ReadResult.Ok(empty[0..0])
+    }
+    fd_seek(fd, 0, SEEK_SET)
+    mut buf: [u8] = arena_alloc(mut ref mem, size)
+    mut total: i64 = 0
+    mut done: bool = false
+    while (!done && total < size) {
+        mut remaining: [u8] = buf[total..size]
+        val n: i64 = fd_read(fd, mut ref remaining)
+        if (n <= 0) {
+            done = true
+        } else {
+            total = total + n
+        }
+    }
+    fd_close(fd)
+    ReadResult.Ok(buf[0..total])
 }
 
 // Write a byte slice to a file (creates or overwrites).
-// Returns true on success, false on error.
-func write_file(ref path: str, ref data: [u8]): bool = {
+// Returns WriteResult.Ok(bytes_written) on success, WriteResult.Err(fd) on error.
+func write_file(ref path: str, ref data: [u8]): WriteResult = {
     val fd: i32 = fd_open(ref path, O_WRONLY | O_CREAT | O_TRUNC)
     if (fd < 0) {
-        return false
+        return WriteResult.Err(fd)
     }
     mut written: i64 = 0
     while (written < data.len) {
@@ -56,10 +64,10 @@ func write_file(ref path: str, ref data: [u8]): bool = {
         val n: i64 = fd_write(fd, ref remaining)
         if (n <= 0) {
             fd_close(fd)
-            return false
+            return WriteResult.Err(i32(0 - 1))
         }
         written = written + n
     }
     fd_close(fd)
-    return true
+    WriteResult.Ok(written)
 }

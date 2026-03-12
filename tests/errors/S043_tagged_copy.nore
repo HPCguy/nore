@@ -1,0 +1,13 @@
+// Error: cannot copy a slice-bearing tagged union
+enum Result { Ok([i64]), Err(i32) }
+
+func make_result(mut ref mem: Arena): Result = {
+    val data: [i64] = arena_alloc(mut ref mem, 3)
+    Result.Ok(data)
+}
+
+func main(): void = {
+    mut mem: Arena = arena(1024)
+    val r: Result = make_result(mut ref mem)
+    val r2: Result = r
+}

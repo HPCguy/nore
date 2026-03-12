@@ -122,9 +122,9 @@ error[D002]: Unknown flag: --invalid
 - **S040**: Cannot pass mut ref to immutable variable
 - **S041**: Cannot take reference of scalar field (just copy it)
 - **S042**: Cannot take reference of array element
-- **S043**: Cannot copy struct/Arena variable (not copyable)
-- **S044**: Struct/Arena parameter must use 'ref' or 'mut ref'
-- **S045**: Cannot embed struct/Arena type as field
+- **S043**: Cannot copy struct/Arena/slice-bearing tagged union variable (not copyable)
+- **S044**: Struct/Arena/slice-bearing tagged union parameter must use 'ref' or 'mut ref'
+- **S045**: Cannot embed struct/Arena/slice-bearing tagged union type as field
 - **S046**: Slice type not allowed as local variable (use arena_alloc or function call)
 - **S047**: Slice type not allowed as field (value types only; allowed in structs)
 - **S048**: (no longer emitted — replaced by S053 escape analysis)
@@ -161,7 +161,7 @@ error[D002]: Unknown flag: --invalid
 - **S079**: Missing payload for data variant
 - **S080**: Cannot compare tagged enum (use match instead)
 - **S081**: Cannot cast tagged enum to numeric type
-- **S082**: Variant payload type not value-compatible (no slices, structs, or Arena)
+- **S082**: Variant payload type not value-compatible (no structs or Arena)
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

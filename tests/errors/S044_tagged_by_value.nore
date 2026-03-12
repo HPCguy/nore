@@ -1,0 +1,8 @@
+// Error: slice-bearing tagged union must use ref
+enum Result { Ok([i64]), Err(i32) }
+
+func consume(r: Result): void = {
+}
+
+func main(): void = {
+}

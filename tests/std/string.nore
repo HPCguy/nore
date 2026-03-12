@@ -105,20 +105,54 @@ func main(): void = {
     val smin: str = i64_to_str(mut ref mem, -9223372036854775807 - 1)
     assert str_eq(ref smin, ref "-9223372036854775808")
 
-    // str_to_i64
-    assert str_to_i64(ref "0") == 0
-    assert str_to_i64(ref "42") == 42
-    assert str_to_i64(ref "-123") == 0 - 123
-    assert str_to_i64(ref "") == 0
-    assert str_to_i64(ref "abc") == 0
-    assert str_to_i64(ref "9223372036854775807") == 9223372036854775807
-    assert str_to_i64(ref "1") == 1
-    assert str_to_i64(ref "100") == 100
+    // str_to_i64 returns ParseResult
+    val r0: ParseResult = str_to_i64(ref "0")
+    val v0: i64 = match (r0) { Ok(n) = { n } None = { -9999 } }
+    assert v0 == 0
+
+    val r42: ParseResult = str_to_i64(ref "42")
+    val v42: i64 = match (r42) { Ok(n) = { n } None = { -9999 } }
+    assert v42 == 42
+
+    val rneg: ParseResult = str_to_i64(ref "-123")
+    val vneg: i64 = match (rneg) { Ok(n) = { n } None = { -9999 } }
+    assert vneg == 0 - 123
+
+    // Empty string returns None
+    val rempty: ParseResult = str_to_i64(ref "")
+    val is_none: bool = match (rempty) { Ok(n) = { false } None = { true } }
+    assert is_none
+
+    // Invalid string returns None
+    val rabc: ParseResult = str_to_i64(ref "abc")
+    val is_none2: bool = match (rabc) { Ok(n) = { false } None = { true } }
+    assert is_none2
+
+    // Bare minus returns None
+    val rminus: ParseResult = str_to_i64(ref "-")
+    val is_none3: bool = match (rminus) { Ok(n) = { false } None = { true } }
+    assert is_none3
+
+    val rbig: ParseResult = str_to_i64(ref "9223372036854775807")
+    val vbig: i64 = match (rbig) { Ok(n) = { n } None = { -9999 } }
+    assert vbig == 9223372036854775807
+
+    val r1: ParseResult = str_to_i64(ref "1")
+    val v1: i64 = match (r1) { Ok(n) = { n } None = { -9999 } }
+    assert v1 == 1
+
+    val r100: ParseResult = str_to_i64(ref "100")
+    val v100: i64 = match (r100) { Ok(n) = { n } None = { -9999 } }
+    assert v100 == 100
 
     // roundtrip: i64_to_str -> str_to_i64
     val rt: str = i64_to_str(mut ref mem, 12345)
-    assert str_to_i64(ref rt) == 12345
+    val rrt: ParseResult = str_to_i64(ref rt)
+    val vrt: i64 = match (rrt) { Ok(n) = { n } None = { -9999 } }
+    assert vrt == 12345
 
     val rt_neg: str = i64_to_str(mut ref mem, 0 - 6789)
-    assert str_to_i64(ref rt_neg) == 0 - 6789
+    val rrt_neg: ParseResult = str_to_i64(ref rt_neg)
+    val vrt_neg: i64 = match (rrt_neg) { Ok(n) = { n } None = { -9999 } }
+    assert vrt_neg == 0 - 6789
 }

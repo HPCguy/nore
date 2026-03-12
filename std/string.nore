@@ -139,6 +139,8 @@ func fmt_i64(mut ref buf: [u8], n: i64): i64 = {
 
 // Conversion
 
+enum ParseResult { Ok(i64), None }
+
 func i64_to_str(mut ref mem: Arena, n: i64): str = {
     mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     val pos: i64 = fmt_i64(mut ref buf, n)
@@ -148,26 +150,29 @@ func i64_to_str(mut ref mem: Arena, n: i64): str = {
     return result
 }
 
-func str_to_i64(ref s: str): i64 = {
+func str_to_i64(ref s: str): ParseResult = {
     if (s.len == 0) {
-        return 0
+        return ParseResult.None
     }
     mut i: i64 = 0
     val neg: bool = s[0] == '-'
     if (neg) {
         i = 1
     }
+    if (i >= s.len) {
+        return ParseResult.None
+    }
     mut result: i64 = 0
     while (i < s.len) {
         val c: u8 = s[i]
         if (c < '0' || c > '9') {
-            return 0
+            return ParseResult.None
         }
         result = result * 10 + i64(c - '0')
         i = i + 1
     }
     if (neg) {
-        return 0 - result
+        return ParseResult.Ok(0 - result)
     }
-    return result
+    ParseResult.Ok(result)
 }

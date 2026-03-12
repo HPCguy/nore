@@ -591,8 +591,32 @@ func unwrap_or(opt: Option, default: i64): i64 = {
 - Exhaustiveness required: all variants must be covered
 - Binding variables are scoped to the arm body
 
+**Slice payloads**:
+
+Tagged unions can carry slice payloads (e.g., `[u8]`, `str`). When any variant has a slice payload, the tagged union becomes non-copyable (like structs with slice fields):
+```nore
+enum ReadResult { Ok([u8]), Err(i32) }
+enum ParseResult { Ok(i64), None }
+
+func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
+    // ...
+    ReadResult.Ok(data)
+}
+
+val result: ReadResult = read_file(mut ref mem, ref path)
+val content: [u8] = match (result) {
+    Ok(data) = { data }
+    Err(code) = { empty }
+}
+```
+- No copy: cannot assign from another variable of the same type (S043)
+- Must use `ref` or `mut ref` when passed as function parameter (S044)
+- Cannot be embedded as a field in value types (S045)
+- Arena reset invalidates slice-bearing tagged union variables
+- Tagged unions without slice payloads remain pure value types (fully copyable)
+
 **Restrictions**:
-- Payload types must be value-compatible: scalars, fixed arrays, value types, or plain enums. Slices, structs, and Arena are not allowed (error S082)
+- Payload types must be value-compatible: scalars, fixed arrays, value types, slices, or plain enums. Structs and Arena are not allowed (error S082)
 - Comparison (`==`, `!=`) is not allowed on tagged unions (use `match` instead)
 - Casting to integer (`i64()`, etc.) is not allowed on tagged unions
 

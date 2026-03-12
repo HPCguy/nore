@@ -1,0 +1,117 @@
+// Test: slice-bearing tagged enums
+
+import "std/io.nore"
+
+// 1. Declare tagged enums with slice payloads
+enum Result { Ok([i64]), Err(i32) }
+enum MaybeStr { Some(str), None }
+
+// Plain tagged enum without slices (regression: should still work as value type)
+enum Color { Red(i32), Green(i32), Blue(i32) }
+
+// 2. Function that creates and returns a slice-bearing tagged union
+func make_ok(mut ref mem: Arena, n: i64): Result = {
+    mut data: [i64] = arena_alloc(mut ref mem, n)
+    for i in 0..n {
+        data[i] = (i + 1) * 10
+    }
+    Result.Ok(data)
+}
+
+func make_err(): Result = {
+    Result.Err(-1)
+}
+
+// 4. Pass by ref to another function
+func sum_result(ref r: Result): i64 = {
+    match (r) {
+        Ok(data) = {
+            mut total: i64 = 0
+            for i in 0..data.len {
+                total = total + data[i]
+            }
+            total
+        }
+        Err(code) = { i64(code) }
+    }
+}
+
+// Function returning MaybeStr
+func find_name(mut ref mem: Arena, id: i64): MaybeStr = {
+    if (id == 1) {
+        mut buf: [u8] = arena_alloc(mut ref mem, 5)
+        buf[0] = 'H'
+        buf[1] = 'e'
+        buf[2] = 'l'
+        buf[3] = 'l'
+        buf[4] = 'o'
+        MaybeStr.Some(buf)
+    } else {
+        MaybeStr.None
+    }
+}
+
+func main(): void = {
+    mut mem: Arena = arena(4096)
+
+    // 3. Match on result, extract slice, use it
+    val r: Result = make_ok(mut ref mem, 3)
+    val total: i64 = match (r) {
+        Ok(data) = { data[0] + data[1] + data[2] }
+        Err(code) = { i64(code) }
+    }
+    assert total == 60
+
+    // Test error variant
+    val r2: Result = make_err()
+    val code: i64 = match (r2) {
+        Ok(data) = { data.len }
+        Err(code) = { i64(code) }
+    }
+    assert code == -1
+
+    // 4. Pass by ref
+    val s: i64 = sum_result(ref r)
+    assert s == 60
+
+    val s2: i64 = sum_result(ref r2)
+    assert s2 == -1
+
+    // 5. MaybeStr with slice payload
+    val name: MaybeStr = find_name(mut ref mem, 1)
+    val found: bool = match (name) {
+        Some(s) = { s.len == 5 }
+        None = { false }
+    }
+    assert found
+
+    val noname: MaybeStr = find_name(mut ref mem, 99)
+    val not_found: bool = match (noname) {
+        Some(s) = { false }
+        None = { true }
+    }
+    assert not_found
+
+    // 7. Plain tagged enums still work as values (regression test)
+    val c: Color = Color.Red(255)
+    val c2: Color = c
+    val v: i64 = match (c2) {
+        Red(r) = { i64(r) }
+        Green(g) = { i64(g) }
+        Blue(b) = { i64(b) }
+    }
+    assert v == 255
+
+    // Mut variable with plain tagged enum (no slices, so copy is fine)
+    mut mc: Color = Color.Green(128)
+    mc = Color.Blue(64)
+    val mv: i64 = match (mc) {
+        Red(r) = { i64(r) }
+        Green(g) = { i64(g) }
+        Blue(b) = { i64(b) }
+    }
+    assert mv == 64
+
+    print_i64(total + s + code + v + mv)
+    println(ref "")
+}
