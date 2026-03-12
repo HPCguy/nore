@@ -10,35 +10,46 @@ Slices are fat pointers (data + length) into arena memory. When an arena is free
 
 | Check | Error | What it catches |
 |-------|-------|-----------------|
-| S053 | Slice escapes local arena | Direct, indirect (struct), and transitive (function call) escape |
+| S053 | Slice escapes local arena | Direct, indirect (struct/tagged union), and transitive (function call) escape |
 | S055 | Cannot reset immutable Arena | Reset on `val` arena |
 | S056 | Use of slice after arena reset | Flow-sensitive invalidation within a function |
 
-Note: S048 (blanket ban on slice returns) was removed — replaced by the unified S053 escape analysis.
+Note: S048 (blanket ban on slice returns) was removed, replaced by the unified S053 escape analysis.
+
+### Types tracked by escape analysis
+
+The escape analysis covers all types that can hold arena-allocated data:
+
+- **Bare slices** (`[i64]`, `str`, etc.)
+- **Structs with slice fields** (e.g., a struct containing `items: [i64]`)
+- **Slice-bearing tagged unions** (e.g., `enum ReadResult { Ok([u8]), Err(i32) }`)
+- **Tables** (columnar structs with slice fields)
+
+All of these are checked uniformly by `type_return_has_slices()` and `type_is_non_copyable()`.
 
 ### The gap
 
-S053 only catches **direct** escape — a return statement with a struct constructor whose fields are slices from a local arena. It does not catch **indirect** escape through function calls:
+S053 only catches **direct** escape, a return statement with a struct constructor whose fields are slices from a local arena. It does not catch **indirect** escape through function calls:
 
 ```nore
 func build(mut ref mem: Arena): Result = {
     mut items: [i64] = arena_alloc(mut ref mem, 10)
-    return Result { items: items }   // OK — mem is ref param, safe to return
+    return Result { items: items }   // OK, mem is ref param, safe to return
 }
 
 func bad(): Result = {
     mut mem: Arena = arena(1024)
-    return build(mut ref mem)        // UNSOUND — mem dies here, Result has dangling slices
+    return build(mut ref mem)        // UNSOUND, mem dies here, Result has dangling slices
 }
 ```
 
-From `build`'s perspective, `mem` is a ref parameter — the arena outlives the callee. Correct. But the **caller** passes a local arena and returns the result, so the slices escape.
+From `build`'s perspective, `mem` is a ref parameter, so the arena outlives the callee. Correct. But the **caller** passes a local arena and returns the result, so the slices escape.
 
-S048 (blanket ban on slice returns) has a similar inconsistency: bare slices cannot be returned, but the same slice can escape through a struct. The ban protects one path while leaving the other open.
+S048 (blanket ban on slice returns) had a similar inconsistency: bare slices could not be returned, but the same slice could escape through a struct. The ban protected one path while leaving the other open.
 
-### Why this matters for tables
+### Why this matters for tables and tagged unions
 
-Tables (the DOD payoff) are structs with slice fields — that's their entire purpose. The natural pattern is a helper function that takes `mut ref Arena` and builds a table. The indirect escape gap moves from "edge case" to "common path".
+Tables (the DOD payoff) are structs with slice fields. Slice-bearing tagged unions (like `ReadResult { Ok([u8]), Err(i32) }`) carry slices in their payloads. The natural pattern is a helper function that takes `mut ref Arena` and returns one of these types. The indirect escape gap moves from "edge case" to "common path".
 
 ---
 
@@ -46,7 +57,7 @@ Tables (the DOD payoff) are structs with slice fields — that's their entire pu
 
 ### Principle
 
-A slice's safety depends on one thing: **whether the arena it was allocated from is still alive when the slice is used**. The compiler should track this uniformly, regardless of whether the slice travels bare or inside a struct.
+A slice's safety depends on one thing: **whether the arena it was allocated from is still alive when the slice is used**. The compiler should track this uniformly, regardless of whether the slice travels bare, inside a struct, or inside a tagged union.
 
 ### Existing infrastructure
 
@@ -60,11 +71,28 @@ bool arena_is_local;              // true if arena is local (not ref param)
 ```
 
 Within a single function, this is sufficient:
-- **Direct slice return**: check `arena_is_local` — reject if true
+- **Direct slice return**: check `arena_is_local`, reject if true
 - **Struct constructor return**: check each slice field's `arena_is_local` (S053, already done)
 - **Reset invalidation**: match `arena_source` to invalidate slices (S056, already done)
 
 The gap is only at **function call boundaries**, where the caller cannot see inside the callee.
+
+### Match binding propagation
+
+When a match expression destructures a slice-bearing tagged union, the extracted slice binding inherits the scrutinee's arena tracking. This ensures that arena reset invalidation and escape analysis work correctly through match arms:
+
+```nore
+val result: ReadResult = read_file(mut ref mem, ref path)
+match (result) {
+    Ok(data) = {
+        // data inherits result's arena tracking
+        // if mem is reset, data is invalidated correctly
+    }
+    Err(code) = { ... }
+}
+```
+
+The scrutinee variable is looked up once before the arm loop, and each slice binding copies the arena source fields.
 
 ### Per-function return analysis
 
@@ -77,12 +105,12 @@ bool returns_arena_slices;   // true if return value contains slices from arena 
 
 This flag is set when typecheck encounters a return statement where:
 - The return value is a slice with `arena_is_local == false` (came from a ref param arena), or
-- The return value is a struct constructor with slice fields from ref param arenas (the existing S053 logic, inverted — S053 checks local arenas, this checks ref param arenas)
+- The return value is a struct constructor with slice fields from ref param arenas (the existing S053 logic, inverted: S053 checks local arenas, this checks ref param arenas)
 
 At **call sites**, the check becomes:
 1. Does the called function have `returns_arena_slices == true`?
 2. Is the arena argument at the call site a local arena?
-3. If both → error: slices in return value escape local arena
+3. If both, error: slices in return value escape local arena
 
 ### Transitive propagation
 
@@ -90,11 +118,11 @@ A function may not directly return an `alloc` result but instead return the resu
 
 ```nore
 func level2(mut ref mem: Arena): [i64] = {
-    return arena_alloc(mut ref mem, 10)       // direct → returns_arena_slices = true
+    return arena_alloc(mut ref mem, 10)       // direct: returns_arena_slices = true
 }
 
 func level1(mut ref mem: Arena): [i64] = {
-    return level2(mut ref mem)          // transitive — should also be true
+    return level2(mut ref mem)          // transitive, should also be true
 }
 ```
 
@@ -113,7 +141,7 @@ After all functions are typechecked, **propagate to fixpoint** before checking c
 ```
 repeat until no changes:
     for each dependency (A depends on B):
-        if B.returns_arena_slices → set A.returns_arena_slices = true
+        if B.returns_arena_slices -> set A.returns_arena_slices = true
 ```
 
 This converges in O(chain depth) iterations, bounded by function count. In practice one or two passes over a small list.
@@ -137,15 +165,15 @@ This avoids two-pass typechecking and handles any definition order.
 
 ## Changes
 
-### 1. Lift S048 — allow bare slice returns
+### 1. Lift S048, allow bare slice returns
 
 Remove the blanket ban on slice return types. Instead, check at return statements:
-- If returning a slice variable whose `arena_is_local == true` → error (direct escape)
-- If returning a slice variable whose `arena_is_local == false` → allowed (arena outlives callee)
+- If returning a slice variable whose `arena_is_local == true`, error (direct escape)
+- If returning a slice variable whose `arena_is_local == false`, allowed (arena outlives callee)
 
 This makes bare slices and struct-with-slices consistent.
 
-### 2. Strengthen S053 — catch indirect escape
+### 2. Strengthen S053, catch indirect escape
 
 Current S053 only checks return statements with struct constructors. Extend it to also catch function call returns via the deferred check mechanism described above.
 
@@ -161,44 +189,44 @@ Add the flag to `FunctionEntry`. Set it during `typecheck_function` when process
 
 A simple dynamic array of pending checks, processed after all functions are typechecked, before codegen.
 
-### 5. Reset invalidation (no change needed)
+### 5. Reset invalidation
 
-The existing reset invalidation (S056) is per-function and flow-sensitive. The cross-function limitation (resetting a ref-param arena doesn't invalidate slices in the caller) is the same class of problem but less critical — the caller would need to use `arena_reset()` on its own local arena, which invalidates its own slices correctly. A callee resetting a ref-param arena is an unusual pattern and can remain a documented limitation.
+The existing reset invalidation (S056) is per-function and flow-sensitive. It covers bare slices, tables, and slice-bearing tagged unions. The cross-function limitation (resetting a ref-param arena doesn't invalidate slices in the caller) is the same class of problem but less critical. The caller would need to use `arena_reset()` on its own local arena, which invalidates its own slices correctly. A callee resetting a ref-param arena is an unusual pattern and can remain a documented limitation.
 
 ---
 
 ## Examples
 
-### Direct slice return (currently banned by S048, allowed after change)
+### Direct slice return (allowed after S048 removal)
 
 ```nore
 func get_data(mut ref mem: Arena, n: i64): [i64] = {
     mut data: [i64] = arena_alloc(mut ref mem, n)
-    return data   // OK — mem is ref param
+    return data   // OK, mem is ref param
 }
 
 func bad(): [i64] = {
     mut mem: Arena = arena(1024)
     mut data: [i64] = arena_alloc(mut ref mem, 10)
-    return data   // ERROR — mem is local, slice escapes
+    return data   // ERROR, mem is local, slice escapes
 }
 ```
 
-### Indirect escape via function call (currently uncaught, caught after change)
+### Indirect escape via function call (caught by deferred check)
 
 ```nore
 func build(mut ref mem: Arena): Table = {
     mut keys: [i64] = arena_alloc(mut ref mem, 100)
-    return Table { keys: keys }   // → marks build as returns_arena_slices=true
+    return Table { keys: keys }   // marks build as returns_arena_slices=true
 }
 
 func ok(mut ref mem: Arena): Table = {
-    return build(mut ref mem)     // OK — mem is ref param in caller too
+    return build(mut ref mem)     // OK, mem is ref param in caller too
 }
 
 func bad(): Table = {
     mut mem: Arena = arena(8192)
-    return build(mut ref mem)     // ERROR — mem is local, build returns arena slices
+    return build(mut ref mem)     // ERROR, mem is local, build returns arena slices
 }
 ```
 
@@ -215,7 +243,27 @@ func level1(mut ref mem: Arena): [i64] = {
 
 func bad(): [i64] = {
     mut mem: Arena = arena(1024)
-    return level1(mut ref mem)              // ERROR — mem is local, level1 returns arena slices
+    return level1(mut ref mem)              // ERROR, mem is local, level1 returns arena slices
+}
+```
+
+### Slice-bearing tagged union escape
+
+```nore
+enum ReadResult { Ok([u8]), Err(i32) }
+
+func read_data(mut ref mem: Arena): ReadResult = {
+    mut buf: [u8] = arena_alloc(mut ref mem, 1024)
+    ReadResult.Ok(buf)                      // marks read_data as returns_arena_slices=true
+}
+
+func ok(mut ref mem: Arena): ReadResult = {
+    read_data(mut ref mem)                  // OK, mem is ref param
+}
+
+func bad(): ReadResult = {
+    mut mem: Arena = arena(4096)
+    return read_data(mut ref mem)           // ERROR, mem is local
 }
 ```
 
@@ -231,7 +279,7 @@ func main(): void = {
     mut mem: Arena = arena(8192)
     mut big: Arena = arena(65536)
     mut raw: [f64] = arena_alloc(mut ref big, 1000)
-    val s = analyze(mut ref mem, ref raw)     // OK — analyze.returns_arena_slices=false
+    val s = analyze(mut ref mem, ref raw)     // OK, analyze.returns_arena_slices=false
 }
 ```
 
@@ -251,12 +299,12 @@ func build(mut ref scratch: Arena, mut ref storage: Arena): Table = {
 func caller(mut ref storage: Arena): Table = {
     mut scratch: Arena = arena(1024)                 // local
     return build(mut ref scratch, mut ref storage)
-    // Level 3: returns_arena_slices=true + scratch is local → false positive
+    // returns_arena_slices=true + scratch is local -> false positive
     // The returned slices come from storage (ref param), not scratch
 }
 ```
 
-Fixing this requires per-parameter flow tracking (mapping each arena parameter to whether it flows into the return value). This is significantly more complex and not needed for the common case of functions taking a single arena. If this pattern becomes common in practice, per-parameter tracking can be added later without breaking existing code — it only makes the analysis more precise (fewer false positives), never less safe.
+Fixing this requires per-parameter flow tracking (mapping each arena parameter to whether it flows into the return value). This is significantly more complex and not needed for the common case of functions taking a single arena. If this pattern becomes common in practice, per-parameter tracking can be added later without breaking existing code. It only makes the analysis more precise (fewer false positives), never less safe.
 
 ---
 
@@ -275,22 +323,22 @@ With this spec fully implemented, Nore is **memory-safe for arena-scoped allocat
 | Null pointers | Slices always from `arena_alloc`, no null concept | By design |
 | Uninitialized memory | Arena allocs are zero-initialized, variables require initializers | By design |
 | Reference escape | Refs exist only as function params, cannot be stored | By design |
-| Integer overflow | `-fwrapv` flag — two's complement wrapping guaranteed | By design |
+| Integer overflow | `-fwrapv` flag, two's complement wrapping guaranteed | By design |
 
 ### Gaps compared to Rust
 
-**1. Cross-function reset** — A callee that receives both `mut ref Arena` and a slice from that arena as separate parameters can reset the arena and invalidate the slice without the compiler noticing. This is a genuine use-after-free:
+**1. Cross-function reset.** A callee that receives both `mut ref Arena` and a slice from that arena as separate parameters can reset the arena and invalidate the slice without the compiler noticing. This is a genuine use-after-free:
 
 ```nore
 func process(mut ref mem: Arena, ref data: [i64]): void = {
-    arena_reset(mut ref mem)   // invalidates data — compiler doesn't know
+    arena_reset(mut ref mem)   // invalidates data, compiler doesn't know
     val x = data[0]      // use-after-free
 }
 ```
 
 Closable with a conservative call-site check: warn when both a `mut ref Arena` and a slice allocated from that arena are passed to the same function.
 
-**2. Mutable aliasing** — Two `mut ref` parameters can point to the same data. Rust prevents this entirely (one `&mut` OR many `&`, never both). Nore doesn't check:
+**2. Mutable aliasing.** Two `mut ref` parameters can point to the same data. Rust prevents this entirely (one `&mut` OR many `&`, never both). Nore doesn't check:
 
 ```nore
 func bad(mut ref a: [i64], mut ref b: [i64]): void = {
@@ -303,7 +351,7 @@ This is a **correctness** issue (surprising behavior) rather than a **safety** i
 
 ### Bottom line
 
-Nore's safety model is **domain-specific**: it covers the class of bugs that arena-based systems languages face in practice — dangling pointers, buffer overflows, use-after-free through scope and reset. This is substantially safer than C, with a much simpler mental model than Rust. It is not a universal aliasing and lifetime proof like Rust's borrow checker, but it targets the problems that matter most for data-oriented design.
+Nore's safety model is **domain-specific**: it covers the class of bugs that arena-based systems languages face in practice. This includes dangling pointers, buffer overflows, and use-after-free through scope and reset. It is substantially safer than C, with a much simpler mental model than Rust. It is not a universal aliasing and lifetime proof like Rust's borrow checker, but it targets the problems that matter most for data-oriented design.
 
 ---
 
@@ -315,8 +363,10 @@ All steps completed:
 2. ~~Set the flag during `typecheck_function` return statement processing~~
 3. ~~Add dependency tracking for transitive propagation~~
 4. ~~Add deferred check infrastructure (list + post-typecheck propagation + check pass)~~
-5. ~~Lift S048 — allow bare slice returns with `arena_is_local` check~~
+5. ~~Lift S048, allow bare slice returns with `arena_is_local` check~~
 6. ~~Update S053 messages for both direct and indirect cases~~
 7. ~~Update tests and documentation~~
 
-Additional: S046 extended to allow slice locals initialized from function calls (needed for callers to receive returned slices).
+Additional:
+- S046 extended to allow slice locals initialized from function calls (needed for callers to receive returned slices).
+- Slice-bearing tagged unions integrated into escape analysis: `type_return_has_slices()` checks `enum_has_slice_payload()`, arena reset invalidation covers slice-bearing enums, match arm bindings propagate arena tracking from scrutinee.
