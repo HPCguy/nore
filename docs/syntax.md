@@ -526,6 +526,56 @@ val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
 
 Comptime if/else expressions with enum conditions are folded at compile time.
 
+### Tagged Unions
+
+Variants can optionally carry a data payload, turning the enum into a tagged union. Plain variants and data variants can be mixed.
+
+**Declaration** (top-level only):
+```nore
+enum Option { Some(i64), None }
+enum FileResult { Ok([u8]), Err(i32) }
+enum Mixed { A(bool), B, C(f64) }
+```
+- A variant with `(Type)` carries data of that type
+- A variant without parentheses carries no data
+- If any variant has data, the enum is a tagged union
+
+**Construction**:
+```nore
+val x: Option = Option.Some(42)
+val y: Option = Option.None
+val r: Pair = Pair.Left(10)
+```
+- Data variants require `(expr)`: `Option.Some(42)`
+- Non-data variants in a tagged enum use bare syntax: `Option.None`
+- Type annotation required (same rule as plain enums)
+- Can be used as function parameters and return types
+- Can be assigned to mutable variables
+
+**Match statement**:
+```nore
+match (opt) {
+    Some(n) = {
+        // n is bound to the payload (i64)
+        result = n
+    }
+    None = {
+        result = 0
+    }
+}
+```
+- `match (scrutinee) { arms }` with parentheses around the scrutinee
+- Each arm: `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
+- `=` separates pattern from body (consistent with function syntax)
+- Variant names are unqualified (type known from scrutinee)
+- `_` wildcard for unused payload bindings: `Some(_) = { ... }`
+- Exhaustiveness required: all variants must be covered
+- Binding variables are scoped to the arm body
+
+**Restrictions** (compared to plain enums):
+- Comparison (`==`, `!=`) is not allowed on tagged unions (use `match` instead)
+- Casting to integer (`i64()`, etc.) is not allowed on tagged unions
+
 ### Arrays
 
 Fixed-size arrays with compile-time known size, value semantics, and bounds checking.

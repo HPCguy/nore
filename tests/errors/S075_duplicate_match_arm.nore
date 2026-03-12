@@ -1,0 +1,11 @@
+// Error: duplicate variant in match arms
+enum Option { Some(i64), None }
+
+func main(): void = {
+    val x: Option = Option.None
+    match (x) {
+        Some(n) = { }
+        Some(m) = { }
+        None = { }
+    }
+}

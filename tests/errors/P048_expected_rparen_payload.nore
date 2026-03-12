@@ -1,0 +1,5 @@
+// Error: missing ')' after variant payload type
+enum Bad { Foo(i64 }
+
+func main(): void = {
+}

@@ -1,0 +1,8 @@
+// Error: cannot compare tagged enum values
+enum Option { Some(i64), None }
+
+func main(): void = {
+    val a: Option = Option.None
+    val b: Option = Option.None
+    val eq: bool = a == b
+}

@@ -1,0 +1,7 @@
+// Error: match on non-tagged-enum type
+func main(): void = {
+    val x: i64 = 42
+    match (x) {
+        Foo = { }
+    }
+}

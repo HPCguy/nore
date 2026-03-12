@@ -100,6 +100,14 @@ typedef enum {
     ERR_P045_UNKNOWN_ENUM_VARIANT  = ERR_GROUP_PARSER + 45,
     ERR_P046_EXPECTED_IMPORT_PATH  = ERR_GROUP_PARSER + 46,
     ERR_P047_EXPECTED_RBRACKET_SLICE = ERR_GROUP_PARSER + 47,
+    ERR_P048_EXPECTED_RPAREN_PAYLOAD = ERR_GROUP_PARSER + 48,
+    ERR_P049_EXPECTED_LPAREN_MATCH = ERR_GROUP_PARSER + 49,
+    ERR_P050_EXPECTED_RPAREN_MATCH = ERR_GROUP_PARSER + 50,
+    ERR_P051_EXPECTED_LBRACE_MATCH = ERR_GROUP_PARSER + 51,
+    ERR_P052_EXPECTED_VARIANT_MATCH = ERR_GROUP_PARSER + 52,
+    ERR_P053_EXPECTED_EQUALS_MATCH = ERR_GROUP_PARSER + 53,
+    ERR_P054_EXPECTED_RBRACE_MATCH = ERR_GROUP_PARSER + 54,
+    ERR_P055_EXPECTED_RPAREN_BINDING = ERR_GROUP_PARSER + 55,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -174,6 +182,14 @@ typedef enum {
     ERR_S070_DUPLICATE_TYPE_NAME   = ERR_GROUP_SEMANTIC + 70,
     ERR_S071_SLICE_RANGE_NOT_INT   = ERR_GROUP_SEMANTIC + 71,
     ERR_S072_SLICE_ON_NON_ARRAY    = ERR_GROUP_SEMANTIC + 72,
+    ERR_S073_MATCH_NOT_TAGGED_ENUM = ERR_GROUP_SEMANTIC + 73,
+    ERR_S074_NON_EXHAUSTIVE_MATCH  = ERR_GROUP_SEMANTIC + 74,
+    ERR_S075_DUPLICATE_MATCH_ARM   = ERR_GROUP_SEMANTIC + 75,
+    ERR_S077_PAYLOAD_TYPE_MISMATCH = ERR_GROUP_SEMANTIC + 77,
+    ERR_S078_UNEXPECTED_PAYLOAD    = ERR_GROUP_SEMANTIC + 78,
+    ERR_S079_MISSING_PAYLOAD       = ERR_GROUP_SEMANTIC + 79,
+    ERR_S080_TAGGED_ENUM_COMPARE   = ERR_GROUP_SEMANTIC + 80,
+    ERR_S081_TAGGED_ENUM_CAST      = ERR_GROUP_SEMANTIC + 81,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -362,6 +378,7 @@ typedef enum {
     TOKEN_ELSE,
     TOKEN_WHILE,
     TOKEN_FOR,
+    TOKEN_MATCH,
     TOKEN_IN,
     TOKEN_BREAK,
     TOKEN_CONTINUE,
@@ -649,6 +666,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             break;
         case 5:
             if (memcmp(start, "while", 5) == 0) return TOKEN_WHILE;
+            if (memcmp(start, "match", 5) == 0) return TOKEN_MATCH;
             if (memcmp(start, "break", 5) == 0) return TOKEN_BREAK;
             if (memcmp(start, "false", 5) == 0) return TOKEN_FALSE;
             if (memcmp(start, "value", 5) == 0) return TOKEN_VALUE;
@@ -1312,6 +1330,7 @@ typedef struct {
     const char *name_start;
     size_t name_length;
     long value;
+    Type payload_type;      /* TYPE_VOID if no payload */
 } EnumVariant;
 
 typedef struct {
@@ -1320,6 +1339,7 @@ typedef struct {
     EnumVariant *variants;
     size_t variant_count;
     SourceLoc loc;
+    bool has_data;          /* true if any variant has a payload */
 } EnumTypeEntry;
 
 static EnumTypeEntry *g_enum_table = NULL;
@@ -1341,6 +1361,13 @@ static Type enum_table_add(const char *name_start, size_t name_length,
     entry->variants = variants;
     entry->variant_count = variant_count;
     entry->loc = loc;
+    entry->has_data = false;
+    for (size_t i = 0; i < variant_count; i++) {
+        if (variants[i].payload_type != TYPE_VOID) {
+            entry->has_data = true;
+            break;
+        }
+    }
     return (Type)(TYPE_ENUM_BASE + (int)g_enum_count++);
 }
 
@@ -1554,6 +1581,8 @@ typedef enum {
     AST_MEM_COPY,
     AST_ENUM_DECL,
     AST_ENUM_VARIANT,
+    AST_MATCH,
+    AST_MATCH_ARM,
     AST_PROGRAM
 } AstKind;
 
@@ -1772,7 +1801,24 @@ typedef struct Ast {
         struct {
             Type enum_type;
             long value;
+            struct Ast *payload;    /* NULL if no data */
         } enum_variant;
+
+        struct {
+            struct Ast *scrutinee;
+            struct Ast **arms;
+            size_t arm_count;
+        } match_expr;
+
+        struct {
+            const char *variant_name;   /* variant name (from source) */
+            size_t variant_length;
+            long variant_value;         /* resolved during typecheck */
+            const char *binding_name;   /* NULL for no-data or _ wildcard */
+            size_t binding_length;
+            Type binding_type;          /* payload type from enum decl */
+            struct Ast *body;           /* block */
+        } match_arm;
 
         struct {
             struct Ast **statements;
@@ -2049,13 +2095,44 @@ static Ast *ast_make_enum_decl(const char *name_start, size_t name_length,
     return node;
 }
 
-static Ast *ast_make_enum_variant(Type enum_type, long value, SourceLoc loc) {
+static Ast *ast_make_enum_variant(Type enum_type, long value, Ast *payload,
+                                   SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     node->kind = AST_ENUM_VARIANT;
     node->loc = loc;
     node->as.enum_variant.enum_type = enum_type;
     node->as.enum_variant.value = value;
+    node->as.enum_variant.payload = payload;
+    return node;
+}
+
+static Ast *ast_make_match(Ast *scrutinee, Ast **arms, size_t arm_count,
+                            SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_MATCH;
+    node->loc = loc;
+    node->as.match_expr.scrutinee = scrutinee;
+    node->as.match_expr.arms = arms;
+    node->as.match_expr.arm_count = arm_count;
+    return node;
+}
+
+static Ast *ast_make_match_arm(const char *variant_name, size_t variant_length,
+                                const char *binding_name, size_t binding_length,
+                                Ast *body, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_MATCH_ARM;
+    node->loc = loc;
+    node->as.match_arm.variant_name = variant_name;
+    node->as.match_arm.variant_length = variant_length;
+    node->as.match_arm.variant_value = -1;  /* resolved during typecheck */
+    node->as.match_arm.binding_name = binding_name;
+    node->as.match_arm.binding_length = binding_length;
+    node->as.match_arm.binding_type = TYPE_VOID;  /* resolved during typecheck */
+    node->as.match_arm.body = body;
     return node;
 }
 
@@ -2500,7 +2577,19 @@ static void ast_free(Ast *node) {
             ast_free(node->as.mem_copy.src);
             break;
         case AST_ENUM_DECL:
+            break;
         case AST_ENUM_VARIANT:
+            if (node->as.enum_variant.payload)
+                ast_free(node->as.enum_variant.payload);
+            break;
+        case AST_MATCH:
+            ast_free(node->as.match_expr.scrutinee);
+            for (size_t i = 0; i < node->as.match_expr.arm_count; i++)
+                ast_free(node->as.match_expr.arms[i]);
+            free(node->as.match_expr.arms);
+            break;
+        case AST_MATCH_ARM:
+            ast_free(node->as.match_arm.body);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -2759,6 +2848,7 @@ static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error,
                                     bool **out_is_ref, bool **out_is_mut_ref);
 static Ast *parser_parse_block(Parser *parser);
 static Ast *parser_parse_if(Parser *parser);
+static Ast *parser_parse_match(Parser *parser);
 
 static Type token_to_type(TokenKind kind) {
     switch (kind) {
@@ -3333,8 +3423,39 @@ static Ast *parser_parse_primary(Parser *parser) {
                 for (size_t i = 0; i < et->variant_count; i++) {
                     if (et->variants[i].name_length == var_len &&
                         memcmp(et->variants[i].name_start, var_start, var_len) == 0) {
+                        Ast *payload = NULL;
+                        if (et->variants[i].payload_type != TYPE_VOID) {
+                            /* Data variant: parse (expr) */
+                            if (!parser_match(parser, TOKEN_LPAREN)) {
+                                diagnostic(g_source_file, ERR_S079_MISSING_PAYLOAD,
+                                           parser->current.line, parser->current.column,
+                                           "Variant '%.*s' requires a payload of type %s",
+                                           (int)var_len, var_start,
+                                           type_name(et->variants[i].payload_type));
+                                return NULL;
+                            }
+                            payload = parser_parse_expression(parser);
+                            if (!payload) return NULL;
+                            if (!parser_match(parser, TOKEN_RPAREN)) {
+                                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN,
+                                           parser->current.line, parser->current.column,
+                                           "Expected ')' after variant payload");
+                                ast_free(payload);
+                                return NULL;
+                            }
+                        } else if (et->has_data && parser_check(parser, TOKEN_LPAREN)) {
+                            /* Non-data variant in tagged enum: reject (expr) */
+                            parser_advance(parser); /* consume '(' */
+                            diagnostic(g_source_file, ERR_S078_UNEXPECTED_PAYLOAD,
+                                       parser->previous.line, parser->previous.column,
+                                       "Variant '%.*s' does not take a payload",
+                                       (int)var_len, var_start);
+                            parser_synchronize(parser);
+                            return NULL;
+                        }
                         return ast_make_enum_variant(enum_table_type_for(et),
-                                                     et->variants[i].value, loc);
+                                                     et->variants[i].value,
+                                                     payload, loc);
                     }
                 }
                 diagnostic(g_source_file, ERR_P045_UNKNOWN_ENUM_VARIANT, parser->previous.line,
@@ -3776,6 +3897,7 @@ static Ast *parser_parse_block(Parser *parser) {
             parser_check(parser, TOKEN_ASSERT) ||
             parser_check(parser, TOKEN_WHILE) ||
             parser_check(parser, TOKEN_FOR) ||
+            parser_check(parser, TOKEN_MATCH) ||
             parser_check(parser, TOKEN_BREAK) ||
             parser_check(parser, TOKEN_CONTINUE) ||
             parser_check(parser, TOKEN_LBRACE) ||
@@ -3884,6 +4006,120 @@ static Ast *parser_parse_if(Parser *parser) {
     }
 
     return ast_make_if(condition, then_block, else_block, loc);
+}
+
+static Ast *parser_parse_match(Parser *parser) {
+    /* TOKEN_MATCH already consumed */
+    SourceLoc loc = token_loc(&parser->previous);
+
+    if (!parser_match(parser, TOKEN_LPAREN)) {
+        diagnostic(g_source_file, ERR_P049_EXPECTED_LPAREN_MATCH,
+                   parser->current.line, parser->current.column,
+                   "Expected '(' after 'match'");
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    Ast *scrutinee = parser_parse_expression(parser);
+    if (!scrutinee) { parser_synchronize(parser); return NULL; }
+
+    if (!parser_match(parser, TOKEN_RPAREN)) {
+        diagnostic(g_source_file, ERR_P050_EXPECTED_RPAREN_MATCH,
+                   parser->current.line, parser->current.column,
+                   "Expected ')' after match scrutinee");
+        ast_free(scrutinee);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    if (!parser_match(parser, TOKEN_LBRACE)) {
+        diagnostic(g_source_file, ERR_P051_EXPECTED_LBRACE_MATCH,
+                   parser->current.line, parser->current.column,
+                   "Expected '{' to open match body");
+        ast_free(scrutinee);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    /* Parse arms: Variant(binding) = { body }
+     * Variant names stored as strings; resolved during typecheck. */
+    size_t arm_capacity = 8;
+    size_t arm_count = 0;
+    Ast **arms = malloc(arm_capacity * sizeof(Ast *));
+    if (!arms) panic(ERR_I001_OUT_OF_MEMORY, "allocating match arms");
+
+    while (!parser_check(parser, TOKEN_RBRACE) &&
+           !parser_check(parser, TOKEN_EOF) &&
+           !too_many_errors()) {
+        SourceLoc arm_loc = token_loc(&parser->current);
+
+        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+            diagnostic(g_source_file, ERR_P052_EXPECTED_VARIANT_MATCH,
+                       parser->current.line, parser->current.column,
+                       "Expected variant name in match arm");
+            break;
+        }
+        const char *var_start = parser->previous.start;
+        size_t var_len = parser->previous.length;
+
+        /* Optional binding: (name) or (_) */
+        const char *binding_name = NULL;
+        size_t binding_length = 0;
+        if (parser_match(parser, TOKEN_LPAREN)) {
+            if (parser_match(parser, TOKEN_IDENTIFIER)) {
+                if (parser->previous.length == 1 && parser->previous.start[0] == '_') {
+                    /* wildcard: no binding */
+                } else {
+                    binding_name = parser->previous.start;
+                    binding_length = parser->previous.length;
+                }
+            }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P055_EXPECTED_RPAREN_BINDING,
+                           parser->current.line, parser->current.column,
+                           "Expected ')' after match binding");
+                break;
+            }
+        }
+
+        if (!parser_match(parser, TOKEN_EQUALS)) {
+            diagnostic(g_source_file, ERR_P053_EXPECTED_EQUALS_MATCH,
+                       parser->current.line, parser->current.column,
+                       "Expected '=' after match pattern");
+            break;
+        }
+
+        if (!parser_match(parser, TOKEN_LBRACE)) {
+            diagnostic(g_source_file, ERR_P051_EXPECTED_LBRACE_MATCH,
+                       parser->current.line, parser->current.column,
+                       "Expected '{' for match arm body");
+            break;
+        }
+        Ast *body = parser_parse_block(parser);
+        if (!body) break;
+
+        if (arm_count >= arm_capacity) {
+            arm_capacity *= 2;
+            arms = realloc(arms, arm_capacity * sizeof(Ast *));
+            if (!arms) panic(ERR_I001_OUT_OF_MEMORY, "growing match arms");
+        }
+        arms[arm_count++] = ast_make_match_arm(var_start, var_len,
+                                                binding_name, binding_length,
+                                                body, arm_loc);
+    }
+
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        diagnostic(g_source_file, ERR_P054_EXPECTED_RBRACE_MATCH,
+                   parser->current.line, parser->current.column,
+                   "Expected '}' to close match");
+        ast_free(scrutinee);
+        for (size_t i = 0; i < arm_count; i++) ast_free(arms[i]);
+        free(arms);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    return ast_make_match(scrutinee, arms, arm_count, loc);
 }
 
 static Ast *parser_parse_while(Parser *parser) {
@@ -4270,6 +4506,10 @@ static Ast *parser_parse_statement(Parser *parser) {
         return parser_parse_for(parser);
     }
 
+    if (parser_match(parser, TOKEN_MATCH)) {
+        return parser_parse_match(parser);
+    }
+
     if (parser_match(parser, TOKEN_BREAK)) {
         return parser_parse_break(parser);
     }
@@ -4399,16 +4639,41 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
             return NULL;
         }
 
+        const char *variant_start = parser->previous.start;
+        size_t variant_length = parser->previous.length;
+
         /* Check for duplicate variant names */
         for (size_t i = 0; i < variant_count; i++) {
-            if (variants[i].name_length == parser->previous.length &&
-                memcmp(variants[i].name_start, parser->previous.start,
-                       parser->previous.length) == 0) {
+            if (variants[i].name_length == variant_length &&
+                memcmp(variants[i].name_start, variant_start,
+                       variant_length) == 0) {
                 diagnostic(g_source_file, ERR_S069_DUPLICATE_ENUM_VARIANT,
                            parser->previous.line, parser->previous.column,
                            "Duplicate variant '%.*s' in enum '%.*s'",
-                           (int)parser->previous.length, parser->previous.start,
+                           (int)variant_length, variant_start,
                            (int)name_length, name_start);
+            }
+        }
+
+        /* Optional payload type: Variant(Type) */
+        Type payload_type = TYPE_VOID;
+        if (parser_match(parser, TOKEN_LPAREN)) {
+            payload_type = parser_parse_type(parser, false);
+            if (payload_type == TYPE_UNKNOWN) {
+                diagnostic(g_source_file, ERR_P048_EXPECTED_RPAREN_PAYLOAD,
+                           parser->current.line, parser->current.column,
+                           "Expected type in variant payload");
+                free(variants);
+                parser_synchronize(parser);
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P048_EXPECTED_RPAREN_PAYLOAD,
+                           parser->current.line, parser->current.column,
+                           "Expected ')' after variant payload type");
+                free(variants);
+                parser_synchronize(parser);
+                return NULL;
             }
         }
 
@@ -4417,9 +4682,10 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
             variants = realloc(variants, capacity * sizeof(EnumVariant));
             if (!variants) panic(ERR_I001_OUT_OF_MEMORY, "growing enum variants");
         }
-        variants[variant_count].name_start = parser->previous.start;
-        variants[variant_count].name_length = parser->previous.length;
+        variants[variant_count].name_start = variant_start;
+        variants[variant_count].name_length = variant_length;
         variants[variant_count].value = (long)variant_count;
+        variants[variant_count].payload_type = payload_type;
         variant_count++;
 
         if (!parser_match(parser, TOKEN_COMMA)) break;
@@ -5113,8 +5379,25 @@ static void parser_print_ast_step(Ast *node, int indent) {
             printf("ENUM_VARIANT(%s.%ld)\n",
                    et ? type_name(node->as.enum_variant.enum_type) : "?",
                    node->as.enum_variant.value);
+            if (node->as.enum_variant.payload) {
+                parser_print_ast_step(node->as.enum_variant.payload, indent + 1);
+            }
             break;
         }
+
+        case AST_MATCH:
+            printf("MATCH\n");
+            parser_print_ast_step(node->as.match_expr.scrutinee, indent + 1);
+            for (size_t i = 0; i < node->as.match_expr.arm_count; i++)
+                parser_print_ast_step(node->as.match_expr.arms[i], indent + 1);
+            break;
+
+        case AST_MATCH_ARM:
+            printf("ARM(%.*s)\n",
+                   (int)node->as.match_arm.variant_length,
+                   node->as.match_arm.variant_name);
+            parser_print_ast_step(node->as.match_arm.body, indent + 1);
+            break;
 
         case AST_PROGRAM:
             printf("PROGRAM\n");
@@ -5287,8 +5570,8 @@ static Type g_os_enum_type = TYPE_UNKNOWN;
 static void platform_inject_os_enum(void) {
     EnumVariant *variants = malloc(2 * sizeof(EnumVariant));
     if (!variants) panic(ERR_I001_OUT_OF_MEMORY, "allocating OS enum variants");
-    variants[0] = (EnumVariant){"Linux", 5, 0};
-    variants[1] = (EnumVariant){"MacOS", 5, 1};
+    variants[0] = (EnumVariant){"Linux", 5, 0, TYPE_VOID};
+    variants[1] = (EnumVariant){"MacOS", 5, 1, TYPE_VOID};
     g_os_enum_type = enum_table_add("OS", 2, variants, 2, BUILTIN_LOC);
 }
 
@@ -5411,8 +5694,11 @@ static FunctionEntry *g_current_func_entry = NULL;
 /* Returns true if node is a compile-time constant (literal or comptime variable) */
 static bool is_comptime_constant(Ast *node, Scope *scope) {
     if (node->kind == AST_NUMBER || node->kind == AST_FLOAT ||
-        node->kind == AST_BOOLEAN || node->kind == AST_ENUM_VARIANT) {
+        node->kind == AST_BOOLEAN) {
         return true;
+    }
+    if (node->kind == AST_ENUM_VARIANT) {
+        return node->as.enum_variant.payload == NULL;
     }
     if (node->kind == AST_IDENTIFIER && scope != NULL) {
         Variable *v = scope_lookup(scope, node->as.identifier.start,
@@ -5789,9 +6075,26 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             node->expr_type = TYPE_BOOL;
             return TYPE_BOOL;
 
-        case AST_ENUM_VARIANT:
+        case AST_ENUM_VARIANT: {
+            if (node->as.enum_variant.payload) {
+                Type payload_type = typecheck_expression(
+                    node->as.enum_variant.payload, scope, func_table);
+                EnumTypeEntry *et = enum_table_get(node->as.enum_variant.enum_type);
+                if (et) {
+                    long idx = node->as.enum_variant.value;
+                    Type expected = et->variants[idx].payload_type;
+                    if (payload_type != TYPE_UNKNOWN && expected != TYPE_VOID &&
+                        !type_can_coerce(payload_type, expected)) {
+                        diagnostic(node->loc.file, ERR_S077_PAYLOAD_TYPE_MISMATCH,
+                                   node->loc.line, node->loc.column,
+                                   "Payload type mismatch: expected %s, got %s",
+                                   type_name(expected), type_name(payload_type));
+                    }
+                }
+            }
             node->expr_type = node->as.enum_variant.enum_type;
             return node->as.enum_variant.enum_type;
+        }
 
         case AST_IDENTIFIER: {
             Variable *v = scope_lookup(scope, node->as.identifier.start,
@@ -5882,7 +6185,15 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                 case OP_GE: {
                     /* Enum comparison: == and != only, same enum type required */
                     if (type_is_enum(left_type) || type_is_enum(right_type)) {
-                        if (node->as.binary.op != OP_EQ && node->as.binary.op != OP_NEQ) {
+                        /* Tagged enums cannot be compared at all */
+                        EnumTypeEntry *cmp_et = enum_table_get(
+                            type_is_enum(left_type) ? left_type : right_type);
+                        if (cmp_et && cmp_et->has_data) {
+                            diagnostic(node->loc.file, ERR_S080_TAGGED_ENUM_COMPARE,
+                                       node->loc.line, node->loc.column,
+                                       "Cannot compare tagged enum %.*s, use match instead",
+                                       (int)cmp_et->name_length, cmp_et->name_start);
+                        } else if (node->as.binary.op != OP_EQ && node->as.binary.op != OP_NEQ) {
                             diagnostic(node->loc.file, ERR_S067_ENUM_ARITHMETIC, node->loc.line, node->loc.column,
                                        "Only == and != are allowed on enum type %s",
                                        type_name(type_is_enum(left_type) ? left_type : right_type));
@@ -6646,8 +6957,18 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             Type operand_type = typecheck_expression(node->as.type_cast.operand, scope, func_table);
             Type target = node->as.type_cast.target_type;
 
-            /* Enum to numeric: treat as integer cast */
+            /* Enum to numeric: treat as integer cast (plain enums only) */
             if (type_is_enum(operand_type) && type_is_numeric(target)) {
+                EnumTypeEntry *cast_et = enum_table_get(operand_type);
+                if (cast_et && cast_et->has_data) {
+                    diagnostic(node->loc.file, ERR_S081_TAGGED_ENUM_CAST,
+                               node->loc.line, node->loc.column,
+                               "Cannot cast tagged enum %.*s to %s",
+                               (int)cast_et->name_length, cast_et->name_start,
+                               type_name(target));
+                    node->expr_type = target;
+                    return target;
+                }
                 g_has_casts = true;
                 node->expr_type = target;
                 return target;
@@ -7428,6 +7749,92 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             typecheck_expression(node, *scope, func_table);
             break;
 
+        case AST_MATCH: {
+            Type scrut_type = typecheck_expression(
+                node->as.match_expr.scrutinee, *scope, func_table);
+
+            /* Scrutinee must be a tagged enum */
+            EnumTypeEntry *et = NULL;
+            if (!type_is_enum(scrut_type) ||
+                !(et = enum_table_get(scrut_type)) || !et->has_data) {
+                diagnostic(node->loc.file, ERR_S073_MATCH_NOT_TAGGED_ENUM,
+                           node->loc.line, node->loc.column,
+                           "Match scrutinee must be a tagged enum type, got %s",
+                           type_name(scrut_type));
+                break;
+            }
+
+            /* Track which variants are covered */
+            bool *covered = calloc(et->variant_count, sizeof(bool));
+
+            for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+                Ast *arm = node->as.match_expr.arms[i];
+                const char *vname = arm->as.match_arm.variant_name;
+                size_t vlen = arm->as.match_arm.variant_length;
+
+                /* Resolve variant name */
+                bool found = false;
+                for (size_t v = 0; v < et->variant_count; v++) {
+                    if (et->variants[v].name_length == vlen &&
+                        memcmp(et->variants[v].name_start, vname, vlen) == 0) {
+                        arm->as.match_arm.variant_value = et->variants[v].value;
+                        arm->as.match_arm.binding_type = et->variants[v].payload_type;
+
+                        if (covered[v]) {
+                            diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
+                                       arm->loc.line, arm->loc.column,
+                                       "Duplicate variant '%.*s' in match",
+                                       (int)vlen, vname);
+                        }
+                        covered[v] = true;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    diagnostic(arm->loc.file, ERR_P045_UNKNOWN_ENUM_VARIANT,
+                               arm->loc.line, arm->loc.column,
+                               "Unknown variant '%.*s' in match on %s",
+                               (int)vlen, vname, type_name(scrut_type));
+                }
+
+                /* Typecheck arm body in new scope with binding */
+                Ast *body = arm->as.match_arm.body;
+                Scope *arm_scope = scope_create(*scope);
+                if (arm->as.match_arm.binding_name &&
+                    arm->as.match_arm.binding_type != TYPE_VOID) {
+                    scope_add(arm_scope,
+                              arm->as.match_arm.binding_name,
+                              arm->as.match_arm.binding_length,
+                              false, arm->as.match_arm.binding_type,
+                              arm->loc);
+                }
+                for (size_t s = 0; s < body->as.block.count; s++) {
+                    typecheck_statement(body->as.block.statements[s],
+                                        &arm_scope, return_type, func_table);
+                }
+                if (body->as.block.value_expr) {
+                    typecheck_expression(body->as.block.value_expr,
+                                          arm_scope, func_table);
+                }
+                scope_destroy(arm_scope);
+            }
+
+            /* Exhaustiveness check */
+            for (size_t v = 0; v < et->variant_count; v++) {
+                if (!covered[v]) {
+                    diagnostic(node->loc.file, ERR_S074_NON_EXHAUSTIVE_MATCH,
+                               node->loc.line, node->loc.column,
+                               "Non-exhaustive match: missing variant '%.*s'",
+                               (int)et->variants[v].name_length,
+                               et->variants[v].name_start);
+                    break;  /* report only first missing */
+                }
+            }
+            free(covered);
+            break;
+        }
+
         default:
             break;
     }
@@ -7445,6 +7852,8 @@ static bool is_global_initializer(Ast *node, Scope *scope) {
         case AST_STRING_LITERAL:
         case AST_ARENA_NEW:
         case AST_ENUM_VARIANT:
+            if (node->as.enum_variant.payload)
+                return is_global_initializer(node->as.enum_variant.payload, scope);
             return true;
         case AST_IDENTIFIER: {
             Variable *v = scope_lookup(scope, node->as.identifier.start,
@@ -8008,9 +8417,27 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, "%d", node->as.boolean.value ? 1 : 0);
             break;
 
-        case AST_ENUM_VARIANT:
-            fprintf(out, "%ldL", node->as.enum_variant.value);
+        case AST_ENUM_VARIANT: {
+            EnumTypeEntry *ev_et = enum_table_get(node->as.enum_variant.enum_type);
+            if (ev_et && ev_et->has_data) {
+                /* Tagged union: compound literal */
+                long idx = node->as.enum_variant.value;
+                fprintf(out, "(%s){.tag = %ldL",
+                        codegen_type_to_c(node->as.enum_variant.enum_type), idx);
+                if (node->as.enum_variant.payload) {
+                    fprintf(out, ", .data = {.%.*s = ",
+                            (int)ev_et->variants[idx].name_length,
+                            ev_et->variants[idx].name_start);
+                    codegen_emit_expression(out, node->as.enum_variant.payload);
+                    fprintf(out, "}");
+                }
+                fprintf(out, "}");
+            } else {
+                /* Plain enum: integer literal */
+                fprintf(out, "%ldL", node->as.enum_variant.value);
+            }
             break;
+        }
 
         case AST_IDENTIFIER:
             codegen_emit_identifier(out, node->as.identifier.start,
@@ -8505,6 +8932,8 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_FUNC_DECL:
         case AST_VALUE_DECL:
         case AST_ENUM_DECL:
+        case AST_MATCH:
+        case AST_MATCH_ARM:
         case AST_PROGRAM:
             /* These should never appear in expression context */
             panic(ERR_I002_INTERNAL_ERROR, "statement node in expression context");
@@ -8989,6 +9418,59 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, ";\n");
             break;
 
+        case AST_MATCH: {
+            static int match_id = 0;
+            int mid = match_id++;
+            Type scrut_type = node->as.match_expr.scrutinee->expr_type;
+            EnumTypeEntry *et = enum_table_get(scrut_type);
+            if (!et) break;
+
+            /* Evaluate scrutinee into a temp */
+            codegen_indent(out, indent);
+            fprintf(out, "%s ni_match_%d_ = ",
+                    codegen_type_to_c(scrut_type), mid);
+            codegen_emit_expression(out, node->as.match_expr.scrutinee);
+            fprintf(out, ";\n");
+
+            /* switch on tag */
+            codegen_indent(out, indent);
+            fprintf(out, "switch (ni_match_%d_.tag) {\n", mid);
+
+            for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+                Ast *arm = node->as.match_expr.arms[i];
+                long tag = arm->as.match_arm.variant_value;
+
+                codegen_indent(out, indent + 1);
+                fprintf(out, "case %ldL: {\n", tag);
+
+                /* Emit binding variable if present */
+                if (arm->as.match_arm.binding_name &&
+                    arm->as.match_arm.binding_type != TYPE_VOID) {
+                    codegen_indent(out, indent + 2);
+                    fprintf(out, "%s ni_%.*s = ni_match_%d_.data.%.*s;\n",
+                            codegen_type_to_c(arm->as.match_arm.binding_type),
+                            (int)arm->as.match_arm.binding_length,
+                            arm->as.match_arm.binding_name,
+                            mid,
+                            (int)arm->as.match_arm.variant_length,
+                            arm->as.match_arm.variant_name);
+                }
+
+                /* Emit arm body */
+                codegen_emit_block_statements(out, arm->as.match_arm.body,
+                                               scope, indent + 2, false);
+
+                codegen_indent(out, indent + 2);
+                fprintf(out, "break;\n");
+                codegen_indent(out, indent + 1);
+                fprintf(out, "}\n");
+            }
+
+            codegen_indent(out, indent);
+            fprintf(out, "}\n");
+            break;
+        }
+
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
     }
@@ -9303,11 +9785,13 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "static void ni_arena_reset(ni_Arena *a) { a->offset = 0; }\n\n");
     }
 
-    /* Emit enum type typedefs (no dependencies, emit first) */
+    /* Emit plain enum typedefs (no dependencies, emit first) */
     for (size_t i = 0; i < g_enum_count; i++) {
         EnumTypeEntry *et = &g_enum_table[i];
-        fprintf(out, "typedef int64_t ni_%.*s;\n",
-                (int)et->name_length, et->name_start);
+        if (!et->has_data) {
+            fprintf(out, "typedef int64_t ni_%.*s;\n",
+                    (int)et->name_length, et->name_start);
+        }
     }
     if (g_enum_count > 0) fprintf(out, "\n");
 
@@ -9365,6 +9849,22 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         }
         free(emitted);
         fprintf(out, "\n");
+    }
+
+    /* Emit tagged union struct typedefs (needs slice types to be defined) */
+    for (size_t i = 0; i < g_enum_count; i++) {
+        EnumTypeEntry *et = &g_enum_table[i];
+        if (!et->has_data) continue;
+        fprintf(out, "typedef struct {\n    int64_t tag;\n    union {");
+        for (size_t v = 0; v < et->variant_count; v++) {
+            EnumVariant *ev = &et->variants[v];
+            if (ev->payload_type == TYPE_VOID) continue;
+            fprintf(out, "\n        %s %.*s;",
+                    codegen_type_to_c(ev->payload_type),
+                    (int)ev->name_length, ev->name_start);
+        }
+        fprintf(out, "\n    } data;\n} ni_%.*s;\n\n",
+                (int)et->name_length, et->name_start);
     }
 
     /* Emit I/O runtime helpers if any I/O built-ins are used */

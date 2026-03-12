@@ -1,0 +1,142 @@
+// Test tagged enum declarations, construction, and match
+
+enum Color { Red, Green, Blue }
+enum Option { Some(i64), None }
+enum Pair { Left(i32), Right(i64) }
+enum Mixed { A(bool), B, C(f64) }
+
+// Pass tagged union as function argument and return it
+func make_some(n: i64): Option = {
+    Option.Some(n)
+}
+
+func make_none(): Option = {
+    Option.None
+}
+
+func pass_through(opt: Option): Option = {
+    opt
+}
+
+// Extract i64 from Option via match, with default
+func unwrap_or(opt: Option, default: i64): i64 = {
+    mut result: i64 = default
+    match (opt) {
+        Some(n) = {
+            result = n
+        }
+        None = {
+        }
+    }
+    result
+}
+
+func main(): void = {
+    // Plain enums still work
+    val c: Color = Color.Red
+    assert c == Color.Red
+    assert c != Color.Blue
+
+    // Cast plain enum to i64 still works
+    val n: i64 = i64(Color.Green)
+    assert n == 1
+
+    // Construction: data variant
+    val x: Option = Option.Some(42)
+
+    // Construction: non-data variant in tagged enum
+    val y: Option = Option.None
+
+    // Different payload types
+    val left: Pair = Pair.Left(10)
+    val right: Pair = Pair.Right(100)
+
+    // Mixed: some with data, some without
+    val a: Mixed = Mixed.A(true)
+    val b: Mixed = Mixed.B
+    val cv: Mixed = Mixed.C(3.14)
+
+    // Pass as argument, return from function
+    val s: Option = make_some(99)
+    val none: Option = make_none()
+    val pt: Option = pass_through(Option.Some(7))
+
+    // Mutable tagged enum variable
+    mut m: Option = Option.Some(1)
+    m = Option.None
+    m = Option.Some(2)
+
+    // Match statement: extract value
+    mut got: i64 = 0
+    match (x) {
+        Some(val_n) = {
+            got = val_n
+        }
+        None = {
+            got = -1
+        }
+    }
+    assert got == 42
+
+    // Match on None variant
+    match (y) {
+        Some(val_n) = {
+            got = val_n
+        }
+        None = {
+            got = -1
+        }
+    }
+    assert got == -1
+
+    // Match on Pair
+    mut pair_val: i64 = 0
+    match (left) {
+        Left(lv) = {
+            pair_val = i64(lv)
+        }
+        Right(rv) = {
+            pair_val = rv
+        }
+    }
+    assert pair_val == 10
+
+    match (right) {
+        Left(lv) = {
+            pair_val = i64(lv)
+        }
+        Right(rv) = {
+            pair_val = rv
+        }
+    }
+    assert pair_val == 100
+
+    // Match on Mixed with no-data variant
+    mut mixed_tag: i64 = -1
+    match (b) {
+        A(_) = { mixed_tag = 0 }
+        B = { mixed_tag = 1 }
+        C(_) = { mixed_tag = 2 }
+    }
+    assert mixed_tag == 1
+
+    // Wildcard binding
+    match (a) {
+        A(_) = { mixed_tag = 10 }
+        B = { mixed_tag = 11 }
+        C(_) = { mixed_tag = 12 }
+    }
+    assert mixed_tag == 10
+
+    // Match in function
+    assert unwrap_or(Option.Some(77), 0) == 77
+    assert unwrap_or(Option.None, -1) == -1
+
+    // Match on function return value
+    mut from_func: i64 = 0
+    match (make_some(33)) {
+        Some(val_n) = { from_func = val_n }
+        None = { from_func = -1 }
+    }
+    assert from_func == 33
+}

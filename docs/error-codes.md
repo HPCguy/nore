@@ -70,6 +70,14 @@ error[D002]: Unknown flag: --invalid
 - **P045**: Unknown enum variant
 - **P046**: Expected string literal after 'import'
 - **P047**: Expected ']' after slice range
+- **P048**: Expected ')' after variant payload type
+- **P049**: Expected '(' after 'match'
+- **P050**: Expected ')' after match scrutinee
+- **P051**: Expected '{' for match body
+- **P052**: Expected variant name in match arm
+- **P053**: Expected '=' after match pattern
+- **P054**: Expected '}' to close match
+- **P055**: Expected ')' after match binding
 - **D007**: Cannot find imported file
 
 - **S001**: Duplicate variable declaration
@@ -144,6 +152,14 @@ error[D002]: Unknown flag: --invalid
 - **S070**: Duplicate type name (enum name already used)
 - **S071**: Slice range bound must be integer type
 - **S072**: Cannot sub-slice non-array/slice type
+- **S073**: Match scrutinee is not a tagged enum type
+- **S074**: Non-exhaustive match (missing variants)
+- **S075**: Duplicate variant in match arms
+- **S077**: Payload type mismatch in tagged union variant construction
+- **S078**: Unexpected payload for non-data variant
+- **S079**: Missing payload for data variant
+- **S080**: Cannot compare tagged enum (use match instead)
+- **S081**: Cannot cast tagged enum to numeric type
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)
