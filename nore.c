@@ -185,6 +185,7 @@ typedef enum {
     ERR_S073_MATCH_NOT_TAGGED_ENUM = ERR_GROUP_SEMANTIC + 73,
     ERR_S074_NON_EXHAUSTIVE_MATCH  = ERR_GROUP_SEMANTIC + 74,
     ERR_S075_DUPLICATE_MATCH_ARM   = ERR_GROUP_SEMANTIC + 75,
+    ERR_S076_MATCH_ARM_TYPE_MISMATCH = ERR_GROUP_SEMANTIC + 76,
     ERR_S077_PAYLOAD_TYPE_MISMATCH = ERR_GROUP_SEMANTIC + 77,
     ERR_S078_UNEXPECTED_PAYLOAD    = ERR_GROUP_SEMANTIC + 78,
     ERR_S079_MISSING_PAYLOAD       = ERR_GROUP_SEMANTIC + 79,
@@ -3628,6 +3629,11 @@ static Ast *parser_parse_primary(Parser *parser) {
         return parser_parse_if(parser);
     }
 
+    /* Match expression */
+    if (parser_match(parser, TOKEN_MATCH)) {
+        return parser_parse_match(parser);
+    }
+
     diagnostic(g_source_file, ERR_P001_EXPECTED_EXPRESSION, parser->current.line, parser->current.column,
                "Expected expression");
     return NULL;
@@ -3889,6 +3895,31 @@ static Ast *parser_parse_block(Parser *parser) {
             continue;
         }
 
+        /* Handle match: parse it, then decide if it's a value_expr or statement.
+         * Only treat as value_expr if: followed by }, and all arm bodies
+         * produce values (have value_expr set in their blocks). */
+        if (parser_check(parser, TOKEN_MATCH)) {
+            parser_advance(parser);
+            Ast *match_node = parser_parse_match(parser);
+            if (match_node) {
+                bool all_arms_have_value = (match_node->as.match_expr.arm_count > 0);
+                for (size_t i = 0; i < match_node->as.match_expr.arm_count; i++) {
+                    Ast *arm = match_node->as.match_expr.arms[i];
+                    if (!arm->as.match_arm.body->as.block.value_expr) {
+                        all_arms_have_value = false;
+                        break;
+                    }
+                }
+                if (parser_check(parser, TOKEN_RBRACE) && all_arms_have_value) {
+                    block->as.block.value_expr = match_node;
+                    break;
+                } else {
+                    ast_block_add_statement(block, match_node);
+                }
+            }
+            continue;
+        }
+
         /* Check if current token starts a statement */
         bool is_statement_start =
             parser_check(parser, TOKEN_VAL) ||
@@ -3897,7 +3928,6 @@ static Ast *parser_parse_block(Parser *parser) {
             parser_check(parser, TOKEN_ASSERT) ||
             parser_check(parser, TOKEN_WHILE) ||
             parser_check(parser, TOKEN_FOR) ||
-            parser_check(parser, TOKEN_MATCH) ||
             parser_check(parser, TOKEN_BREAK) ||
             parser_check(parser, TOKEN_CONTINUE) ||
             parser_check(parser, TOKEN_LBRACE) ||
@@ -6061,6 +6091,107 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
 static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
 
+/* Shared match typecheck: validate scrutinee, resolve variants, check exhaustiveness,
+ * typecheck arm bodies. If out_type is non-NULL, track and unify arm result types. */
+static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
+                                  FunctionTable *func_table) {
+    Type scrut_type = typecheck_expression(
+        node->as.match_expr.scrutinee, scope, func_table);
+
+    EnumTypeEntry *et = NULL;
+    if (!type_is_enum(scrut_type) ||
+        !(et = enum_table_get(scrut_type)) || !et->has_data) {
+        diagnostic(node->loc.file, ERR_S073_MATCH_NOT_TAGGED_ENUM,
+                   node->loc.line, node->loc.column,
+                   "Match scrutinee must be a tagged enum type, got %s",
+                   type_name(scrut_type));
+        return TYPE_VOID;
+    }
+
+    bool *covered = calloc(et->variant_count, sizeof(bool));
+    if (!covered) panic(ERR_I001_OUT_OF_MEMORY, "allocating match coverage");
+    Type common_type = TYPE_VOID;
+    bool first_arm = true;
+
+    for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+        Ast *arm = node->as.match_expr.arms[i];
+        const char *vname = arm->as.match_arm.variant_name;
+        size_t vlen = arm->as.match_arm.variant_length;
+
+        bool found = false;
+        for (size_t v = 0; v < et->variant_count; v++) {
+            if (et->variants[v].name_length == vlen &&
+                memcmp(et->variants[v].name_start, vname, vlen) == 0) {
+                arm->as.match_arm.variant_value = et->variants[v].value;
+                arm->as.match_arm.binding_type = et->variants[v].payload_type;
+                if (covered[v]) {
+                    diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
+                               arm->loc.line, arm->loc.column,
+                               "Duplicate variant '%.*s' in match",
+                               (int)vlen, vname);
+                }
+                covered[v] = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            diagnostic(arm->loc.file, ERR_P045_UNKNOWN_ENUM_VARIANT,
+                       arm->loc.line, arm->loc.column,
+                       "Unknown variant '%.*s' in match on %s",
+                       (int)vlen, vname, type_name(scrut_type));
+        }
+
+        Ast *body = arm->as.match_arm.body;
+        Scope *arm_scope = scope_create(scope);
+        if (arm->as.match_arm.binding_name &&
+            arm->as.match_arm.binding_type != TYPE_VOID) {
+            scope_add(arm_scope,
+                      arm->as.match_arm.binding_name,
+                      arm->as.match_arm.binding_length,
+                      false, arm->as.match_arm.binding_type,
+                      arm->loc);
+        }
+        for (size_t s = 0; s < body->as.block.count; s++) {
+            typecheck_statement(body->as.block.statements[s],
+                                &arm_scope, return_type, func_table);
+        }
+        Type arm_type = TYPE_VOID;
+        if (body->as.block.value_expr) {
+            arm_type = typecheck_expression(body->as.block.value_expr,
+                                             arm_scope, func_table);
+        }
+        if (first_arm) {
+            common_type = arm_type;
+            first_arm = false;
+        } else {
+            Type resolved = resolve_branch_types(common_type, arm_type);
+            if (resolved == TYPE_VOID && common_type != TYPE_VOID) {
+                diagnostic(arm->loc.file, ERR_S076_MATCH_ARM_TYPE_MISMATCH,
+                           arm->loc.line, arm->loc.column,
+                           "Match arm type %s incompatible with previous arms (%s)",
+                           type_name(arm_type), type_name(common_type));
+            } else {
+                common_type = resolved;
+            }
+        }
+        scope_destroy(arm_scope);
+    }
+
+    for (size_t v = 0; v < et->variant_count; v++) {
+        if (!covered[v]) {
+            diagnostic(node->loc.file, ERR_S074_NON_EXHAUSTIVE_MATCH,
+                       node->loc.line, node->loc.column,
+                       "Non-exhaustive match: missing variant '%.*s'",
+                       (int)et->variants[v].name_length,
+                       et->variants[v].name_start);
+            break;
+        }
+    }
+    free(covered);
+    return common_type;
+}
+
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_NUMBER:
@@ -6540,6 +6671,12 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
 
             node->expr_type = result;
             return result;
+        }
+
+        case AST_MATCH: {
+            Type common_type = typecheck_match_arms(node, scope, TYPE_VOID, func_table);
+            node->expr_type = common_type;
+            return common_type;
         }
 
         case AST_VALUE_CONSTRUCTOR: {
@@ -7749,91 +7886,9 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             typecheck_expression(node, *scope, func_table);
             break;
 
-        case AST_MATCH: {
-            Type scrut_type = typecheck_expression(
-                node->as.match_expr.scrutinee, *scope, func_table);
-
-            /* Scrutinee must be a tagged enum */
-            EnumTypeEntry *et = NULL;
-            if (!type_is_enum(scrut_type) ||
-                !(et = enum_table_get(scrut_type)) || !et->has_data) {
-                diagnostic(node->loc.file, ERR_S073_MATCH_NOT_TAGGED_ENUM,
-                           node->loc.line, node->loc.column,
-                           "Match scrutinee must be a tagged enum type, got %s",
-                           type_name(scrut_type));
-                break;
-            }
-
-            /* Track which variants are covered */
-            bool *covered = calloc(et->variant_count, sizeof(bool));
-
-            for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
-                Ast *arm = node->as.match_expr.arms[i];
-                const char *vname = arm->as.match_arm.variant_name;
-                size_t vlen = arm->as.match_arm.variant_length;
-
-                /* Resolve variant name */
-                bool found = false;
-                for (size_t v = 0; v < et->variant_count; v++) {
-                    if (et->variants[v].name_length == vlen &&
-                        memcmp(et->variants[v].name_start, vname, vlen) == 0) {
-                        arm->as.match_arm.variant_value = et->variants[v].value;
-                        arm->as.match_arm.binding_type = et->variants[v].payload_type;
-
-                        if (covered[v]) {
-                            diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
-                                       arm->loc.line, arm->loc.column,
-                                       "Duplicate variant '%.*s' in match",
-                                       (int)vlen, vname);
-                        }
-                        covered[v] = true;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    diagnostic(arm->loc.file, ERR_P045_UNKNOWN_ENUM_VARIANT,
-                               arm->loc.line, arm->loc.column,
-                               "Unknown variant '%.*s' in match on %s",
-                               (int)vlen, vname, type_name(scrut_type));
-                }
-
-                /* Typecheck arm body in new scope with binding */
-                Ast *body = arm->as.match_arm.body;
-                Scope *arm_scope = scope_create(*scope);
-                if (arm->as.match_arm.binding_name &&
-                    arm->as.match_arm.binding_type != TYPE_VOID) {
-                    scope_add(arm_scope,
-                              arm->as.match_arm.binding_name,
-                              arm->as.match_arm.binding_length,
-                              false, arm->as.match_arm.binding_type,
-                              arm->loc);
-                }
-                for (size_t s = 0; s < body->as.block.count; s++) {
-                    typecheck_statement(body->as.block.statements[s],
-                                        &arm_scope, return_type, func_table);
-                }
-                if (body->as.block.value_expr) {
-                    typecheck_expression(body->as.block.value_expr,
-                                          arm_scope, func_table);
-                }
-                scope_destroy(arm_scope);
-            }
-
-            /* Exhaustiveness check */
-            for (size_t v = 0; v < et->variant_count; v++) {
-                if (!covered[v]) {
-                    diagnostic(node->loc.file, ERR_S074_NON_EXHAUSTIVE_MATCH,
-                               node->loc.line, node->loc.column,
-                               "Non-exhaustive match: missing variant '%.*s'",
-                               (int)et->variants[v].name_length,
-                               et->variants[v].name_start);
-                    break;  /* report only first missing */
-                }
-            }
-            free(covered);
+        case AST_MATCH:
+            typecheck_match_arms(node, *scope, return_type, func_table);
             break;
-        }
 
         default:
             break;
@@ -8281,6 +8336,7 @@ static void typecheck_program(Ast *program) {
 
 static const char *codegen_type_to_c(Type type);  /* forward declaration */
 static int codegen_temp_counter = 0;
+static int codegen_match_counter = 0;
 static Scope *g_codegen_scope = NULL;  /* current codegen scope for ref lookups */
 static Scope *g_global_codegen_scope = NULL;  /* global scope for codegen */
 
@@ -9098,9 +9154,13 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
 
     /* Emit value_expr as a bare statement (e.g., trailing function call in if/while/for block) */
     if (block->as.block.value_expr) {
-        codegen_indent(out, indent);
-        codegen_emit_expression(out, block->as.block.value_expr);
-        fprintf(out, ";\n");
+        if (block->as.block.value_expr->kind == AST_MATCH) {
+            codegen_emit_statement(out, block->as.block.value_expr, scope, indent);
+        } else {
+            codegen_indent(out, indent);
+            codegen_emit_expression(out, block->as.block.value_expr);
+            fprintf(out, ";\n");
+        }
     }
 
     codegen_emit_arena_frees(out, *scope, indent);
@@ -9111,7 +9171,7 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
     scope_destroy(old);
 }
 
-/* Check if an expression needs hoisting (complex block or complex if) */
+/* Check if an expression needs hoisting (complex block, complex if, or match) */
 static bool codegen_needs_hoisting(Ast *node) {
     if (node->kind == AST_BLOCK && !codegen_is_simple_block(node)) {
         return true;
@@ -9119,8 +9179,14 @@ static bool codegen_needs_hoisting(Ast *node) {
     if (node->kind == AST_IF && !codegen_is_simple_if(node)) {
         return true;
     }
+    if (node->kind == AST_MATCH) {
+        return true;
+    }
     return false;
 }
+
+static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
+                                       Scope **scope, int indent);
 
 /* Emit block contents and assign value_expr to temp variable if present */
 static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
@@ -9131,10 +9197,15 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
         codegen_emit_statement(out, block->as.block.statements[i], scope, indent);
     }
     if (block->as.block.value_expr) {
-        codegen_indent(out, indent);
-        fprintf(out, "__expr_%d = ", temp_idx);
-        codegen_emit_expression(out, block->as.block.value_expr);
-        fprintf(out, ";\n");
+        if (block->as.block.value_expr->kind == AST_MATCH) {
+            codegen_emit_match_switch(out, block->as.block.value_expr,
+                                       temp_idx, scope, indent);
+        } else {
+            codegen_indent(out, indent);
+            fprintf(out, "__expr_%d = ", temp_idx);
+            codegen_emit_expression(out, block->as.block.value_expr);
+            fprintf(out, ";\n");
+        }
     }
     codegen_emit_arena_frees(out, *scope, indent);
     Scope *old = *scope;
@@ -9187,6 +9258,73 @@ static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int inde
     return temp_idx;
 }
 
+/* Emit match switch. If assign_temp >= 0, assign arm value_expr to __expr_<assign_temp>.
+ * If assign_temp < 0, emit arm body as bare statements. */
+static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
+                                       Scope **scope, int indent) {
+    int mid = codegen_match_counter++;
+    Type scrut_type = node->as.match_expr.scrutinee->expr_type;
+    EnumTypeEntry *et = enum_table_get(scrut_type);
+    if (!et) return;
+
+    codegen_indent(out, indent);
+    fprintf(out, "%s ni_match_%d_ = ",
+            codegen_type_to_c(scrut_type), mid);
+    codegen_emit_expression(out, node->as.match_expr.scrutinee);
+    fprintf(out, ";\n");
+
+    codegen_indent(out, indent);
+    fprintf(out, "switch (ni_match_%d_.tag) {\n", mid);
+
+    for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+        Ast *arm = node->as.match_expr.arms[i];
+        long tag = arm->as.match_arm.variant_value;
+
+        codegen_indent(out, indent + 1);
+        fprintf(out, "case %ldL: {\n", tag);
+
+        if (arm->as.match_arm.binding_name &&
+            arm->as.match_arm.binding_type != TYPE_VOID) {
+            codegen_indent(out, indent + 2);
+            fprintf(out, "%s ni_%.*s = ni_match_%d_.data.%.*s;\n",
+                    codegen_type_to_c(arm->as.match_arm.binding_type),
+                    (int)arm->as.match_arm.binding_length,
+                    arm->as.match_arm.binding_name,
+                    mid,
+                    (int)arm->as.match_arm.variant_length,
+                    arm->as.match_arm.variant_name);
+        }
+
+        if (assign_temp >= 0) {
+            codegen_emit_block_body(out, arm->as.match_arm.body, assign_temp,
+                                     scope, indent + 2);
+        } else {
+            codegen_emit_block_statements(out, arm->as.match_arm.body,
+                                           scope, indent + 2, false);
+        }
+
+        codegen_indent(out, indent + 2);
+        fprintf(out, "break;\n");
+        codegen_indent(out, indent + 1);
+        fprintf(out, "}\n");
+    }
+
+    codegen_indent(out, indent);
+    fprintf(out, "}\n");
+}
+
+/* Emit a match expression to a temp variable */
+static int codegen_emit_match_to_temp(FILE *out, Ast *node, Scope **scope, int indent) {
+    int temp_idx = codegen_temp_counter++;
+
+    codegen_indent(out, indent);
+    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(node->expr_type), temp_idx);
+
+    codegen_emit_match_switch(out, node, temp_idx, scope, indent);
+
+    return temp_idx;
+}
+
 /* Emit a variable declaration (val or mut) */
 static void codegen_emit_var_decl(FILE *out, const char *name_start, size_t name_length,
                                    Type type, Ast *init, bool is_const,
@@ -9198,6 +9336,8 @@ static void codegen_emit_var_decl(FILE *out, const char *name_start, size_t name
         int temp_idx;
         if (init->kind == AST_BLOCK) {
             temp_idx = codegen_emit_block_to_temp(out, init, scope, indent);
+        } else if (init->kind == AST_MATCH) {
+            temp_idx = codegen_emit_match_to_temp(out, init, scope, indent);
         } else {
             temp_idx = codegen_emit_if_to_temp(out, init, scope, indent);
         }
@@ -9418,58 +9558,9 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             fprintf(out, ";\n");
             break;
 
-        case AST_MATCH: {
-            static int match_id = 0;
-            int mid = match_id++;
-            Type scrut_type = node->as.match_expr.scrutinee->expr_type;
-            EnumTypeEntry *et = enum_table_get(scrut_type);
-            if (!et) break;
-
-            /* Evaluate scrutinee into a temp */
-            codegen_indent(out, indent);
-            fprintf(out, "%s ni_match_%d_ = ",
-                    codegen_type_to_c(scrut_type), mid);
-            codegen_emit_expression(out, node->as.match_expr.scrutinee);
-            fprintf(out, ";\n");
-
-            /* switch on tag */
-            codegen_indent(out, indent);
-            fprintf(out, "switch (ni_match_%d_.tag) {\n", mid);
-
-            for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
-                Ast *arm = node->as.match_expr.arms[i];
-                long tag = arm->as.match_arm.variant_value;
-
-                codegen_indent(out, indent + 1);
-                fprintf(out, "case %ldL: {\n", tag);
-
-                /* Emit binding variable if present */
-                if (arm->as.match_arm.binding_name &&
-                    arm->as.match_arm.binding_type != TYPE_VOID) {
-                    codegen_indent(out, indent + 2);
-                    fprintf(out, "%s ni_%.*s = ni_match_%d_.data.%.*s;\n",
-                            codegen_type_to_c(arm->as.match_arm.binding_type),
-                            (int)arm->as.match_arm.binding_length,
-                            arm->as.match_arm.binding_name,
-                            mid,
-                            (int)arm->as.match_arm.variant_length,
-                            arm->as.match_arm.variant_name);
-                }
-
-                /* Emit arm body */
-                codegen_emit_block_statements(out, arm->as.match_arm.body,
-                                               scope, indent + 2, false);
-
-                codegen_indent(out, indent + 2);
-                fprintf(out, "break;\n");
-                codegen_indent(out, indent + 1);
-                fprintf(out, "}\n");
-            }
-
-            codegen_indent(out, indent);
-            fprintf(out, "}\n");
+        case AST_MATCH:
+            codegen_emit_match_switch(out, node, -1, scope, indent);
             break;
-        }
 
         default:
             panic(ERR_I002_INTERNAL_ERROR, "invalid statement type in code generation");
@@ -9639,12 +9730,29 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     }
     /* Emit trailing value expression: return for non-void, bare statement for void */
     if (body->as.block.value_expr) {
-        codegen_indent(out, 1);
-        if (func_decl->as.func_decl.return_type != TYPE_VOID) {
-            fprintf(out, "return ");
+        Ast *vexpr = body->as.block.value_expr;
+        bool is_non_void = (func_decl->as.func_decl.return_type != TYPE_VOID);
+        if (codegen_needs_hoisting(vexpr) && is_non_void) {
+            int temp_idx;
+            if (vexpr->kind == AST_BLOCK) {
+                temp_idx = codegen_emit_block_to_temp(out, vexpr, &scope, 1);
+            } else if (vexpr->kind == AST_MATCH) {
+                temp_idx = codegen_emit_match_to_temp(out, vexpr, &scope, 1);
+            } else {
+                temp_idx = codegen_emit_if_to_temp(out, vexpr, &scope, 1);
+            }
+            codegen_indent(out, 1);
+            fprintf(out, "return __expr_%d;\n", temp_idx);
+        } else if (codegen_needs_hoisting(vexpr)) {
+            codegen_emit_statement(out, vexpr, &scope, 1);
+        } else {
+            codegen_indent(out, 1);
+            if (is_non_void) {
+                fprintf(out, "return ");
+            }
+            codegen_emit_expression(out, vexpr);
+            fprintf(out, ";\n");
         }
-        codegen_emit_expression(out, body->as.block.value_expr);
-        fprintf(out, ";\n");
     }
 
     /* Free local arenas at end of function (for void functions with no explicit return) */

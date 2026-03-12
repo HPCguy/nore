@@ -155,6 +155,7 @@ error[D002]: Unknown flag: --invalid
 - **S073**: Match scrutinee is not a tagged enum type
 - **S074**: Non-exhaustive match (missing variants)
 - **S075**: Duplicate variant in match arms
+- **S076**: Match arm types incompatible (expression form)
 - **S077**: Payload type mismatch in tagged union variant construction
 - **S078**: Unexpected payload for non-data variant
 - **S079**: Missing payload for data variant

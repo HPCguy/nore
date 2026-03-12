@@ -18,17 +18,20 @@ func pass_through(opt: Option): Option = {
     opt
 }
 
-// Extract i64 from Option via match, with default
+// Extract i64 from Option via match expression
 func unwrap_or(opt: Option, default: i64): i64 = {
-    mut result: i64 = default
     match (opt) {
-        Some(n) = {
-            result = n
-        }
-        None = {
-        }
+        Some(n) = { n }
+        None = { default }
     }
-    result
+}
+
+// Match expression as function body value_expr
+func is_some(opt: Option): bool = {
+    match (opt) {
+        Some(_) = { true }
+        None = { false }
+    }
 }
 
 func main(): void = {
@@ -139,4 +142,80 @@ func main(): void = {
         None = { from_func = -1 }
     }
     assert from_func == 33
+
+    // --- Match as expression ---
+
+    // Basic match expression in val initializer
+    val v1: i64 = match (x) {
+        Some(n) = { n }
+        None = { 0 }
+    }
+    assert v1 == 42
+
+    // Match expression on None variant
+    val v2: i64 = match (y) {
+        Some(n) = { n }
+        None = { -1 }
+    }
+    assert v2 == -1
+
+    // Match expression in mut initializer
+    mut v3: i64 = match (x) {
+        Some(n) = { n + 1 }
+        None = { 0 }
+    }
+    assert v3 == 43
+    v3 = 0
+
+    // Match expression with different payload types
+    val v4: i64 = match (left) {
+        Left(lv) = { i64(lv) }
+        Right(rv) = { rv }
+    }
+    assert v4 == 10
+
+    // Match expression with no-data variant (Mixed)
+    val v5: i64 = match (b) {
+        A(_) = { 0 }
+        B = { 1 }
+        C(_) = { 2 }
+    }
+    assert v5 == 1
+
+    // Match expression with bool result
+    val v6: bool = match (x) {
+        Some(_) = { true }
+        None = { false }
+    }
+    assert v6
+
+    // Match expression on function return value
+    val v7: i64 = match (make_some(99)) {
+        Some(n) = { n * 2 }
+        None = { 0 }
+    }
+    assert v7 == 198
+
+    // Match expression with comptime_int coercion
+    val v8: i32 = match (left) {
+        Left(lv) = { lv }
+        Right(_) = { 0 }
+    }
+    assert v8 == 10
+
+    // Function using match expression
+    assert unwrap_or(Option.Some(77), 0) == 77
+    assert unwrap_or(Option.None, -1) == -1
+    assert is_some(Option.Some(1))
+    assert !is_some(Option.None)
+
+    // Match expression with statements before value_expr
+    val v9: i64 = match (x) {
+        Some(n) = {
+            val doubled: i64 = n * 2
+            doubled + 1
+        }
+        None = { 0 }
+    }
+    assert v9 == 85
 }

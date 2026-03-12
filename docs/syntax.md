@@ -564,6 +564,25 @@ match (opt) {
     }
 }
 ```
+
+**Match expression** (as val/mut initializer or function body value):
+```nore
+val x: i64 = match (opt) {
+    Some(n) = { n }
+    None = { 0 }
+}
+
+func unwrap_or(opt: Option, default: i64): i64 = {
+    match (opt) {
+        Some(n) = { n }
+        None = { default }
+    }
+}
+```
+- All arms must produce values of compatible types (S076 if mismatched)
+- Arms can contain statements before the value expression
+
+**Match rules**:
 - `match (scrutinee) { arms }` with parentheses around the scrutinee
 - Each arm: `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
 - `=` separates pattern from body (consistent with function syntax)
