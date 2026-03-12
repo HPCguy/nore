@@ -218,6 +218,10 @@ Modern, actively maintained, with strong cross-compilation support and excellent
 
 This project is in early development. Design discussions and architecture feedback are welcome.
 
+## About the Name and the Logo
+
+Curious about the origin of the name *Nore* and the **|~|** symbol? See [docs/logo/logo.md](docs/logo/logo.md).
+
 ## License
 
 BSD 3-Clause License with patent grant. See [LICENSE](LICENSE) and [PATENTS](PATENTS).
