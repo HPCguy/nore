@@ -191,6 +191,7 @@ typedef enum {
     ERR_S079_MISSING_PAYLOAD       = ERR_GROUP_SEMANTIC + 79,
     ERR_S080_TAGGED_ENUM_COMPARE   = ERR_GROUP_SEMANTIC + 80,
     ERR_S081_TAGGED_ENUM_CAST      = ERR_GROUP_SEMANTIC + 81,
+    ERR_S082_PAYLOAD_NOT_VALUE     = ERR_GROUP_SEMANTIC + 82,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -8234,6 +8235,25 @@ static void typecheck_program(Ast *program) {
                            "Table field '%.*s' in table '%.*s' must be a value type (no slices, structs, or Arena)",
                            (int)te->fields[f].name_length, te->fields[f].name_start,
                            (int)te->name_length, te->name_start);
+            }
+        }
+    }
+
+    /* Validate tagged enum payload types (must be value-compatible) */
+    for (size_t i = 0; i < g_enum_count; i++) {
+        EnumTypeEntry *et = &g_enum_table[i];
+        for (size_t v = 0; v < et->variant_count; v++) {
+            Type pt = et->variants[v].payload_type;
+            if (pt != TYPE_VOID && (type_is_slice(pt) || type_is_struct(pt))) {
+                diagnostic(et->loc.file, ERR_S082_PAYLOAD_NOT_VALUE,
+                           et->loc.line, et->loc.column,
+                           "Variant '%.*s' in enum '%.*s' has payload type '%s'"
+                           " which is not value-compatible"
+                           " (no slices, structs, or Arena)",
+                           (int)et->variants[v].name_length,
+                           et->variants[v].name_start,
+                           (int)et->name_length, et->name_start,
+                           type_name(pt));
             }
         }
     }

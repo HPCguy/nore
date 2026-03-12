@@ -533,7 +533,7 @@ Variants can optionally carry a data payload, turning the enum into a tagged uni
 **Declaration** (top-level only):
 ```nore
 enum Option { Some(i64), None }
-enum FileResult { Ok([u8]), Err(i32) }
+enum Result { Ok(i32), Err(i32) }
 enum Mixed { A(bool), B, C(f64) }
 ```
 - A variant with `(Type)` carries data of that type
@@ -591,7 +591,8 @@ func unwrap_or(opt: Option, default: i64): i64 = {
 - Exhaustiveness required: all variants must be covered
 - Binding variables are scoped to the arm body
 
-**Restrictions** (compared to plain enums):
+**Restrictions**:
+- Payload types must be value-compatible: scalars, fixed arrays, value types, or plain enums. Slices, structs, and Arena are not allowed (error S082)
 - Comparison (`==`, `!=`) is not allowed on tagged unions (use `match` instead)
 - Casting to integer (`i64()`, etc.) is not allowed on tagged unions
 

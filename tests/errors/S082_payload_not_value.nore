@@ -1,0 +1,6 @@
+// Error: variant payload must be value-compatible (no slices, structs, or Arena)
+enum Bad { Data([i64]), None }
+
+func main(): void = {
+    val x: Bad = Bad.None
+}

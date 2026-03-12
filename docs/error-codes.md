@@ -161,6 +161,7 @@ error[D002]: Unknown flag: --invalid
 - **S079**: Missing payload for data variant
 - **S080**: Cannot compare tagged enum (use match instead)
 - **S081**: Cannot cast tagged enum to numeric type
+- **S082**: Variant payload type not value-compatible (no slices, structs, or Arena)
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)
