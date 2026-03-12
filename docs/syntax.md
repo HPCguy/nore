@@ -147,7 +147,7 @@ val w: i64 = i64(3.14)     // comptime_float → i64 (compile-time truncation)
 **Supported casts**: `u8(expr)`, `i32(expr)`, `u32(expr)`, `i64(expr)`, `f64(expr)`
 
 **Safety rules**:
-- **Narrowing / sign change**: Runtime bounds check — panics with error R003 if value is out of range
+- **Narrowing / sign change**: Runtime bounds check, panics with error R003 if value is out of range
 - **Widening** (e.g., `u8` → `i64`, any integer → `f64`): Always safe, no check needed
 - **Identity** (same type → same type): No-op
 - **Float → integer**: Runtime check for NaN, Inf, and range; value is truncated toward zero
@@ -355,9 +355,9 @@ scale(mut ref q, 2.0)
 - `mut ref` requires the root variable to be `mut`
 
 **Restrictions**:
-- Cannot take ref of scalar fields (i64, i32, u8, u32, f64, bool) — just copy them
+- Cannot take ref of scalar fields (i64, i32, u8, u32, f64, bool). Just copy them
 - Cannot take ref of array elements (deferred to slices)
-- Refs are a calling convention only — cannot be stored, returned, or used as local variables
+- Refs are a calling convention only. They cannot be stored, returned, or used as local variables
 
 ### Value Types
 
@@ -412,7 +412,7 @@ assert a.x == 1.0     // a is unchanged
 
 ### Struct Types
 
-Struct types are resource owners with ref-only passing semantics. Unlike value types, structs cannot be copied — they must be passed by `ref` or `mut ref`.
+Struct types are resource owners with ref-only passing semantics. Unlike value types, structs cannot be copied. They must be passed by `ref` or `mut ref`.
 
 **Declaration** (top-level only):
 ```nore
@@ -798,6 +798,52 @@ val b: [i64] = a    // ERROR: slice local must use arena_alloc or function call 
 - Slice parameters must use `ref` or `mut ref`
 - Slice local variables must be initialized via `arena_alloc()`, a function call returning a slice, or a sub-slice expression
 
+### Strings
+
+The `str` type is syntactic sugar for `[u8]` (a byte slice). String literals create fat pointers pointing to static C string data at zero cost.
+
+**Declaration**:
+```nore
+val greeting: str = "hello"
+val empty: str = ""
+val escaped: str = "line1\nline2"
+```
+- `str` is equivalent to `[u8]`
+- String literals must be bound with `val` (immutable). `mut` is an error (S054)
+- `.len` gives the byte count (excludes null terminator)
+
+**Indexing**:
+```nore
+val s: str = "hello"
+val h: u8 = s[0]       // 104 (ASCII 'h')
+assert s.len == 5
+```
+- Same indexing and bounds checking as slices
+
+**Passing to Functions** (ref required):
+```nore
+func length(ref s: str): i64 = {
+    return s.len
+}
+
+val msg: str = "hello"
+assert length(ref msg) == 5
+```
+- `str` parameters follow slice rules: must use `ref` or `mut ref`
+- `str` and `[u8]` are interchangeable
+
+**Escape Sequences**:
+- `\n` newline
+- `\t` tab
+- `\r` carriage return
+- `\\` backslash
+- `\"` double quote
+- `\0` null byte
+
+**Restrictions** (current):
+- String literals cannot be mutable (`mut` binding is error S054)
+- Multiline strings are not yet supported
+
 ### Arenas
 
 Arenas provide heap allocation for slices. An Arena is a contiguous block of memory from which slices can be allocated sequentially.
@@ -846,12 +892,12 @@ arena_reset(mut ref mem)
 ```
 - `arena_reset(mut ref arena)` reclaims all arena memory at once (resets offset to zero)
 - Arena argument must be `mut ref` (reset mutates the arena)
-- All slices previously allocated from the arena are **invalidated** — using them after reset is a compile-time error (S056)
+- All slices previously allocated from the arena are **invalidated**. Using them after reset is a compile-time error (S056)
 - After reset, new slices can be allocated from the arena with fresh variables
 - Invalidation is conservative: once a slice is invalidated, it stays invalidated for its entire scope
 
 **Lifetime Safety**:
-- Slices allocated from a local arena cannot escape the function — neither directly via return nor indirectly through a function call (error S053)
+- Slices allocated from a local arena cannot escape the function, neither directly via return nor indirectly through a function call (error S053)
 - Slices allocated from a ref-param arena are safe to return (the arena lives in the caller's scope)
 - Escape analysis propagates transitively through call chains
 - Known limitation: functions with multiple arena parameters may produce false positives (the analysis uses a single per-function flag, not per-parameter tracking)
@@ -927,7 +973,7 @@ val pos: Vec2 = p.pos[0]
 // Write column elements (requires mut table)
 p.life[i] = 50
 ```
-- Columns are regular slices — standard slice indexing and bounds checking apply
+- Columns are regular slices. Standard slice indexing and bounds checking apply
 
 **Tables Follow Struct Rules**:
 - Cannot be copied (use `ref` or `mut ref` to pass)
@@ -947,64 +993,25 @@ func count_alive(ref p: Particles): i64 = {
 }
 ```
 
-### Strings
-
-The `str` type is syntactic sugar for `[u8]` (a byte slice). String literals create fat pointers pointing to static C string data at zero cost.
-
-**Declaration**:
-```nore
-val greeting: str = "hello"
-val empty: str = ""
-val escaped: str = "line1\nline2"
-```
-- `str` is equivalent to `[u8]`
-- String literals must be bound with `val` (immutable) — `mut` is an error (S054)
-- `.len` gives the byte count (excludes null terminator)
-
-**Indexing**:
-```nore
-val s: str = "hello"
-val h: u8 = s[0]       // 104 (ASCII 'h')
-assert s.len == 5
-```
-- Same indexing and bounds checking as slices
-
-**Passing to Functions** (ref required):
-```nore
-func length(ref s: str): i64 = {
-    return s.len
-}
-
-val msg: str = "hello"
-assert length(ref msg) == 5
-```
-- `str` parameters follow slice rules: must use `ref` or `mut ref`
-- `str` and `[u8]` are interchangeable
-
-**Escape Sequences**:
-- `\n` — newline
-- `\t` — tab
-- `\r` — carriage return
-- `\\` — backslash
-- `\"` — double quote
-- `\0` — null byte
-
-**Restrictions** (current):
-- String literals cannot be mutable (`mut` binding is error S054)
-- Multiline strings are not yet supported
-
 ### Predefined Constants
 
-**Compiler-injected constants** are available in every program without imports:
+**Compiler-injected** (available in every program without imports):
 
 | Name | Type | Value |
 |------|------|-------|
 | `TARGET_OS` | `OS` | `OS.Linux` or `OS.MacOS` (set at compile time) |
-| `STDIN` | `comptime_int` | 0 |
-| `STDOUT` | `comptime_int` | 1 |
-| `STDERR` | `comptime_int` | 2 |
 
-**I/O constants from `std/file.nore`** (require `import "std/file.nore"`):
+The compiler also injects `enum OS { Linux, MacOS }` so that `TARGET_OS` comparisons work without imports.
+
+**From `std/io.nore`** (require `import "std/io.nore"`):
+
+| Name | Type | Value |
+|------|------|-------|
+| `STDIN` | `i32` | 0 |
+| `STDOUT` | `i32` | 1 |
+| `STDERR` | `i32` | 2 |
+
+**From `std/file.nore`** (require `import "std/file.nore"`):
 
 | Name | Value |
 |------|-------|
@@ -1024,7 +1031,7 @@ Flags can be combined with bitwise OR: `O_WRONLY | O_CREAT | O_TRUNC`
 
 Low-level I/O built-ins provide the thinnest possible bridge to POSIX syscalls. These are the only way to interact with the operating system.
 
-**fd_write(fd, ref data)** — write bytes to a file descriptor:
+**fd_write(fd, ref data)**: write bytes to a file descriptor:
 ```nore
 val n: i64 = fd_write(STDOUT, ref "Hello, World!\n")
 assert n == 14
@@ -1033,34 +1040,34 @@ val data: [u8; 3] = [65, 66, 67]
 fd_write(STDOUT, ref data)    // writes "ABC"
 ```
 - `fd` must be an integer type (file descriptor)
-- `data` must be `[]u8` (slice) or `[u8; N]` (array), passed with `ref`
+- `data` must be `[u8]` (slice) or `[u8; N]` (array), passed with `ref`
 - Returns `i64`: bytes written (negative on error)
 - Can be used as a bare statement or expression
 
-**fd_read(fd, mut ref buf)** — read bytes from a file descriptor:
+**fd_read(fd, mut ref buf)**: read bytes from a file descriptor:
 ```nore
 mut buf: [u8; 256] = [0, 0, ...]
 val n: i64 = fd_read(STDIN, mut ref buf)
 ```
 - `fd` must be an integer type (file descriptor)
-- `buf` must be `[]u8` or `[u8; N]`, passed with `mut ref` (buffer must be mutable)
+- `buf` must be `[u8]` or `[u8; N]`, passed with `mut ref` (buffer must be mutable)
 - Returns `i64`: bytes read (0 = EOF, negative on error)
 - Can be used as a bare statement or expression
 
-**fd_open(ref path, flags)** — open a file:
+**fd_open(ref path, flags)**: open a file:
 ```nore
 val fd: i32 = fd_open(ref "file.txt", O_RDONLY)
 assert fd >= 0
 
 val wfd: i32 = fd_open(ref "out.txt", O_WRONLY | O_CREAT | O_TRUNC)
 ```
-- `path` must be `[]u8` or string literal, passed with `ref`
+- `path` must be `[u8]` or string literal, passed with `ref`
 - `flags` must be an integer type (use predefined `O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_TRUNC`, etc.)
 - Returns `i32`: file descriptor (negative on error)
 - Path is null-terminated internally (max 4095 bytes)
 - File permissions default to 0644
 
-**fd_close(fd)** — close a file descriptor:
+**fd_close(fd)**: close a file descriptor:
 ```nore
 fd_close(fd)
 ```
@@ -1068,7 +1075,7 @@ fd_close(fd)
 - Returns `void`
 - Used as a bare statement
 
-**fd_seek(fd, offset, whence)** — reposition file offset:
+**fd_seek(fd, offset, whence)**: reposition file offset:
 ```nore
 val size: i64 = fd_seek(fd, 0, SEEK_END)   // get file size
 fd_seek(fd, 0, SEEK_SET)                    // seek back to start
@@ -1079,7 +1086,7 @@ fd_seek(fd, 0, SEEK_SET)                    // seek back to start
 - Returns `i64`: new file position (negative on error)
 - Can be used as a bare statement or expression
 
-**exit(code)** — terminate the process:
+**exit(code)**: terminate the process:
 ```nore
 exit(0)      // success
 exit(1)      // failure
@@ -1088,7 +1095,7 @@ exit(1)      // failure
 - Returns `void` (never returns)
 - Used as a bare statement
 
-**mem_copy(mut ref dst, ref src)** — copy bytes between byte buffers:
+**mem_copy(mut ref dst, ref src)**: copy bytes between byte buffers:
 ```nore
 mut buf: [u8; 4] = [0, 0, 0, 0]
 val src: [u8; 3] = [65, 66, 67]
@@ -1165,7 +1172,7 @@ while (condition) {
 **For Loops** (range-based):
 ```nore
 for i in 0..n {
-    // loop body — i goes from 0 to n-1
+    // loop body, i goes from 0 to n-1
 }
 ```
 - Exclusive upper bound (`0..5` iterates 0, 1, 2, 3, 4)
@@ -1292,7 +1299,10 @@ func main(): void = {
 - `func` - Function declaration
 - `value` - Value type declaration
 - `struct` - Struct type declaration
+- `enum` - Enum type declaration
 - `table` - Table type declaration (columnar storage sugar)
+- `match` - Match expression/statement (tagged unions)
+- `import` - Import declarations
 - `str` - String type (byte slice `[u8]`)
 - `Arena` - Arena type (heap memory)
 - `ref` - Reference parameter/argument
@@ -1356,11 +1366,10 @@ Available via `import "std/file.nore"`:
 - `write_file(ref path, ref data)` - Write bytes to file (create/overwrite), returns `bool`
 
 ### Predefined Constants
-- `STDIN` - Standard input (0)
-- `STDOUT` - Standard output (1)
-- `STDERR` - Standard error (2)
-- `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND` - POSIX open flags
-- `SEEK_SET`, `SEEK_CUR`, `SEEK_END` - Seek whence constants
+- `TARGET_OS` - Compiler-injected, `OS.Linux` or `OS.MacOS`
+- `STDIN`, `STDOUT`, `STDERR` - Standard file descriptors (from `std/io.nore`)
+- `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND` - POSIX open flags (from `std/file.nore`)
+- `SEEK_SET`, `SEEK_CUR`, `SEEK_END` - Seek whence constants (from `std/file.nore`)
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)
