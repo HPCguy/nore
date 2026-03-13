@@ -208,6 +208,33 @@ val flag: bool = true
 - With explicit type: Variable becomes that concrete type (not comptime)
 - Cannot be reassigned after initialization
 
+**Comptime constants** (untyped `val`):
+
+When you omit the type annotation, the variable stays comptime, meaning it behaves like a named literal. The compiler inlines its value at every use site, and the concrete type is decided at the point of consumption, not at the point of definition.
+
+```nore
+// Comptime constants: no type annotation, fully flexible
+val width = 800
+val height = 600
+val area = width * height    // folded to 480000 at compile time
+
+// Each use site decides the concrete type independently
+val a: i64 = area            // comptime_int coerces to i64
+val b: i32 = width           // comptime_int coerces to i32
+val c: u32 = height          // comptime_int coerces to u32
+val d: f64 = area            // comptime_int coerces to f64
+val e: u8 = width            // ERROR: 800 out of range for u8
+```
+
+Compare with a typed declaration, where the concrete type is locked at definition:
+```nore
+val width: i64 = 800         // concrete i64, not comptime
+val ratio: f64 = width       // ERROR: i64 cannot coerce to f64
+val small: i32 = width       // ERROR: i64 cannot coerce to i32
+```
+
+In short: untyped `val` gives you a type-safe named constant that stays flexible until consumed. Adding an explicit type pins it to that type immediately.
+
 **Mutable Variables**:
 ```nore
 mut counter: i64 = 0
