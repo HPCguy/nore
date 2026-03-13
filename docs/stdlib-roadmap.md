@@ -45,18 +45,16 @@ Compiler-injected constants: `TARGET_OS`.
 
 All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
 
-### Known Error Handling Debt
+### Error Handling Debt (mostly resolved)
 
-The v1 stdlib uses sentinel values for errors because tagged unions did not exist yet:
+The v1 stdlib originally used sentinel values for errors because tagged unions did not exist yet. Tagged unions have since shipped, and most functions have been retrofitted:
 
-| Function | Current error behavior | Problem |
-|----------|----------------------|---------|
-| `read_file` | Returns empty `[u8]` on error | Indistinguishable from reading an actual empty file |
-| `write_file` | Returns `false` on error | No error detail (permission denied? disk full?) |
-| `str_to_i64` | Returns `0` on invalid input | Indistinguishable from parsing the string `"0"` |
-| `fd_open` | Returns negative error code | Caller must check `< 0`, easy to forget |
-
-This debt is addressed in Milestone 0 below.
+| Function | Status | Current behavior |
+|----------|--------|-----------------|
+| `read_file` | Fixed | Returns `ReadResult.Ok([u8])` or `ReadResult.Err(i32)` |
+| `write_file` | Fixed | Returns `WriteResult.Ok(i64)` or `WriteResult.Err(i32)` |
+| `str_to_i64` | Fixed | Returns `ParseResult.Ok(i64)` or `ParseResult.None` |
+| `fd_open` | Open | Still returns raw `i32` (negative on error). A stdlib wrapper returning a Result type is not yet implemented. |
 
 ---
 
@@ -92,7 +90,7 @@ Things that don't belong, at least not yet:
 
 ## Next: Program-Driven Development
 
-The foundation phase was built bottom-up: language features first, then stdlib layers on top. The next phase combines both approaches. Some language features are needed immediately to fix what already exists (tagged unions, modules). Others will be driven top-down by attempting real programs.
+The foundation phase was built bottom-up: language features first, then stdlib layers on top. The next phase combines both approaches. Some language features are needed to fix what already exists (module namespaces, native declarations). Others will be driven top-down by attempting real programs.
 
 ### Milestone 0: Fix the Foundation
 
@@ -100,20 +98,20 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 
 **Move I/O constants to stdlib:** Done. `STDIN`, `STDOUT`, `STDERR` are now defined in `std/io.nore` as plain `i32` constants, just like `O_RDONLY` and `SEEK_SET` in `std/file.nore`. Removed from compiler injection.
 
-**Tagged unions:** Add `Result` and `Option` types, then retrofit all stdlib modules:
-- `read_file` returns `Result` instead of empty slice on error
-- `write_file` returns `Result` with error detail instead of bare bool
-- `str_to_i64` returns `Option` to distinguish "0" from parse failure
-- `fd_open` wrapped in a stdlib helper returning `Result`
+**Tagged unions:** Done. The language supports tagged unions with `match` expressions, exhaustiveness checking, and slice payloads. The stdlib has been retrofitted:
+- `read_file` returns `ReadResult { Ok([u8]), Err(i32) }`
+- `write_file` returns `WriteResult { Ok(i64), Err(i32) }`
+- `str_to_i64` returns `ParseResult { Ok(i64), None }`
+- `fd_open` stdlib wrapper returning Result: not yet done
 
-**Module namespaces and visibility:** Refactor the import system so modules have proper boundaries. The problems are clear (name collisions from flat scope, no way to hide internal helpers), but the solution needs design. Starting points for discussion:
+**Module namespaces and visibility:** Not started. Refactor the import system so modules have proper boundaries. The problems are clear (name collisions from flat scope, no way to hide internal helpers), but the solution needs design. Starting points for discussion:
 - Visibility: explicit exports (`pub func`) vs explicit privacy (`private func`) vs unexported-by-default
 - Namespace access: dot-qualified (`string.eq`) vs current prefix convention
 - Backward compatibility: can existing code migrate incrementally?
 
-**Gate built-ins behind `native` declarations:** Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. Instead, a `native` keyword would let any `.nore` module declare a built-in's signature, and the compiler provides the implementation only when the signature matches a known built-in. For example, `std/io.nore` would declare `native func fd_write(fd: i32, ref data: [u8]): i64` and the function becomes available only to code that imports that module. This means built-ins are not a prerogative of any specific compiler path; they live in whatever domain module makes sense. The `.nore` file becomes the documentation, the compiler just has a table of known native signatures to match against.
+**Gate built-ins behind `native` declarations:** Not started. Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. Instead, a `native` keyword would let any `.nore` module declare a built-in's signature, and the compiler provides the implementation only when the signature matches a known built-in. For example, `std/io.nore` would declare `native func fd_write(fd: i32, ref data: [u8]): i64` and the function becomes available only to code that imports that module. This means built-ins are not a prerogative of any specific compiler path; they live in whatever domain module makes sense. The `.nore` file becomes the documentation, the compiler just has a table of known native signatures to match against.
 
-**Requires:** Tagged unions (language prereq #1), Module system v2 (language prereq #2), Built-in gating (language prereq #2b).
+**Remaining requires:** Module system v2 (language prereq #2), Built-in gating (language prereq #2b).
 
 ### Milestone 1: Cat Clone
 
@@ -124,8 +122,11 @@ import "std/io.nore"
 import "std/file.nore"
 
 mut mem: Arena = arena(65536)
-val contents: [u8] = read_file(mut ref mem, ref "input.txt")
-fd_write(STDOUT, ref contents)
+val result: ReadResult = read_file(mut ref mem, ref "input.txt")
+match (result) {
+    Ok(contents) = { fd_write(STDOUT, ref contents) }
+    Err(code) = { println(ref "error reading file") }
+}
 ```
 
 **What it needs:**
@@ -171,7 +172,7 @@ Parse a JSON string into a structured representation. This is the big jump: it r
 **What it needs:**
 - Everything from Milestone 2
 - Recursive data types (a JSON value can contain other JSON values)
-- Tagged unions for variant types (a JSON value is one of: string, number, bool, null, array, object)
+- Tagged unions for variant types: already shipped (a JSON value is one of: string, number, bool, null, array, object)
 - Error reporting (line/column of parse failure)
 
 **Known gaps:**
@@ -188,24 +189,13 @@ Parse a JSON string into a structured representation. This is the big jump: it r
 
 Features the compiler needs, ordered by priority. Each is a compiler change, not a library.
 
-### 1. Tagged Unions
+### ~~1. Tagged Unions~~ (done)
 
-**Priority: immediate.** The existing stdlib already needs this.
-
-Extend enums to carry associated data. Required for `Result`, `Option`, and any variant type.
-
-```
-enum Result { Ok(i64), Err(i32) }
-enum Option { Some(i64), None }
-```
-
-**Blocks:** Milestone 0 (stdlib error handling retrofit), Milestone 3 (JSON value variants).
-
-**Design space:** Pattern matching (`match` expression), exhaustiveness checking, memory layout. This is the biggest language addition on the horizon.
+Shipped. Enums carry associated data. `match` expressions with exhaustiveness checking. Slice payloads supported (makes the tagged union non-copyable, like structs with slice fields). Inline layout (max size of all variants). The stdlib has been retrofitted with `ReadResult`, `WriteResult`, and `ParseResult`.
 
 ### 2. Module Namespaces and Visibility
 
-**Priority: immediate, right after tagged unions. Needs design.**
+**Priority: next. Needs design.**
 
 The current import system merges all declarations into a flat global scope. Every function in every imported module is visible to everyone. This creates two problems that will only get worse:
 
@@ -325,21 +315,21 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 The stdlib is "done enough" when Nore can write a non-trivial program. The milestones form the progression:
 
 1. **"Hello, World"**: done. `print(ref "hello")` works.
-2. **Milestone 0**: fix existing stdlib with tagged unions and proper modules.
+2. **Milestone 0**: in progress. Tagged unions shipped and stdlib retrofitted. Module namespaces and native declarations still pending.
 3. **Cat clone**: file I/O end-to-end, command-line arguments.
 4. **Word count**: string processing, counting, formatted output.
 5. **JSON parser**: recursive data, tagged unions, error reporting.
 
-Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, tagged unions, generics) beyond what the stdlib alone provides.
+Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, generics) beyond what the stdlib alone provides.
 
 ---
 
 ## Open Questions
 
-- **Tagged union memory layout**: how are variants stored? Inline (max size of all variants) or heap-allocated? Affects arena interaction.
-- **Pattern matching syntax**: `match` expression with exhaustiveness checking? How verbose should it be?
+- ~~**Tagged union memory layout**: how are variants stored?~~ Resolved: inline layout (max size of all variants). Slice payloads make the union non-copyable.
+- ~~**Pattern matching syntax**: `match` expression with exhaustiveness checking?~~ Resolved: `match (scrutinee) { Variant(binding) = { body } }` with exhaustiveness checking. See `docs/syntax.md`.
+- ~~**Error model migration**: when `Result`/`Option` arrive, how do existing stdlib APIs evolve?~~ Resolved: breaking change. `read_file`, `write_file`, `str_to_i64` all use new tagged union return types.
 - **Module visibility default**: export-by-default (add `private`) or private-by-default (add `pub`)? Nore's explicit philosophy suggests private-by-default.
 - **Command-line arguments API**: built-in function vs compiler-injected globals? Slice of strings or raw argc/argv?
 - **Varargs design**: language feature or stdlib pattern? Depends on tagged unions? Let Milestone 2 drive this.
-- **Error model migration**: when `Result`/`Option` arrive, how do existing stdlib APIs evolve? Breaking change or parallel APIs?
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
