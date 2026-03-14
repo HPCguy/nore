@@ -1,4 +1,4 @@
-import "std/string.nore"
+import string "std/string.nore"
 
 func main(): void = {
     mut mem: Arena = arena(4096)

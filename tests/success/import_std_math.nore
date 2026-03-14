@@ -1,4 +1,4 @@
-import "std/math.nore"
+import math "std/math.nore"
 
 func main(): void = {
     // min/max i64

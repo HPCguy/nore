@@ -110,6 +110,7 @@ typedef enum {
     ERR_P055_EXPECTED_RPAREN_BINDING = ERR_GROUP_PARSER + 55,
     ERR_P056_PUB_NOT_DECLARATION   = ERR_GROUP_PARSER + 56,
     ERR_P057_PUB_IMPORT            = ERR_GROUP_PARSER + 57,
+    ERR_P058_EXPECTED_MODULE_ALIAS = ERR_GROUP_PARSER + 58,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -4924,7 +4925,9 @@ static bool is_already_imported(const char *resolved_path) {
 static void parser_parse_declarations(Parser *parser, Ast *program);
 
 /* Parse an imported file's declarations into the program AST */
-static void parser_parse_import(const char *resolved_path, Ast *program) {
+static void parser_parse_import(const char *resolved_path,
+                                 const char *alias, size_t alias_length,
+                                 Ast *program) {
     /* Read the imported file (reuse read_file which checks fread return) */
     size_t length;
     char *source = read_file(resolved_path, &length);
@@ -4935,14 +4938,14 @@ static void parser_parse_import(const char *resolved_path, Ast *program) {
     }
     g_import_sources[g_import_source_count++] = source;
 
-    /* Register as a module (alias is NULL for now, set in Phase 3) */
+    /* Register as a module */
     if (g_module_count >= MAX_IMPORTS) {
         panic(ERR_I002_INTERNAL_ERROR, "too many modules");
     }
     size_t module_id = g_module_count;
     g_modules[module_id].path = resolved_path;
-    g_modules[module_id].alias = NULL;
-    g_modules[module_id].alias_length = 0;
+    g_modules[module_id].alias = alias;
+    g_modules[module_id].alias_length = alias_length;
     g_module_count++;
 
     /* Save and set source file and module context */
@@ -4999,11 +5002,22 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
         }
 
         if (parser_match(parser, TOKEN_IMPORT)) {
-            /* import "path.nore" */
+            /* import alias "path.nore" */
+            if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                diagnostic(g_source_file, ERR_P058_EXPECTED_MODULE_ALIAS,
+                           parser->current.line, parser->current.column,
+                           "Expected module alias after 'import' "
+                           "(e.g., import io \"std/io.nore\")");
+                parser_synchronize(parser);
+                continue;
+            }
+            const char *alias_start = parser->previous.start;
+            size_t alias_length = parser->previous.length;
+
             if (!parser_match(parser, TOKEN_STRING)) {
                 diagnostic(g_source_file, ERR_P046_EXPECTED_IMPORT_PATH, parser->current.line,
                            parser->current.column,
-                           "Expected string literal after 'import'");
+                           "Expected import path after module alias");
                 parser_synchronize(parser);
                 continue;
             }
@@ -5044,7 +5058,8 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
 
             /* Parse the imported file's declarations into this program.
              * Use the strdup'd path from g_imported_files (stable pointer). */
-            parser_parse_import(g_imported_files[g_imported_count - 1], program);
+            parser_parse_import(g_imported_files[g_imported_count - 1],
+                                alias_start, alias_length, program);
 
         } else if (parser_match(parser, TOKEN_FUNC)) {
             Ast *func = parser_parse_function(parser, is_public);

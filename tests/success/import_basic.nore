@@ -1,4 +1,4 @@
-import "import_helpers/math_helper.nore"
+import helper "import_helpers/math_helper.nore"
 
 func main(): void = {
     assert add(3, 4) == 7

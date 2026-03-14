@@ -1,6 +1,6 @@
 // Test: slice-bearing tagged enums
 
-import "std/io.nore"
+import io "std/io.nore"
 
 // 1. Declare tagged enums with slice payloads
 enum Result { Ok([i64]), Err(i32) }

@@ -1,4 +1,4 @@
-import "import_helpers/types_helper.nore"
+import types "import_helpers/types_helper.nore"
 
 func main(): void = {
     val v: Vec2 = Vec2 { x: 1.0, y: 2.0 }

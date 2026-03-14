@@ -1,6 +1,6 @@
 // Standard I/O utilities for Nore
 
-import "std/string.nore"
+import string "std/string.nore"
 
 // Standard file descriptors
 val STDIN: i32 = 0

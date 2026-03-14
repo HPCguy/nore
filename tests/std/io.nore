@@ -1,4 +1,4 @@
-import "std/io.nore"
+import io "std/io.nore"
 
 func main(): void = {
     // print a string literal

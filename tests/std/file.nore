@@ -1,7 +1,7 @@
 // Test std/file.nore
 
-import "std/file.nore"
-import "std/string.nore"
+import file "std/file.nore"
+import string "std/string.nore"
 
 func main(): void = {
     mut mem: Arena = arena(4096)

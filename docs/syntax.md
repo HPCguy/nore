@@ -30,12 +30,13 @@ val y: i64 = 10
 Import declarations from other `.nore` files:
 
 ```nore
-import "std/math.nore"
-import "utils.nore"
-import "../shared/helpers.nore"
+import math "std/math.nore"
+import utils "utils.nore"
+import helpers "../shared/helpers.nore"
 ```
 
-- Keyword `import` followed by a string literal path
+- Keyword `import` followed by a module alias (identifier) and a string literal path
+- The alias must be a valid identifier (not a keyword)
 - Must appear at top level (alongside other declarations)
 - **Path resolution**: paths starting with `std/` resolve relative to the compiler binary's directory. All other paths resolve relative to the importing file's directory.
 - Each file is imported at most once (duplicates are silently skipped)
@@ -1071,7 +1072,7 @@ func count_alive(ref p: Particles): i64 = {
 
 The compiler also injects `enum OS { Linux, MacOS }` so that `TARGET_OS` comparisons work without imports.
 
-**From `std/io.nore`** (require `import "std/io.nore"`):
+**From `std/io.nore`** (require `import io "std/io.nore"`):
 
 | Name | Type | Value |
 |------|------|-------|
@@ -1079,7 +1080,7 @@ The compiler also injects `enum OS { Linux, MacOS }` so that `TARGET_OS` compari
 | `STDOUT` | `i32` | 1 |
 | `STDERR` | `i32` | 2 |
 
-**From `std/file.nore`** (require `import "std/file.nore"`):
+**From `std/file.nore`** (require `import file "std/file.nore"`):
 
 | Name | Value |
 |------|-------|
@@ -1421,16 +1422,16 @@ func main(): void = {
 
 ### Standard Library Functions
 
-Available via `import "std/io.nore"`:
+Available via `import io "std/io.nore"`:
 - `print(ref s)` - Print bytes to stdout
 - `println(ref s)` - Print bytes + newline to stdout
 - `print_i64(n)` - Print integer as decimal to stdout
 
-Available via `import "std/math.nore"`:
+Available via `import math "std/math.nore"`:
 - `min_i64(a, b)`, `max_i64(a, b)`, `abs_i64(a)`, `clamp_i64(x, lo, hi)`
 - `min_f64(a, b)`, `max_f64(a, b)`, `abs_f64(a)`, `clamp_f64(x, lo, hi)`
 
-Available via `import "std/file.nore"`:
+Available via `import file "std/file.nore"`:
 - `read_file(mut ref mem, ref path)` - Read entire file into arena, returns `[u8]`
 - `write_file(ref path, ref data)` - Write bytes to file (create/overwrite), returns `bool`
 

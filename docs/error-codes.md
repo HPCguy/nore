@@ -68,7 +68,7 @@ error[D002]: Unknown flag: --invalid
 - **P043**: Expected '}' to close enum
 - **P044**: Expected variant name in enum
 - **P045**: Unknown enum variant
-- **P046**: Expected string literal after 'import'
+- **P046**: Expected import path after module alias
 - **P047**: Expected ']' after slice range
 - **P048**: Expected ')' after variant payload type
 - **P049**: Expected '(' after 'match'
@@ -80,6 +80,7 @@ error[D002]: Unknown flag: --invalid
 - **P055**: Expected ')' after match binding
 - **P056**: 'pub' must be followed by a declaration
 - **P057**: 'pub' cannot be used on imports
+- **P058**: Expected module alias after 'import'
 - **D007**: Cannot find imported file
 
 - **S001**: Duplicate variable declaration
