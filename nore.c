@@ -108,6 +108,8 @@ typedef enum {
     ERR_P053_EXPECTED_EQUALS_MATCH = ERR_GROUP_PARSER + 53,
     ERR_P054_EXPECTED_RBRACE_MATCH = ERR_GROUP_PARSER + 54,
     ERR_P055_EXPECTED_RPAREN_BINDING = ERR_GROUP_PARSER + 55,
+    ERR_P056_PUB_NOT_DECLARATION   = ERR_GROUP_PARSER + 56,
+    ERR_P057_PUB_IMPORT            = ERR_GROUP_PARSER + 57,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -398,6 +400,7 @@ typedef enum {
     TOKEN_TABLE,
     TOKEN_ENUM,
     TOKEN_IMPORT,
+    TOKEN_PUB,
     TOKEN_REF,
     TOKEN_ARENA,
     TOKEN_STR,
@@ -481,6 +484,7 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_TABLE:         return "TABLE";
         case TOKEN_ENUM:          return "ENUM";
         case TOKEN_IMPORT:        return "IMPORT";
+        case TOKEN_PUB:           return "PUB";
         case TOKEN_REF:           return "REF";
         case TOKEN_ARENA:         return "ARENA";
         case TOKEN_STR:           return "STR";
@@ -657,6 +661,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "u32", 3) == 0) return TOKEN_U32;
             if (memcmp(start, "f64", 3) == 0) return TOKEN_F64;
             if (memcmp(start, "str", 3) == 0) return TOKEN_STR;
+            if (memcmp(start, "pub", 3) == 0) return TOKEN_PUB;
             break;
         case 4:
             if (memcmp(start, "func", 4) == 0) return TOKEN_FUNC;
@@ -1343,6 +1348,7 @@ typedef struct {
     SourceLoc loc;
     bool has_data;          /* true if any variant has a payload */
     bool has_slice_payload; /* true if any variant has a slice type */
+    bool is_public;
 } EnumTypeEntry;
 
 static EnumTypeEntry *g_enum_table = NULL;
@@ -1366,6 +1372,7 @@ static Type enum_table_add(const char *name_start, size_t name_length,
     entry->loc = loc;
     entry->has_data = false;
     entry->has_slice_payload = false;
+    entry->is_public = false;
     for (size_t i = 0; i < variant_count; i++) {
         if (variants[i].payload_type != TYPE_VOID) {
             entry->has_data = true;
@@ -1419,6 +1426,7 @@ typedef struct {
     Type row_type;             /* TYPE_VALUE_BASE + M */
     Parameter *fields;         /* original fields (value-compatible) */
     size_t field_count;
+    bool is_public;
 } TableDeclEntry;
 
 static TableDeclEntry *g_table_decls = NULL;
@@ -1442,6 +1450,7 @@ static void table_decl_add(const char *name_start, size_t name_length,
     e->row_type = row_type;
     e->fields = fields;
     e->field_count = field_count;
+    e->is_public = false;
 }
 
 static TableDeclEntry *table_decl_for_type(Type t) {
@@ -1682,6 +1691,7 @@ typedef struct Ast {
             size_t name_length;
             Type type;
             struct Ast *initializer;
+            bool is_public;
         } val_decl;
 
         struct {
@@ -1689,6 +1699,7 @@ typedef struct Ast {
             size_t name_length;
             Type type;
             struct Ast *initializer;
+            bool is_public;
         } mut_decl;
 
         struct {
@@ -1737,6 +1748,7 @@ typedef struct Ast {
             size_t param_count;
             Type return_type;
             struct Ast *body;
+            bool is_public;
         } func_decl;
 
         struct {
@@ -1745,6 +1757,7 @@ typedef struct Ast {
             Parameter *fields;
             size_t field_count;
             bool is_struct;
+            bool is_public;
         } value_decl;
 
         struct {
@@ -1812,6 +1825,7 @@ typedef struct Ast {
             const char *name_start;
             size_t name_length;
             size_t variant_count;
+            bool is_public;
         } enum_decl;
 
         struct {
@@ -1936,7 +1950,8 @@ static Ast *ast_make_func_call(const char *name_start, size_t name_length,
 }
 
 static Ast *ast_make_val_decl(const char *name_start, size_t name_length,
-                              Type type, Ast *initializer, SourceLoc loc) {
+                              Type type, Ast *initializer, bool is_public,
+                              SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -1947,11 +1962,13 @@ static Ast *ast_make_val_decl(const char *name_start, size_t name_length,
     node->as.val_decl.name_length = name_length;
     node->as.val_decl.type = type;
     node->as.val_decl.initializer = initializer;
+    node->as.val_decl.is_public = is_public;
     return node;
 }
 
 static Ast *ast_make_mut_decl(const char *name_start, size_t name_length,
-                              Type type, Ast *initializer, SourceLoc loc) {
+                              Type type, Ast *initializer, bool is_public,
+                              SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -1962,6 +1979,7 @@ static Ast *ast_make_mut_decl(const char *name_start, size_t name_length,
     node->as.mut_decl.name_length = name_length;
     node->as.mut_decl.type = type;
     node->as.mut_decl.initializer = initializer;
+    node->as.mut_decl.is_public = is_public;
     return node;
 }
 
@@ -2100,7 +2118,8 @@ static void ast_block_add_statement(Ast *block, Ast *statement) {
 }
 
 static Ast *ast_make_enum_decl(const char *name_start, size_t name_length,
-                               size_t variant_count, SourceLoc loc) {
+                               size_t variant_count, bool is_public,
+                               SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     node->kind = AST_ENUM_DECL;
@@ -2108,6 +2127,7 @@ static Ast *ast_make_enum_decl(const char *name_start, size_t name_length,
     node->as.enum_decl.name_start = name_start;
     node->as.enum_decl.name_length = name_length;
     node->as.enum_decl.variant_count = variant_count;
+    node->as.enum_decl.is_public = is_public;
     return node;
 }
 
@@ -2191,7 +2211,8 @@ static void ast_program_add_statement(Ast *program, Ast *statement) {
 
 static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
                                Parameter *params, size_t param_count,
-                               Type return_type, Ast *body, SourceLoc loc) {
+                               Type return_type, Ast *body, bool is_public,
+                               SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) {
         panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -2204,12 +2225,14 @@ static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
     node->as.func_decl.param_count = param_count;
     node->as.func_decl.return_type = return_type;
     node->as.func_decl.body = body;
+    node->as.func_decl.is_public = is_public;
     return node;
 }
 
 static Ast *ast_make_value_decl(const char *name_start, size_t name_length,
                                  Parameter *fields, size_t field_count,
-                                 bool is_struct, SourceLoc loc) {
+                                 bool is_struct, bool is_public,
+                                 SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     node->kind = AST_VALUE_DECL;
@@ -2219,6 +2242,7 @@ static Ast *ast_make_value_decl(const char *name_start, size_t name_length,
     node->as.value_decl.fields = fields;
     node->as.value_decl.field_count = field_count;
     node->as.value_decl.is_struct = is_struct;
+    node->as.value_decl.is_public = is_public;
     return node;
 }
 
@@ -2780,6 +2804,7 @@ static void parser_synchronize(Parser *parser) {
             case TOKEN_FUNC:
             case TOKEN_VAL:
             case TOKEN_MUT:
+            case TOKEN_PUB:
             case TOKEN_RETURN:
             case TOKEN_ASSERT:
             case TOKEN_IF:
@@ -3753,7 +3778,8 @@ static Ast *parser_parse_expression(Parser *parser) {
 
 /* ============================= Statement Parsing ========================== */
 
-static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
+static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable,
+                                         bool is_public) {
     /* Already consumed TOKEN_VAL or TOKEN_MUT */
     SourceLoc loc = token_loc(&parser->previous);
     const char *keyword = is_mutable ? "mut" : "val";
@@ -3810,9 +3836,11 @@ static Ast *parser_parse_var_declaration(Parser *parser, bool is_mutable) {
     }
 
     if (is_mutable) {
-        return ast_make_mut_decl(name_start, name_length, type, initializer, loc);
+        return ast_make_mut_decl(name_start, name_length, type, initializer,
+                                 is_public, loc);
     }
-    return ast_make_val_decl(name_start, name_length, type, initializer, loc);
+    return ast_make_val_decl(name_start, name_length, type, initializer,
+                             is_public, loc);
 }
 
 static Ast *parser_parse_return(Parser *parser) {
@@ -4438,7 +4466,7 @@ static Parameter *parser_parse_param_list(Parser *parser, size_t *count,
 }
 
 /* Parse function declaration: func name(params): returnType = { body } */
-static Ast *parser_parse_function(Parser *parser) {
+static Ast *parser_parse_function(Parser *parser, bool is_public) {
     /* TOKEN_FUNC already consumed */
     SourceLoc loc = token_loc(&parser->previous);
 
@@ -4512,7 +4540,7 @@ static Ast *parser_parse_function(Parser *parser) {
     Ast *body = parser_parse_block(parser);
 
     return ast_make_func_decl(name_start, name_length, params, param_count,
-                              return_type, body, loc);
+                              return_type, body, is_public, loc);
 }
 
 static Ast *parser_parse_statement(Parser *parser) {
@@ -4524,11 +4552,11 @@ static Ast *parser_parse_statement(Parser *parser) {
     }
 
     if (parser_match(parser, TOKEN_VAL)) {
-        return parser_parse_var_declaration(parser, false);
+        return parser_parse_var_declaration(parser, false, false);
     }
 
     if (parser_match(parser, TOKEN_MUT)) {
-        return parser_parse_var_declaration(parser, true);
+        return parser_parse_var_declaration(parser, true, false);
     }
 
     if (parser_match(parser, TOKEN_RETURN)) {
@@ -4581,7 +4609,8 @@ static Ast *parser_parse_statement(Parser *parser) {
 }
 
 /* Parse value/struct type declaration: value|struct Name { field: Type, ... } */
-static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
+static Ast *parser_parse_value_decl(Parser *parser, bool is_struct,
+                                    bool is_public) {
     /* TOKEN_VALUE or TOKEN_STRUCT already consumed */
     SourceLoc loc = token_loc(&parser->previous);
     const char *keyword = is_struct ? "struct" : "value";
@@ -4628,7 +4657,7 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct) {
     value_table_add(name_start, name_length, fields, field_count, loc, is_struct);
 
     return ast_make_value_decl(name_start, name_length, fields, field_count,
-                               is_struct, loc);
+                               is_struct, is_public, loc);
 }
 
 /* Static string for the synthesized "_len" field name */
@@ -4637,7 +4666,7 @@ static const char *g_table_len_field = "_len";
 /* Parse table declaration: table Name { field: Type, ... }
  * Generates a struct (columnar) and a value (row) in g_value_table,
  * plus a TableDeclEntry. Returns AST_VALUE_DECL for the struct. */
-static Ast *parser_parse_enum_decl(Parser *parser) {
+static Ast *parser_parse_enum_decl(Parser *parser, bool is_public) {
     /* TOKEN_ENUM already consumed */
     SourceLoc loc = token_loc(&parser->previous);
 
@@ -4746,10 +4775,11 @@ static Ast *parser_parse_enum_decl(Parser *parser) {
     }
 
     enum_table_add(name_start, name_length, variants, variant_count, loc);
-    return ast_make_enum_decl(name_start, name_length, variant_count, loc);
+    return ast_make_enum_decl(name_start, name_length, variant_count, is_public,
+                              loc);
 }
 
-static Ast *parser_parse_table_decl(Parser *parser) {
+static Ast *parser_parse_table_decl(Parser *parser, bool is_public) {
     /* TOKEN_TABLE already consumed */
     SourceLoc loc = token_loc(&parser->previous);
 
@@ -4829,7 +4859,7 @@ static Ast *parser_parse_table_decl(Parser *parser) {
                    struct_type, row_type, orig_fields, field_count);
 
     return ast_make_value_decl(name_start, name_length, struct_fields,
-                               struct_field_count, true, loc);
+                               struct_field_count, true, is_public, loc);
 }
 
 /* Resolve import path: std/ prefix -> compiler dir, else -> relative to current file */
@@ -4901,6 +4931,35 @@ static void parser_parse_import(const char *resolved_path, Ast *program) {
  * Used by both parser_parse_program (main file) and parser_parse_import. */
 static void parser_parse_declarations(Parser *parser, Ast *program) {
     while (!parser_check(parser, TOKEN_EOF) && !too_many_errors()) {
+        /* Check for 'pub' prefix on declarations */
+        bool is_public = false;
+        if (parser_match(parser, TOKEN_PUB)) {
+            is_public = true;
+            /* pub import is an error */
+            if (parser_check(parser, TOKEN_IMPORT)) {
+                diagnostic(g_source_file, ERR_P057_PUB_IMPORT,
+                           parser->previous.line, parser->previous.column,
+                           "'pub' cannot be used on imports");
+                parser_synchronize(parser);
+                continue;
+            }
+            /* pub must be followed by a declaration keyword */
+            if (!parser_check(parser, TOKEN_FUNC) &&
+                !parser_check(parser, TOKEN_VALUE) &&
+                !parser_check(parser, TOKEN_STRUCT) &&
+                !parser_check(parser, TOKEN_TABLE) &&
+                !parser_check(parser, TOKEN_ENUM) &&
+                !parser_check(parser, TOKEN_VAL) &&
+                !parser_check(parser, TOKEN_MUT)) {
+                diagnostic(g_source_file, ERR_P056_PUB_NOT_DECLARATION,
+                           parser->previous.line, parser->previous.column,
+                           "'pub' must be followed by a declaration "
+                           "(func, value, struct, table, enum, val, or mut)");
+                parser_synchronize(parser);
+                continue;
+            }
+        }
+
         if (parser_match(parser, TOKEN_IMPORT)) {
             /* import "path.nore" */
             if (!parser_match(parser, TOKEN_STRING)) {
@@ -4950,31 +5009,32 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
             parser_parse_import(g_imported_files[g_imported_count - 1], program);
 
         } else if (parser_match(parser, TOKEN_FUNC)) {
-            Ast *func = parser_parse_function(parser);
+            Ast *func = parser_parse_function(parser, is_public);
             if (func) {
                 ast_program_add_statement(program, func);
             }
         } else if (parser_match(parser, TOKEN_VALUE) ||
                    parser_match(parser, TOKEN_STRUCT)) {
             bool is_struct = parser->previous.kind == TOKEN_STRUCT;
-            Ast *decl = parser_parse_value_decl(parser, is_struct);
+            Ast *decl = parser_parse_value_decl(parser, is_struct, is_public);
             if (decl) {
                 ast_program_add_statement(program, decl);
             }
         } else if (parser_match(parser, TOKEN_TABLE)) {
-            Ast *decl = parser_parse_table_decl(parser);
+            Ast *decl = parser_parse_table_decl(parser, is_public);
             if (decl) {
                 ast_program_add_statement(program, decl);
             }
         } else if (parser_match(parser, TOKEN_ENUM)) {
-            Ast *decl = parser_parse_enum_decl(parser);
+            Ast *decl = parser_parse_enum_decl(parser, is_public);
             if (decl) {
                 ast_program_add_statement(program, decl);
             }
         } else if (parser_match(parser, TOKEN_VAL) ||
                    parser_match(parser, TOKEN_MUT)) {
             bool is_mutable = parser->previous.kind == TOKEN_MUT;
-            Ast *var = parser_parse_var_declaration(parser, is_mutable);
+            Ast *var = parser_parse_var_declaration(parser, is_mutable,
+                                                    is_public);
             if (var) {
                 ast_program_add_statement(program, var);
             }
@@ -4991,6 +5051,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                    !parser_check(parser, TOKEN_IMPORT) &&
                    !parser_check(parser, TOKEN_VAL) &&
                    !parser_check(parser, TOKEN_MUT) &&
+                   !parser_check(parser, TOKEN_PUB) &&
                    !parser_check(parser, TOKEN_EOF)) {
                 parser_advance(parser);
             }

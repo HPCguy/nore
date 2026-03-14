@@ -1,0 +1,5 @@
+// Error: 'pub' cannot be used on imports
+pub import "std/math.nore"
+
+func main(): void = {
+}

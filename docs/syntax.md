@@ -43,6 +43,22 @@ import "../shared/helpers.nore"
 - Imports are transitive: if A imports B and B imports C, declarations from C are visible in A
 - Error diagnostics show the correct source file for each error
 
+### Visibility (`pub`)
+
+Top-level declarations can be marked `pub` for public visibility:
+
+```nore
+pub func add(a: i64, b: i64): i64 = { a + b }
+pub val MAX_SIZE: i64 = 1024
+pub value Point { x: i64, y: i64 }
+pub enum Color { Red, Green, Blue }
+pub table Particles { x: f64, y: f64 }
+```
+
+- `pub` can prefix: `func`, `value`, `struct`, `table`, `enum`, `val`, `mut`
+- `pub import` is not allowed (no re-exports)
+- Currently parsed and stored but not enforced (all declarations are still visible)
+
 ### Types
 
 **Currently supported**:
@@ -1355,6 +1371,7 @@ func main(): void = {
 - `table` - Table type declaration (columnar storage sugar)
 - `match` - Match expression/statement (tagged unions)
 - `import` - Import declarations
+- `pub` - Public visibility modifier for declarations
 - `str` - String type (byte slice `[u8]`)
 - `Arena` - Arena type (heap memory)
 - `ref` - Reference parameter/argument

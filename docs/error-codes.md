@@ -78,6 +78,8 @@ error[D002]: Unknown flag: --invalid
 - **P053**: Expected '=' after match pattern
 - **P054**: Expected '}' to close match
 - **P055**: Expected ')' after match binding
+- **P056**: 'pub' must be followed by a declaration
+- **P057**: 'pub' cannot be used on imports
 - **D007**: Cannot find imported file
 
 - **S001**: Duplicate variable declaration

@@ -1,0 +1,5 @@
+// Error: 'pub' must be followed by a declaration
+pub return
+
+func main(): void = {
+}
