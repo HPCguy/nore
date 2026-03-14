@@ -4,9 +4,9 @@ import types "import_helpers/types_helper.nore"
 import combined "import_helpers/combined_helper.nore"
 
 func main(): void = {
-    val v: Vec2 = make_vec2(5.0, 6.0)
+    val v: types.Vec2 = combined.make_vec2(5.0, 6.0)
     assert v.x == 5.0
 
-    val d: Direction = Direction.West
-    assert d == Direction.West
+    val d: types.Direction = types.Direction.West
+    assert d == types.Direction.West
 }

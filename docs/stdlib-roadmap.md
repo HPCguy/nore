@@ -104,14 +104,18 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 - `str_to_i64` returns `ParseResult { Ok(i64), None }`
 - `fd_open` stdlib wrapper returning Result: not yet done
 
-**Module namespaces and visibility:** Not started. Refactor the import system so modules have proper boundaries. The problems are clear (name collisions from flat scope, no way to hide internal helpers), but the solution needs design. Starting points for discussion:
-- Visibility: explicit exports (`pub func`) vs explicit privacy (`private func`) vs unexported-by-default
-- Namespace access: dot-qualified (`string.eq`) vs current prefix convention
-- Backward compatibility: can existing code migrate incrementally?
+**Module namespaces and visibility:** Done. The import system now provides proper module boundaries:
+- `import alias "path"` syntax with mandatory module alias
+- Qualified access: `alias.name` for functions, types, constants, and enum variants
+- `pub` visibility modifier enforced: only `pub` declarations are accessible from other modules
+- No transitive visibility: each file must import what it uses directly
+- Name mangling in generated C code prevents cross-module collisions (`ni_alias__name`)
+- Three-level dot access for enum variants: `file.ReadResult.Ok(data)`
+- Built-in functions (`fd_write`, `arena`, `exit`, etc.) remain in global scope
 
 **Gate built-ins behind `native` declarations:** Not started. Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. Instead, a `native` keyword would let any `.nore` module declare a built-in's signature, and the compiler provides the implementation only when the signature matches a known built-in. For example, `std/io.nore` would declare `native func fd_write(fd: i32, ref data: [u8]): i64` and the function becomes available only to code that imports that module. This means built-ins are not a prerogative of any specific compiler path; they live in whatever domain module makes sense. The `.nore` file becomes the documentation, the compiler just has a table of known native signatures to match against.
 
-**Remaining requires:** Module system v2 (language prereq #2), Built-in gating (language prereq #2b).
+**Remaining requires:** Built-in gating (language prereq #2b).
 
 ### Milestone 1: Cat Clone
 
@@ -193,26 +197,13 @@ Features the compiler needs, ordered by priority. Each is a compiler change, not
 
 Shipped. Enums carry associated data. `match` expressions with exhaustiveness checking. Slice payloads supported (makes the tagged union non-copyable, like structs with slice fields). Inline layout (max size of all variants). The stdlib has been retrofitted with `ReadResult`, `WriteResult`, and `ParseResult`.
 
-### 2. Module Namespaces and Visibility
+### ~~2. Module Namespaces and Visibility~~ (done)
 
-**Priority: next. Needs design.**
-
-The current import system merges all declarations into a flat global scope. Every function in every imported module is visible to everyone. This creates two problems that will only get worse:
-
-- **Name collisions:** Functions use manual prefixes (`str_eq`, `min_i64`) as a workaround for missing namespaces. As more modules are added, collisions become inevitable.
-- **No privacy:** A module cannot have internal helper functions. Every helper leaks into the importer's scope. A JSON parser's `skip_whitespace` would be visible to every file that imports it.
-
-**Blocks:** Milestone 0 (stdlib cleanup), and any non-trivial module with internal helpers.
-
-**Design space:** The problems are well understood, but the solution needs careful thought:
-- Visibility: explicit exports (`pub func`) vs explicit privacy (`private func`) vs unexported-by-default
-- Namespace access: dot-qualified (`string.eq`) vs current prefix convention
-- Backward compatibility: can existing code migrate incrementally?
-- Interaction with transitive imports: if A imports B imports C, what does A see from C?
+Shipped. The import system now uses `import alias "path"` with mandatory module aliases and qualified access (`alias.name`). The `pub` keyword controls visibility: only `pub` declarations are accessible from other modules. No transitive visibility. Name mangling in generated C prevents cross-module collisions.
 
 ### 2b. Native Keyword for Built-in Declarations
 
-**Priority: right after module system v2. Needs design.**
+**Priority: next. Needs design.**
 
 A `native` keyword lets `.nore` modules declare built-in function signatures. The compiler maintains a table of known native functions and provides the implementation when a declaration's signature matches. No match means a compile error.
 
@@ -315,7 +306,7 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 The stdlib is "done enough" when Nore can write a non-trivial program. The milestones form the progression:
 
 1. **"Hello, World"**: done. `print(ref "hello")` works.
-2. **Milestone 0**: in progress. Tagged unions shipped and stdlib retrofitted. Module namespaces and native declarations still pending.
+2. **Milestone 0**: mostly done. Tagged unions shipped, stdlib retrofitted, module system complete. Native declarations still pending.
 3. **Cat clone**: file I/O end-to-end, command-line arguments.
 4. **Word count**: string processing, counting, formatted output.
 5. **JSON parser**: recursive data, tagged unions, error reporting.

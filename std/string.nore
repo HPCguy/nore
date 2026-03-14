@@ -2,21 +2,21 @@
 
 // Character classification
 
-func is_digit(c: u8): bool = {
+pub func is_digit(c: u8): bool = {
     c >= '0' && c <= '9'
 }
 
-func is_alpha(c: u8): bool = {
+pub func is_alpha(c: u8): bool = {
     (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
 }
 
-func is_space(c: u8): bool = {
+pub func is_space(c: u8): bool = {
     c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // Comparison
 
-func str_eq(ref a: str, ref b: str): bool = {
+pub func str_eq(ref a: str, ref b: str): bool = {
     if (a.len != b.len) {
         return false
     }
@@ -30,7 +30,7 @@ func str_eq(ref a: str, ref b: str): bool = {
     return true
 }
 
-func str_starts_with(ref s: str, ref prefix: str): bool = {
+pub func str_starts_with(ref s: str, ref prefix: str): bool = {
     if (prefix.len > s.len) {
         return false
     }
@@ -44,7 +44,7 @@ func str_starts_with(ref s: str, ref prefix: str): bool = {
     return true
 }
 
-func str_ends_with(ref s: str, ref suffix: str): bool = {
+pub func str_ends_with(ref s: str, ref suffix: str): bool = {
     if (suffix.len > s.len) {
         return false
     }
@@ -61,7 +61,7 @@ func str_ends_with(ref s: str, ref suffix: str): bool = {
 
 // Searching
 
-func str_find(ref s: str, ref needle: str): i64 = {
+pub func str_find(ref s: str, ref needle: str): i64 = {
     if (needle.len == 0) {
         return 0
     }
@@ -89,13 +89,13 @@ func str_find(ref s: str, ref needle: str): i64 = {
     return 0 - 1
 }
 
-func str_contains(ref s: str, ref needle: str): bool = {
+pub func str_contains(ref s: str, ref needle: str): bool = {
     str_find(ref s, ref needle) >= 0
 }
 
 // Concatenation
 
-func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
+pub func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
     val total: i64 = a.len + b.len
     mut result: str = arena_alloc(mut ref mem, total)
     mem_copy(mut ref result[0..a.len], ref a)
@@ -107,7 +107,7 @@ func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
 
 // Format n into buf (right-to-left, 21-byte buffer expected).
 // Returns the start position. The result is buf[pos..20].
-func fmt_i64(mut ref buf: [u8], n: i64): i64 = {
+pub func fmt_i64(mut ref buf: [u8], n: i64): i64 = {
     mut pos: i64 = 20
 
     if (n == 0) {
@@ -139,9 +139,9 @@ func fmt_i64(mut ref buf: [u8], n: i64): i64 = {
 
 // Conversion
 
-enum ParseResult { Ok(i64), None }
+pub enum ParseResult { Ok(i64), None }
 
-func i64_to_str(mut ref mem: Arena, n: i64): str = {
+pub func i64_to_str(mut ref mem: Arena, n: i64): str = {
     mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     val pos: i64 = fmt_i64(mut ref buf, n)
     val len: i64 = 20 - pos
@@ -150,7 +150,7 @@ func i64_to_str(mut ref mem: Arena, n: i64): str = {
     return result
 }
 
-func str_to_i64(ref s: str): ParseResult = {
+pub func str_to_i64(ref s: str): ParseResult = {
     if (s.len == 0) {
         return ParseResult.None
     }

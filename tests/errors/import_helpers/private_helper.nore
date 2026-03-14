@@ -1,0 +1,9 @@
+// Helper with a mix of public and private declarations
+pub func public_add(a: i64, b: i64): i64 = { a + b }
+func private_sub(a: i64, b: i64): i64 = { a - b }
+
+pub value PubPoint { x: i64, y: i64 }
+value PrivPoint { x: i64, y: i64 }
+
+pub val PUB_CONST: i64 = 42
+val PRIV_CONST: i64 = 99

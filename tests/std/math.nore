@@ -2,46 +2,46 @@ import math "std/math.nore"
 
 func main(): void = {
     // min_i64
-    assert min_i64(3, 5) == 3
-    assert min_i64(5, 3) == 3
-    assert min_i64(4, 4) == 4
-    assert min_i64(0 - 10, 5) == 0 - 10
+    assert math.min_i64(3, 5) == 3
+    assert math.min_i64(5, 3) == 3
+    assert math.min_i64(4, 4) == 4
+    assert math.min_i64(0 - 10, 5) == 0 - 10
 
     // max_i64
-    assert max_i64(3, 5) == 5
-    assert max_i64(5, 3) == 5
-    assert max_i64(4, 4) == 4
-    assert max_i64(0 - 10, 5) == 5
+    assert math.max_i64(3, 5) == 5
+    assert math.max_i64(5, 3) == 5
+    assert math.max_i64(4, 4) == 4
+    assert math.max_i64(0 - 10, 5) == 5
 
     // abs_i64
-    assert abs_i64(5) == 5
-    assert abs_i64(0 - 5) == 5
-    assert abs_i64(0) == 0
+    assert math.abs_i64(5) == 5
+    assert math.abs_i64(0 - 5) == 5
+    assert math.abs_i64(0) == 0
 
     // clamp_i64
-    assert clamp_i64(5, 1, 10) == 5
-    assert clamp_i64(0 - 3, 1, 10) == 1
-    assert clamp_i64(15, 1, 10) == 10
-    assert clamp_i64(1, 1, 10) == 1
-    assert clamp_i64(10, 1, 10) == 10
+    assert math.clamp_i64(5, 1, 10) == 5
+    assert math.clamp_i64(0 - 3, 1, 10) == 1
+    assert math.clamp_i64(15, 1, 10) == 10
+    assert math.clamp_i64(1, 1, 10) == 1
+    assert math.clamp_i64(10, 1, 10) == 10
 
     // min_f64
-    assert min_f64(1.5, 2.5) == 1.5
-    assert min_f64(2.5, 1.5) == 1.5
-    assert min_f64(3.0, 3.0) == 3.0
+    assert math.min_f64(1.5, 2.5) == 1.5
+    assert math.min_f64(2.5, 1.5) == 1.5
+    assert math.min_f64(3.0, 3.0) == 3.0
 
     // max_f64
-    assert max_f64(1.5, 2.5) == 2.5
-    assert max_f64(2.5, 1.5) == 2.5
-    assert max_f64(3.0, 3.0) == 3.0
+    assert math.max_f64(1.5, 2.5) == 2.5
+    assert math.max_f64(2.5, 1.5) == 2.5
+    assert math.max_f64(3.0, 3.0) == 3.0
 
     // abs_f64
-    assert abs_f64(3.14) == 3.14
-    assert abs_f64(0.0 - 3.14) == 3.14
-    assert abs_f64(0.0) == 0.0
+    assert math.abs_f64(3.14) == 3.14
+    assert math.abs_f64(0.0 - 3.14) == 3.14
+    assert math.abs_f64(0.0) == 0.0
 
     // clamp_f64
-    assert clamp_f64(5.0, 1.0, 10.0) == 5.0
-    assert clamp_f64(0.0 - 3.0, 1.0, 10.0) == 1.0
-    assert clamp_f64(15.0, 1.0, 10.0) == 10.0
+    assert math.clamp_f64(5.0, 1.0, 10.0) == 5.0
+    assert math.clamp_f64(0.0 - 3.0, 1.0, 10.0) == 1.0
+    assert math.clamp_f64(15.0, 1.0, 10.0) == 10.0
 }

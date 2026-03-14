@@ -2,32 +2,32 @@ import math "std/math.nore"
 
 func main(): void = {
     // min/max i64
-    assert min_i64(3, 7) == 3
-    assert min_i64(7, 3) == 3
-    assert max_i64(3, 7) == 7
-    assert max_i64(7, 3) == 7
+    assert math.min_i64(3, 7) == 3
+    assert math.min_i64(7, 3) == 3
+    assert math.max_i64(3, 7) == 7
+    assert math.max_i64(7, 3) == 7
 
     // abs i64
-    assert abs_i64(5) == 5
-    assert abs_i64(-5) == 5
-    assert abs_i64(0) == 0
+    assert math.abs_i64(5) == 5
+    assert math.abs_i64(-5) == 5
+    assert math.abs_i64(0) == 0
 
     // clamp i64
-    assert clamp_i64(5, 0, 10) == 5
-    assert clamp_i64(-3, 0, 10) == 0
-    assert clamp_i64(15, 0, 10) == 10
+    assert math.clamp_i64(5, 0, 10) == 5
+    assert math.clamp_i64(-3, 0, 10) == 0
+    assert math.clamp_i64(15, 0, 10) == 10
 
     // min/max f64
-    val a: f64 = min_f64(1.5, 2.5)
+    val a: f64 = math.min_f64(1.5, 2.5)
     assert a == 1.5
-    val b: f64 = max_f64(1.5, 2.5)
+    val b: f64 = math.max_f64(1.5, 2.5)
     assert b == 2.5
 
     // abs f64
-    val c: f64 = abs_f64(-3.14)
+    val c: f64 = math.abs_f64(-3.14)
     assert c == 3.14
 
     // clamp f64
-    val d: f64 = clamp_f64(5.0, 0.0, 3.0)
+    val d: f64 = math.clamp_f64(5.0, 0.0, 3.0)
     assert d == 3.0
 }

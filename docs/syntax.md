@@ -40,9 +40,45 @@ import helpers "../shared/helpers.nore"
 - Must appear at top level (alongside other declarations)
 - **Path resolution**: paths starting with `std/` resolve relative to the compiler binary's directory. All other paths resolve relative to the importing file's directory.
 - Each file is imported at most once (duplicates are silently skipped)
-- All top-level declarations from the imported file are merged into the importing program's scope
-- Imports are transitive: if A imports B and B imports C, declarations from C are visible in A
+- Imported declarations are accessed via qualified names using the alias: `alias.name`
+- No transitive visibility: if A imports B and B imports C, A cannot access C's declarations (A must import C directly)
 - Error diagnostics show the correct source file for each error
+
+### Qualified Access
+
+Imported declarations are accessed through the module alias:
+
+```nore
+import math "std/math.nore"
+import file "std/file.nore"
+
+func main(): void = {
+    // Qualified function call
+    val x: i64 = math.min_i64(3, 7)
+
+    // Qualified type annotation
+    val r: file.ReadResult = file.read_file(mut ref mem, ref path)
+
+    // Qualified constant
+    val fd: i32 = fd_open(ref path, file.O_RDONLY)
+
+    // Qualified enum variant (three-level: module.Enum.Variant)
+    val err: file.WriteResult = file.WriteResult.Err(-1)
+
+    // Qualified value constructor
+    val p: types.Vec2 = types.Vec2 { x: 1.0, y: 2.0 }
+}
+```
+
+- Functions: `alias.func_name(args)`
+- Types (in annotations): `alias.TypeName`
+- Value constructors: `alias.TypeName { fields }`
+- Enum variants: `alias.EnumName.Variant` or `alias.EnumName.Variant(payload)`
+- Constants: `alias.CONSTANT_NAME`
+- Table row types: `alias.TableName.Row`
+- Match arms use unqualified variant names (the scrutinee type determines the enum)
+- Built-in functions (`fd_write`, `fd_read`, `arena`, `exit`, etc.) remain unqualified
+- Compiler-injected declarations (`TARGET_OS`, `OS` enum) are always available without qualification
 
 ### Visibility (`pub`)
 
@@ -58,7 +94,9 @@ pub table Particles { x: f64, y: f64 }
 
 - `pub` can prefix: `func`, `value`, `struct`, `table`, `enum`, `val`, `mut`
 - `pub import` is not allowed (no re-exports)
-- Currently parsed and stored but not enforced (all declarations are still visible)
+- Only `pub` declarations are accessible via qualified access from other modules
+- Accessing a non-pub declaration via `alias.name` is an error (S083, S084, S085)
+- Within the same file, all declarations are visible regardless of `pub`
 
 ### Types
 
@@ -1072,29 +1110,29 @@ func count_alive(ref p: Particles): i64 = {
 
 The compiler also injects `enum OS { Linux, MacOS }` so that `TARGET_OS` comparisons work without imports.
 
-**From `std/io.nore`** (require `import io "std/io.nore"`):
+**From `std/io.nore`** (require `import io "std/io.nore"`, access as `io.STDIN` etc.):
 
 | Name | Type | Value |
 |------|------|-------|
-| `STDIN` | `i32` | 0 |
-| `STDOUT` | `i32` | 1 |
-| `STDERR` | `i32` | 2 |
+| `io.STDIN` | `i32` | 0 |
+| `io.STDOUT` | `i32` | 1 |
+| `io.STDERR` | `i32` | 2 |
 
-**From `std/file.nore`** (require `import file "std/file.nore"`):
+**From `std/file.nore`** (require `import file "std/file.nore"`, access as `file.O_RDONLY` etc.):
 
 | Name | Value |
 |------|-------|
-| `O_RDONLY` | 0 |
-| `O_WRONLY` | 1 |
-| `O_RDWR` | 2 |
-| `O_CREAT` | platform-specific (via `TARGET_OS`) |
-| `O_TRUNC` | platform-specific (via `TARGET_OS`) |
-| `O_APPEND` | platform-specific (via `TARGET_OS`) |
-| `SEEK_SET` | 0 |
-| `SEEK_CUR` | 1 |
-| `SEEK_END` | 2 |
+| `file.O_RDONLY` | 0 |
+| `file.O_WRONLY` | 1 |
+| `file.O_RDWR` | 2 |
+| `file.O_CREAT` | platform-specific (via `TARGET_OS`) |
+| `file.O_TRUNC` | platform-specific (via `TARGET_OS`) |
+| `file.O_APPEND` | platform-specific (via `TARGET_OS`) |
+| `file.SEEK_SET` | 0 |
+| `file.SEEK_CUR` | 1 |
+| `file.SEEK_END` | 2 |
 
-Flags can be combined with bitwise OR: `O_WRONLY | O_CREAT | O_TRUNC`
+Flags can be combined with bitwise OR: `file.O_WRONLY | file.O_CREAT | file.O_TRUNC`
 
 ### I/O Built-in Functions
 
@@ -1102,11 +1140,11 @@ Low-level I/O built-ins provide the thinnest possible bridge to POSIX syscalls. 
 
 **fd_write(fd, ref data)**: write bytes to a file descriptor:
 ```nore
-val n: i64 = fd_write(STDOUT, ref "Hello, World!\n")
+val n: i64 = fd_write(io.STDOUT, ref "Hello, World!\n")
 assert n == 14
 
 val data: [u8; 3] = [65, 66, 67]
-fd_write(STDOUT, ref data)    // writes "ABC"
+fd_write(io.STDOUT, ref data)    // writes "ABC"
 ```
 - `fd` must be an integer type (file descriptor)
 - `data` must be `[u8]` (slice) or `[u8; N]` (array), passed with `ref`
@@ -1116,7 +1154,7 @@ fd_write(STDOUT, ref data)    // writes "ABC"
 **fd_read(fd, mut ref buf)**: read bytes from a file descriptor:
 ```nore
 mut buf: [u8; 256] = [0, 0, ...]
-val n: i64 = fd_read(STDIN, mut ref buf)
+val n: i64 = fd_read(io.STDIN, mut ref buf)
 ```
 - `fd` must be an integer type (file descriptor)
 - `buf` must be `[u8]` or `[u8; N]`, passed with `mut ref` (buffer must be mutable)
@@ -1422,24 +1460,34 @@ func main(): void = {
 
 ### Standard Library Functions
 
-Available via `import io "std/io.nore"`:
-- `print(ref s)` - Print bytes to stdout
-- `println(ref s)` - Print bytes + newline to stdout
-- `print_i64(n)` - Print integer as decimal to stdout
+Available via `import io "std/io.nore"` (access as `io.print(...)` etc.):
+- `io.print(ref s)` - Print bytes to stdout
+- `io.println(ref s)` - Print bytes + newline to stdout
+- `io.print_i64(n)` - Print integer as decimal to stdout
 
-Available via `import math "std/math.nore"`:
-- `min_i64(a, b)`, `max_i64(a, b)`, `abs_i64(a)`, `clamp_i64(x, lo, hi)`
-- `min_f64(a, b)`, `max_f64(a, b)`, `abs_f64(a)`, `clamp_f64(x, lo, hi)`
+Available via `import math "std/math.nore"` (access as `math.min_i64(...)` etc.):
+- `math.min_i64(a, b)`, `math.max_i64(a, b)`, `math.abs_i64(a)`, `math.clamp_i64(x, lo, hi)`
+- `math.min_f64(a, b)`, `math.max_f64(a, b)`, `math.abs_f64(a)`, `math.clamp_f64(x, lo, hi)`
 
-Available via `import file "std/file.nore"`:
-- `read_file(mut ref mem, ref path)` - Read entire file into arena, returns `[u8]`
-- `write_file(ref path, ref data)` - Write bytes to file (create/overwrite), returns `bool`
+Available via `import string "std/string.nore"` (access as `string.str_eq(...)` etc.):
+- `string.is_digit(c)`, `string.is_alpha(c)`, `string.is_space(c)` - Character classification
+- `string.str_eq(ref a, ref b)`, `string.str_starts_with(...)`, `string.str_ends_with(...)` - Comparison
+- `string.str_find(ref s, ref needle)`, `string.str_contains(...)` - Searching
+- `string.str_concat(mut ref mem, ref a, ref b)` - Concatenation (arena-allocated)
+- `string.fmt_i64(mut ref buf, n)`, `string.i64_to_str(mut ref mem, n)`, `string.str_to_i64(ref s)` - Formatting/conversion
+- `string.ParseResult` - Enum type: `Ok(i64)` or `None`
+
+Available via `import file "std/file.nore"` (access as `file.read_file(...)` etc.):
+- `file.read_file(mut ref mem, ref path)` - Read entire file into arena, returns `file.ReadResult`
+- `file.write_file(ref path, ref data)` - Write bytes to file (create/overwrite), returns `file.WriteResult`
+- `file.ReadResult` - Enum type: `Ok([u8])` or `Err(i32)`
+- `file.WriteResult` - Enum type: `Ok(i64)` or `Err(i32)`
 
 ### Predefined Constants
-- `TARGET_OS` - Compiler-injected, `OS.Linux` or `OS.MacOS`
-- `STDIN`, `STDOUT`, `STDERR` - Standard file descriptors (from `std/io.nore`)
-- `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_TRUNC`, `O_APPEND` - POSIX open flags (from `std/file.nore`)
-- `SEEK_SET`, `SEEK_CUR`, `SEEK_END` - Seek whence constants (from `std/file.nore`)
+- `TARGET_OS` - Compiler-injected, `OS.Linux` or `OS.MacOS` (no import needed)
+- `io.STDIN`, `io.STDOUT`, `io.STDERR` - Standard file descriptors (from `std/io.nore`)
+- `file.O_RDONLY`, `file.O_WRONLY`, `file.O_RDWR`, `file.O_CREAT`, `file.O_TRUNC`, `file.O_APPEND` - POSIX open flags (from `std/file.nore`)
+- `file.SEEK_SET`, `file.SEEK_CUR`, `file.SEEK_END` - Seek whence constants (from `std/file.nore`)
 
 ### Punctuation
 - `(` `)` - Parentheses (parameters, grouping, conditions)
@@ -1448,7 +1496,7 @@ Available via `import file "std/file.nore"`:
 - `:` - Type annotation separator
 - `;` - Array type size separator (`[T; N]`)
 - `,` - Parameter/field/element separator
-- `.` - Field access
+- `.` - Field access, module-qualified access, enum variant access
 - `..` - Range operator (for loops, sub-slicing)
 
 Note: `"` delimits string literals but is consumed by the lexer during scanning, not emitted as a standalone token.
@@ -1481,7 +1529,6 @@ Note: `"` delimits string literals but is consumed by the lexer during scanning,
 **Not yet implemented**:
 - Multiline strings
 - Additional types (`f32`)
-- Module system
 - While as expressions
 - Early exit from expression blocks (`yield` keyword)
 

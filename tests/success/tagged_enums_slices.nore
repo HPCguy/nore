@@ -112,6 +112,6 @@ func main(): void = {
     }
     assert mv == 64
 
-    print_i64(total + s + code + v + mv)
-    println(ref "")
+    io.print_i64(total + s + code + v + mv)
+    io.println(ref "")
 }

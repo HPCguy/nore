@@ -1,11 +1,13 @@
+// Test: access types from a module that re-exports them via its own imports.
+// Must import types_helper directly since transitive visibility is not supported.
+import types "import_helpers/types_helper.nore"
 import combined "import_helpers/combined_helper.nore"
 
 func main(): void = {
-    // Vec2 and Direction come transitively through combined_helper
-    val v: Vec2 = make_vec2(3.0, 4.0)
+    val v: types.Vec2 = combined.make_vec2(3.0, 4.0)
     assert v.x == 3.0
     assert v.y == 4.0
 
-    val d: Direction = Direction.East
-    assert d != Direction.West
+    val d: types.Direction = types.Direction.East
+    assert d != types.Direction.West
 }

@@ -1,0 +1,5 @@
+import h "import_helpers/private_helper.nore"
+
+func main(): void = {
+    val x: i64 = h.PRIV_CONST
+}

@@ -3,21 +3,21 @@
 import string "std/string.nore"
 
 // Standard file descriptors
-val STDIN: i32 = 0
-val STDOUT: i32 = 1
-val STDERR: i32 = 2
+pub val STDIN: i32 = 0
+pub val STDOUT: i32 = 1
+pub val STDERR: i32 = 2
 
-func print(ref s: str): void = {
+pub func print(ref s: str): void = {
     fd_write(STDOUT, ref s)
 }
 
-func println(ref s: str): void = {
+pub func println(ref s: str): void = {
     fd_write(STDOUT, ref s)
     fd_write(STDOUT, ref "\n")
 }
 
-func print_i64(n: i64): void = {
+pub func print_i64(n: i64): void = {
     mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-    val pos: i64 = fmt_i64(mut ref buf, n)
+    val pos: i64 = string.fmt_i64(mut ref buf, n)
     fd_write(STDOUT, ref buf[pos..20])
 }

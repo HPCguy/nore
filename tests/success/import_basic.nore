@@ -1,6 +1,6 @@
 import helper "import_helpers/math_helper.nore"
 
 func main(): void = {
-    assert add(3, 4) == 7
-    assert double(5) == 10
+    assert helper.add(3, 4) == 7
+    assert helper.double(5) == 10
 }

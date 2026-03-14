@@ -2,54 +2,54 @@ import io "std/io.nore"
 
 func main(): void = {
     // print a string literal
-    print(ref "Hello, ")
+    io.print(ref "Hello, ")
 
     // println adds a newline
-    println(ref "World!")
+    io.println(ref "World!")
 
     // print_i64 prints integers
-    print_i64(42)
-    print(ref "\n")
+    io.print_i64(42)
+    io.print(ref "\n")
 
     // negative numbers
-    print_i64(-123)
-    print(ref "\n")
+    io.print_i64(-123)
+    io.print(ref "\n")
 
     // zero
-    print_i64(0)
-    print(ref "\n")
+    io.print_i64(0)
+    io.print(ref "\n")
 
     // large positive
-    print_i64(9223372036854775807)
-    print(ref "\n")
+    io.print_i64(9223372036854775807)
+    io.print(ref "\n")
 
     // large negative (i64 min)
-    print_i64(-9223372036854775807 - 1)
-    print(ref "\n")
+    io.print_i64(-9223372036854775807 - 1)
+    io.print(ref "\n")
 
     // single digit
-    print_i64(7)
-    print(ref "\n")
+    io.print_i64(7)
+    io.print(ref "\n")
 
     // powers of 10
-    print_i64(10)
-    print(ref "\n")
-    print_i64(100)
-    print(ref "\n")
-    print_i64(1000)
-    print(ref "\n")
+    io.print_i64(10)
+    io.print(ref "\n")
+    io.print_i64(100)
+    io.print(ref "\n")
+    io.print_i64(1000)
+    io.print(ref "\n")
 
     // print from a str variable
     val msg: str = "test slice"
-    println(ref msg)
+    io.println(ref msg)
 
     // print from an array variable
     val arr: [u8; 3] = ['a', 'b', 'c']
-    print(ref arr)
-    print(ref "\n")
+    io.print(ref arr)
+    io.print(ref "\n")
 
     // print_i64 with different integer types
     val x: i32 = 99
-    print_i64(i64(x))
-    print(ref "\n")
+    io.print_i64(i64(x))
+    io.print(ref "\n")
 }

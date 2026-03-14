@@ -165,6 +165,9 @@ error[D002]: Unknown flag: --invalid
 - **S080**: Cannot compare tagged enum (use match instead)
 - **S081**: Cannot cast tagged enum to numeric type
 - **S082**: Variant payload type not value-compatible (no structs or Arena)
+- **S083**: Function is not public in the target module (qualified access to non-pub func)
+- **S084**: Type is not public in the target module (qualified access to non-pub type)
+- **S085**: Value is not public in the target module (qualified access to non-pub val/mut)
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

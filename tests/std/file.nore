@@ -10,34 +10,34 @@ func main(): void = {
     assert TARGET_OS == OS.Linux || TARGET_OS == OS.MacOS
 
     // Open flag constants
-    assert O_RDONLY == 0
-    assert O_WRONLY == 1
-    assert O_RDWR == 2
+    assert file.O_RDONLY == 0
+    assert file.O_WRONLY == 1
+    assert file.O_RDWR == 2
     // O_CREAT, O_TRUNC, O_APPEND are platform-specific (tested via file I/O below)
 
     // Seek whence constants
-    assert SEEK_SET == 0
-    assert SEEK_CUR == 1
-    assert SEEK_END == 2
+    assert file.SEEK_SET == 0
+    assert file.SEEK_CUR == 1
+    assert file.SEEK_END == 2
 
     // Write a file and read it back
     val msg: str = "Hello, Nore!"
-    val wres: WriteResult = write_file(ref "/tmp/nore_file_test.txt", ref msg)
+    val wres: file.WriteResult = file.write_file(ref "/tmp/nore_file_test.txt", ref msg)
     val ok: bool = match (wres) {
         Ok(n) = { n == 12 }
         Err(code) = { false }
     }
     assert ok
 
-    val rres: ReadResult = read_file(mut ref mem, ref "/tmp/nore_file_test.txt")
+    val rres: file.ReadResult = file.read_file(mut ref mem, ref "/tmp/nore_file_test.txt")
     val contents_ok: bool = match (rres) {
-        Ok(data) = { data.len == 12 && str_eq(ref data, ref "Hello, Nore!") }
+        Ok(data) = { data.len == 12 && string.str_eq(ref data, ref "Hello, Nore!") }
         Err(code) = { false }
     }
     assert contents_ok
 
     // Read non-existent file returns Err
-    val missing: ReadResult = read_file(mut ref mem, ref "/tmp/nore_no_such_file_xyz.txt")
+    val missing: file.ReadResult = file.read_file(mut ref mem, ref "/tmp/nore_no_such_file_xyz.txt")
     val is_err: bool = match (missing) {
         Ok(data) = { false }
         Err(code) = { true }
@@ -45,29 +45,29 @@ func main(): void = {
     assert is_err
 
     // Overwrite existing file with different content
-    val wres2: WriteResult = write_file(ref "/tmp/nore_file_test.txt", ref "short")
+    val wres2: file.WriteResult = file.write_file(ref "/tmp/nore_file_test.txt", ref "short")
     val ok2: bool = match (wres2) {
         Ok(n) = { n == 5 }
         Err(code) = { false }
     }
     assert ok2
 
-    val rres2: ReadResult = read_file(mut ref mem, ref "/tmp/nore_file_test.txt")
+    val rres2: file.ReadResult = file.read_file(mut ref mem, ref "/tmp/nore_file_test.txt")
     val contents2_ok: bool = match (rres2) {
-        Ok(data) = { data.len == 5 && str_eq(ref data, ref "short") }
+        Ok(data) = { data.len == 5 && string.str_eq(ref data, ref "short") }
         Err(code) = { false }
     }
     assert contents2_ok
 
     // Write empty data
-    val wres3: WriteResult = write_file(ref "/tmp/nore_file_test_empty.txt", ref "")
+    val wres3: file.WriteResult = file.write_file(ref "/tmp/nore_file_test_empty.txt", ref "")
     val ok3: bool = match (wres3) {
         Ok(n) = { n == 0 }
         Err(code) = { false }
     }
     assert ok3
 
-    val rres3: ReadResult = read_file(mut ref mem, ref "/tmp/nore_file_test_empty.txt")
+    val rres3: file.ReadResult = file.read_file(mut ref mem, ref "/tmp/nore_file_test_empty.txt")
     val empty_ok: bool = match (rres3) {
         Ok(data) = { data.len == 0 }
         Err(code) = { false }
@@ -76,14 +76,14 @@ func main(): void = {
 
     // Write and read binary data
     val binary: [u8; 4] = [0, 127, 128, 255]
-    val wres4: WriteResult = write_file(ref "/tmp/nore_file_test_bin.txt", ref binary)
+    val wres4: file.WriteResult = file.write_file(ref "/tmp/nore_file_test_bin.txt", ref binary)
     val ok4: bool = match (wres4) {
         Ok(n) = { n == 4 }
         Err(code) = { false }
     }
     assert ok4
 
-    val rres4: ReadResult = read_file(mut ref mem, ref "/tmp/nore_file_test_bin.txt")
+    val rres4: file.ReadResult = file.read_file(mut ref mem, ref "/tmp/nore_file_test_bin.txt")
     val bin_ok: bool = match (rres4) {
         Ok(data) = {
             data.len == 4 && data[0] == 0 && data[1] == 127 && data[2] == 128 && data[3] == 255

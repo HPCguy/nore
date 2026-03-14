@@ -195,6 +195,9 @@ typedef enum {
     ERR_S080_TAGGED_ENUM_COMPARE   = ERR_GROUP_SEMANTIC + 80,
     ERR_S081_TAGGED_ENUM_CAST      = ERR_GROUP_SEMANTIC + 81,
     ERR_S082_PAYLOAD_NOT_VALUE     = ERR_GROUP_SEMANTIC + 82,
+    ERR_S083_NOT_PUBLIC_FUNC       = ERR_GROUP_SEMANTIC + 83,
+    ERR_S084_NOT_PUBLIC_TYPE       = ERR_GROUP_SEMANTIC + 84,
+    ERR_S085_NOT_PUBLIC_VALUE      = ERR_GROUP_SEMANTIC + 85,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -273,6 +276,41 @@ typedef struct {
 static ModuleEntry g_modules[MAX_IMPORTS];
 static size_t g_module_count = 0;
 static size_t g_current_module_id = 0;
+
+/* Sentinel value for built-in declarations (visible from all modules) */
+#define MODULE_BUILTIN SIZE_MAX
+
+/* Module alias table: maps (alias, scope_module) -> target_module.
+ * Each import statement creates one entry scoped to the importing module. */
+typedef struct {
+    const char *alias;
+    size_t alias_length;
+    size_t target_module_id;
+    size_t scope_module_id;
+} ModuleAlias;
+
+static ModuleAlias g_module_aliases[MAX_IMPORTS * 4];
+static size_t g_module_alias_count = 0;
+
+/* Look up a module alias in the current module's scope (parsing only) */
+static int module_lookup_alias(const char *name, size_t length) {
+    for (size_t i = 0; i < g_module_alias_count; i++) {
+        if (g_module_aliases[i].scope_module_id == g_current_module_id &&
+            g_module_aliases[i].alias_length == length &&
+            memcmp(g_module_aliases[i].alias, name, length) == 0) {
+            return (int)g_module_aliases[i].target_module_id;
+        }
+    }
+    return -1;
+}
+
+/* Derive module_id from a source file path */
+static size_t module_for_file(const char *file) {
+    for (size_t m = 0; m < g_module_count; m++) {
+        if (g_modules[m].path == file) return m;
+    }
+    return 0;
+}
 
 /* Error collection for multi-error reporting */
 #define MAX_ERRORS 10
@@ -1123,6 +1161,34 @@ static ValueTypeEntry *value_table_lookup(ValueTypeTable *table,
     return NULL;
 }
 
+static ValueTypeEntry *value_table_lookup_in_module(ValueTypeTable *table,
+                                                     const char *name, size_t length,
+                                                     size_t module_id) {
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->types[i].module_id == module_id &&
+            table->types[i].name_length == length &&
+            memcmp(table->types[i].name_start, name, length) == 0) {
+            return &table->types[i];
+        }
+    }
+    return NULL;
+}
+
+/* Look up value type visible in the current module (own module or built-in) */
+static ValueTypeEntry *value_table_lookup_local(ValueTypeTable *table,
+                                                 const char *name, size_t length,
+                                                 size_t current_module) {
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->types[i].name_length == length &&
+            memcmp(table->types[i].name_start, name, length) == 0 &&
+            (table->types[i].module_id == current_module ||
+             table->types[i].module_id == MODULE_BUILTIN)) {
+            return &table->types[i];
+        }
+    }
+    return NULL;
+}
+
 static int value_table_find_field(ValueTypeEntry *entry,
                                    const char *name, size_t length) {
     for (size_t i = 0; i < entry->field_count; i++) {
@@ -1420,6 +1486,32 @@ static EnumTypeEntry *enum_table_lookup(const char *name, size_t length) {
     return NULL;
 }
 
+static EnumTypeEntry *enum_table_lookup_in_module(const char *name, size_t length,
+                                                    size_t module_id) {
+    for (size_t i = 0; i < g_enum_count; i++) {
+        if (g_enum_table[i].module_id == module_id &&
+            g_enum_table[i].name_length == length &&
+            memcmp(g_enum_table[i].name_start, name, length) == 0) {
+            return &g_enum_table[i];
+        }
+    }
+    return NULL;
+}
+
+/* Look up enum visible in the current module (own module or built-in) */
+static EnumTypeEntry *enum_table_lookup_local(const char *name, size_t length,
+                                               size_t current_module) {
+    for (size_t i = 0; i < g_enum_count; i++) {
+        if (g_enum_table[i].name_length == length &&
+            memcmp(g_enum_table[i].name_start, name, length) == 0 &&
+            (g_enum_table[i].module_id == current_module ||
+             g_enum_table[i].module_id == MODULE_BUILTIN)) {
+            return &g_enum_table[i];
+        }
+    }
+    return NULL;
+}
+
 static Type enum_table_type_for(EnumTypeEntry *entry) {
     int idx = (int)(entry - g_enum_table);
     return (Type)(TYPE_ENUM_BASE + idx);
@@ -1685,6 +1777,7 @@ typedef struct Ast {
         struct {
             const char *start;
             size_t length;
+            int module_id;  /* -1 = unqualified, >= 0 = module-qualified */
         } identifier;
 
         struct {
@@ -1705,6 +1798,7 @@ typedef struct Ast {
             bool *arg_is_ref;
             bool *arg_is_mut_ref;
             size_t arg_count;
+            int module_id;  /* -1 = unqualified, >= 0 = module-qualified */
         } func_call;
 
         struct {
@@ -1923,6 +2017,7 @@ static Ast *ast_make_identifier(const char *start, size_t length, SourceLoc loc)
     node->loc = loc;
     node->as.identifier.start = start;
     node->as.identifier.length = length;
+    node->as.identifier.module_id = -1;
     return node;
 }
 
@@ -1967,6 +2062,7 @@ static Ast *ast_make_func_call(const char *name_start, size_t name_length,
     node->as.func_call.arg_is_ref = arg_is_ref;
     node->as.func_call.arg_is_mut_ref = arg_is_mut_ref;
     node->as.func_call.arg_count = arg_count;
+    node->as.func_call.module_id = -1;
     return node;
 }
 
@@ -2749,13 +2845,67 @@ static Type parser_parse_type(Parser *parser, bool allow_void) {
         const char *base_start = parser->current.start;
         size_t base_len = parser->current.length;
         parser_advance(parser);  /* consume identifier */
+
+        /* Check for module-qualified type: alias.TypeName */
+        int type_mod = module_lookup_alias(base_start, base_len);
+        if (type_mod >= 0 && parser_check(parser, TOKEN_DOT)) {
+            parser_advance(parser);  /* consume '.' */
+            if (!parser_check(parser, TOKEN_IDENTIFIER)) {
+                diagnostic(g_source_file, ERR_P015_EXPECTED_TYPE, parser->current.line,
+                           parser->current.column,
+                           "Expected type name after '%.*s.'",
+                           (int)base_len, base_start);
+                return TYPE_UNKNOWN;
+            }
+            const char *type_start = parser->current.start;
+            size_t type_len = parser->current.length;
+            parser_advance(parser);  /* consume type name */
+
+            /* Try module.Table.Row (three-level) */
+            ValueTypeEntry *vt = parser_try_dot_qualified(parser, type_start, type_len);
+            if (!vt) vt = value_table_lookup_in_module(g_value_table, type_start, type_len,
+                                                        (size_t)type_mod);
+            if (vt) {
+                if (!vt->is_public) {
+                    diagnostic(g_source_file, ERR_S084_NOT_PUBLIC_TYPE,
+                               parser->previous.line, parser->previous.column,
+                               "Type '%.*s' is not public in module '%.*s'",
+                               (int)type_len, type_start,
+                               (int)base_len, base_start);
+                }
+                int idx = (int)(vt - g_value_table->types);
+                return (Type)(TYPE_VALUE_BASE + idx);
+            }
+            EnumTypeEntry *et = enum_table_lookup_in_module(type_start, type_len,
+                                                             (size_t)type_mod);
+            if (et) {
+                if (!et->is_public) {
+                    diagnostic(g_source_file, ERR_S084_NOT_PUBLIC_TYPE,
+                               parser->previous.line, parser->previous.column,
+                               "Type '%.*s' is not public in module '%.*s'",
+                               (int)type_len, type_start,
+                               (int)base_len, base_start);
+                }
+                return enum_table_type_for(et);
+            }
+            diagnostic(g_source_file, ERR_P015_EXPECTED_TYPE, parser->previous.line,
+                       parser->previous.column,
+                       "Unknown type '%.*s' in module '%.*s'",
+                       (int)type_len, type_start,
+                       (int)base_len, base_start);
+            return TYPE_UNKNOWN;
+        }
+
+        /* Non-module-qualified: local types only */
         ValueTypeEntry *vt = parser_try_dot_qualified(parser, base_start, base_len);
-        if (!vt) vt = value_table_lookup(g_value_table, base_start, base_len);
+        if (!vt) vt = value_table_lookup_local(g_value_table, base_start, base_len,
+                                                g_current_module_id);
         if (vt) {
             int idx = (int)(vt - g_value_table->types);
             return (Type)(TYPE_VALUE_BASE + idx);
         }
-        EnumTypeEntry *et = enum_table_lookup(base_start, base_len);
+        EnumTypeEntry *et = enum_table_lookup_local(base_start, base_len,
+                                                      g_current_module_id);
         if (et) return enum_table_type_for(et);
     }
     /* Array type: [T; N] or Slice type: [T] */
@@ -2921,6 +3071,57 @@ static Type token_to_type(TokenKind kind) {
         case TOKEN_F64: return TYPE_F64;
         default:        return TYPE_UNKNOWN;
     }
+}
+
+/* Parse value constructor fields: { field: expr, ... }
+ * Assumes '{' has already been consumed. Returns the AST node or NULL on error. */
+static Ast *parser_parse_ctor_fields(Parser *parser, const char *type_name,
+                                      size_t type_name_len, SourceLoc loc) {
+    size_t capacity = 4;
+    size_t field_count = 0;
+    FieldInit *fields = malloc(capacity * sizeof(FieldInit));
+    if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating constructor fields");
+
+    while (!parser_check(parser, TOKEN_RBRACE) &&
+           !parser_check(parser, TOKEN_EOF)) {
+        if (field_count >= capacity) {
+            capacity *= 2;
+            fields = realloc(fields, capacity * sizeof(FieldInit));
+            if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing constructor fields");
+        }
+        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+            diagnostic(g_source_file, ERR_P028_EXPECTED_FIELD_CTOR,
+                       parser->current.line, parser->current.column,
+                       "Expected field name in constructor");
+            goto ctor_fields_cleanup;
+        }
+        fields[field_count].name_start = parser->previous.start;
+        fields[field_count].name_length = parser->previous.length;
+        if (!parser_match(parser, TOKEN_COLON)) {
+            diagnostic(g_source_file, ERR_P029_EXPECTED_COLON_CTOR,
+                       parser->current.line, parser->current.column,
+                       "Expected ':' after field name in constructor");
+            goto ctor_fields_cleanup;
+        }
+        Ast *fval = parser_parse_expression(parser);
+        if (!fval) goto ctor_fields_cleanup;
+        fields[field_count].value = fval;
+        field_count++;
+        if (!parser_match(parser, TOKEN_COMMA)) break;
+    }
+    if (!parser_match(parser, TOKEN_RBRACE)) {
+        diagnostic(g_source_file, ERR_P030_EXPECTED_RBRACE_CTOR,
+                   parser->current.line, parser->current.column,
+                   "Expected '}' to close constructor");
+        goto ctor_fields_cleanup;
+    }
+    return ast_make_value_constructor(type_name, type_name_len,
+                                       fields, field_count, loc);
+
+    ctor_fields_cleanup:
+    for (size_t i = 0; i < field_count; i++) ast_free(fields[i].value);
+    free(fields);
+    return NULL;
 }
 
 static Ast *parser_parse_primary(Parser *parser) {
@@ -3468,9 +3669,148 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_mem_copy(dst, src, loc);
         }
 
-        /* Check for enum variant: EnumName.Variant */
+        /* Check for module-qualified access: alias.name */
         if (parser_check(parser, TOKEN_DOT)) {
-            EnumTypeEntry *et = enum_table_lookup(name_start, name_length);
+            int mod_id = module_lookup_alias(name_start, name_length);
+            if (mod_id >= 0) {
+                parser_advance(parser);  /* consume '.' */
+                if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                    diagnostic(g_source_file, ERR_P003_EXPECTED_IDENTIFIER,
+                               parser->current.line, parser->current.column,
+                               "Expected name after '%.*s.'",
+                               (int)name_length, name_start);
+                    return NULL;
+                }
+                const char *qual_name = parser->previous.start;
+                size_t qual_len = parser->previous.length;
+                SourceLoc qual_loc = token_loc(&parser->previous);
+
+                /* Check for module.EnumName.Variant (three-level) */
+                if (parser_check(parser, TOKEN_DOT)) {
+                    EnumTypeEntry *met = enum_table_lookup_in_module(
+                        qual_name, qual_len, (size_t)mod_id);
+                    if (met) {
+                        if (!met->is_public) {
+                            diagnostic(g_source_file, ERR_S084_NOT_PUBLIC_TYPE,
+                                       qual_loc.line, qual_loc.column,
+                                       "Enum '%.*s' is not public in module '%.*s'",
+                                       (int)qual_len, qual_name,
+                                       (int)name_length, name_start);
+                        }
+                        parser_advance(parser);  /* consume '.' */
+                        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                            diagnostic(g_source_file, ERR_P044_EXPECTED_VARIANT_NAME,
+                                       parser->current.line, parser->current.column,
+                                       "Expected variant name after '%.*s.%.*s.'",
+                                       (int)name_length, name_start,
+                                       (int)qual_len, qual_name);
+                            return NULL;
+                        }
+                        const char *var_start = parser->previous.start;
+                        size_t var_len = parser->previous.length;
+                        for (size_t i = 0; i < met->variant_count; i++) {
+                            if (met->variants[i].name_length == var_len &&
+                                memcmp(met->variants[i].name_start, var_start, var_len) == 0) {
+                                Ast *payload = NULL;
+                                if (met->variants[i].payload_type != TYPE_VOID) {
+                                    if (!parser_match(parser, TOKEN_LPAREN)) {
+                                        diagnostic(g_source_file, ERR_S079_MISSING_PAYLOAD,
+                                                   parser->current.line, parser->current.column,
+                                                   "Variant '%.*s' requires a payload",
+                                                   (int)var_len, var_start);
+                                        return NULL;
+                                    }
+                                    payload = parser_parse_expression(parser);
+                                    if (!payload) return NULL;
+                                    if (!parser_match(parser, TOKEN_RPAREN)) {
+                                        diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN,
+                                                   parser->current.line, parser->current.column,
+                                                   "Expected ')' after variant payload");
+                                        ast_free(payload);
+                                        return NULL;
+                                    }
+                                } else if (met->has_data && parser_check(parser, TOKEN_LPAREN)) {
+                                    parser_advance(parser);
+                                    diagnostic(g_source_file, ERR_S078_UNEXPECTED_PAYLOAD,
+                                               parser->previous.line, parser->previous.column,
+                                               "Variant '%.*s' does not take a payload",
+                                               (int)var_len, var_start);
+                                    parser_synchronize(parser);
+                                    return NULL;
+                                }
+                                return ast_make_enum_variant(enum_table_type_for(met),
+                                                             met->variants[i].value,
+                                                             payload, loc);
+                            }
+                        }
+                        diagnostic(g_source_file, ERR_P045_UNKNOWN_ENUM_VARIANT,
+                                   parser->previous.line, parser->previous.column,
+                                   "Unknown variant '%.*s' in enum '%.*s.%.*s'",
+                                   (int)var_len, var_start,
+                                   (int)name_length, name_start,
+                                   (int)qual_len, qual_name);
+                        return NULL;
+                    }
+                }
+
+                /* Check for module.func(...) */
+                if (parser_check(parser, TOKEN_LPAREN)) {
+                    parser_advance(parser);  /* consume '(' */
+                    size_t arg_count = 0;
+                    bool parse_error = false;
+                    bool *arg_is_ref = NULL;
+                    bool *arg_is_mut_ref = NULL;
+                    Ast **arguments = parser_parse_arg_list(parser, &arg_count,
+                                                             &parse_error,
+                                                             &arg_is_ref,
+                                                             &arg_is_mut_ref);
+                    if (parse_error) return NULL;
+                    if (!parser_match(parser, TOKEN_RPAREN)) {
+                        diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN,
+                                   parser->current.line, parser->current.column,
+                                   "Expected ')' after arguments");
+                        free(arguments); free(arg_is_ref); free(arg_is_mut_ref);
+                        return NULL;
+                    }
+                    Ast *call = ast_make_func_call(qual_name, qual_len, arguments,
+                                                    arg_is_ref, arg_is_mut_ref,
+                                                    arg_count, loc);
+                    call->as.func_call.module_id = mod_id;
+                    return call;
+                }
+
+                /* Check for module.Type { ... } (value constructor) */
+                if (parser_check(parser, TOKEN_LBRACE)) {
+                    /* Try dot-qualified module.Table.Row first */
+                    ValueTypeEntry *mvt = parser_try_dot_qualified(
+                        parser, qual_name, qual_len);
+                    if (!mvt) mvt = value_table_lookup_in_module(
+                        g_value_table, qual_name, qual_len, (size_t)mod_id);
+                    if (mvt) {
+                        if (!mvt->is_public) {
+                            diagnostic(g_source_file, ERR_S084_NOT_PUBLIC_TYPE,
+                                       qual_loc.line, qual_loc.column,
+                                       "Type '%.*s' is not public in module '%.*s'",
+                                       (int)qual_len, qual_name,
+                                       (int)name_length, name_start);
+                        }
+                        parser_advance(parser);  /* consume '{' */
+                        return parser_parse_ctor_fields(parser, mvt->name_start,
+                                                         mvt->name_length, loc);
+                    }
+                }
+
+                /* Module-qualified constant: module.CONSTANT */
+                Ast *ident = ast_make_identifier(qual_name, qual_len, loc);
+                ident->as.identifier.module_id = mod_id;
+                return ident;
+            }
+        }
+
+        /* Check for enum variant: EnumName.Variant (local module only) */
+        if (parser_check(parser, TOKEN_DOT)) {
+            EnumTypeEntry *et = enum_table_lookup_local(name_start, name_length,
+                                                         g_current_module_id);
             if (et) {
                 parser_advance(parser);  /* consume '.' */
                 if (!parser_match(parser, TOKEN_IDENTIFIER)) {
@@ -3567,64 +3907,14 @@ static Ast *parser_parse_primary(Parser *parser) {
             }
         }
 
-        /* Check for value constructor: TypeName { ... } */
+        /* Check for value constructor: TypeName { ... } (local module only) */
         if (parser_check(parser, TOKEN_LBRACE)) {
-            ValueTypeEntry *vt = value_table_lookup(g_value_table,
-                                                     name_start, name_length);
+            ValueTypeEntry *vt = value_table_lookup_in_module(g_value_table,
+                                                               name_start, name_length,
+                                                               g_current_module_id);
             if (vt) {
                 parser_advance(parser);  /* consume '{' */
-
-                size_t capacity = 4;
-                size_t field_count = 0;
-                FieldInit *fields = malloc(capacity * sizeof(FieldInit));
-                if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "allocating constructor fields");
-
-                while (!parser_check(parser, TOKEN_RBRACE) &&
-                       !parser_check(parser, TOKEN_EOF)) {
-                    if (field_count >= capacity) {
-                        capacity *= 2;
-                        fields = realloc(fields, capacity * sizeof(FieldInit));
-                        if (!fields) panic(ERR_I001_OUT_OF_MEMORY, "growing constructor fields");
-                    }
-
-                    if (!parser_match(parser, TOKEN_IDENTIFIER)) {
-                        diagnostic(g_source_file, ERR_P028_EXPECTED_FIELD_CTOR, parser->current.line,
-                                   parser->current.column,
-                                   "Expected field name in constructor");
-                        goto ctor_cleanup;
-                    }
-                    fields[field_count].name_start = parser->previous.start;
-                    fields[field_count].name_length = parser->previous.length;
-
-                    if (!parser_match(parser, TOKEN_COLON)) {
-                        diagnostic(g_source_file, ERR_P029_EXPECTED_COLON_CTOR, parser->current.line,
-                                   parser->current.column,
-                                   "Expected ':' after field name in constructor");
-                        goto ctor_cleanup;
-                    }
-
-                    Ast *fval = parser_parse_expression(parser);
-                    if (!fval) goto ctor_cleanup;
-                    fields[field_count].value = fval;
-                    field_count++;
-
-                    if (!parser_match(parser, TOKEN_COMMA)) break;
-                }
-
-                if (!parser_match(parser, TOKEN_RBRACE)) {
-                    diagnostic(g_source_file, ERR_P030_EXPECTED_RBRACE_CTOR, parser->current.line,
-                               parser->current.column,
-                               "Expected '}' to close constructor");
-                    goto ctor_cleanup;
-                }
-
-                return ast_make_value_constructor(name_start, name_length,
-                                                   fields, field_count, loc);
-
-                ctor_cleanup:
-                for (size_t i = 0; i < field_count; i++) ast_free(fields[i].value);
-                free(fields);
-                return NULL;
+                return parser_parse_ctor_fields(parser, name_start, name_length, loc);
             }
         }
 
@@ -4948,6 +5238,14 @@ static void parser_parse_import(const char *resolved_path,
     g_modules[module_id].alias_length = alias_length;
     g_module_count++;
 
+    /* Register alias for the importing module (before parsing, so alias is
+     * available even if the imported file re-imports something) */
+    if (g_module_alias_count < MAX_IMPORTS * 4) {
+        g_module_aliases[g_module_alias_count++] = (ModuleAlias){
+            alias, alias_length, module_id, g_current_module_id
+        };
+    }
+
     /* Save and set source file and module context */
     const char *saved_source_file = g_source_file;
     size_t saved_module_id = g_current_module_id;
@@ -5043,8 +5341,22 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                 continue;
             }
 
-            /* Skip if already imported */
-            if (is_already_imported(resolved)) continue;
+            /* If already imported, just register the alias and skip re-parsing */
+            if (is_already_imported(resolved)) {
+                size_t target = 0;
+                for (size_t m = 0; m < g_module_count; m++) {
+                    if (strcmp(g_modules[m].path, resolved) == 0) {
+                        target = m;
+                        break;
+                    }
+                }
+                if (g_module_alias_count < MAX_IMPORTS * 4) {
+                    g_module_aliases[g_module_alias_count++] = (ModuleAlias){
+                        alias_start, alias_length, target, g_current_module_id
+                    };
+                }
+                continue;
+            }
 
             /* Record as imported */
             if (g_imported_count >= MAX_IMPORTS) {
@@ -5595,6 +5907,7 @@ struct Variable {
         double float_value;
     } comptime_value;
     bool is_global;                   /* true for global variables */
+    bool is_public;                   /* true if declared with pub */
     size_t module_id;
     bool arena_is_local;              /* for slices: true if arena is local (not ref param) */
     const char *arena_source_start;   /* for slices: name of source arena */
@@ -5688,6 +6001,7 @@ static Variable *scope_add(Scope *scope, const char *name_start,
     v->type = type;
     v->is_comptime = false;
     v->is_global = false;
+    v->is_public = false;
     v->module_id = g_current_module_id;
     v->arena_is_local = false;
     v->arena_source_start = NULL;
@@ -5741,6 +6055,8 @@ static void platform_inject_os_enum(void) {
     variants[0] = (EnumVariant){"Linux", 5, 0, TYPE_VOID};
     variants[1] = (EnumVariant){"MacOS", 5, 1, TYPE_VOID};
     g_os_enum_type = enum_table_add("OS", 2, variants, 2, BUILTIN_LOC, false);
+    /* Mark as built-in so it's visible from all modules */
+    g_enum_table[g_enum_count - 1].module_id = MODULE_BUILTIN;
 }
 
 static void scope_inject_platform_constants(Scope *scope) {
@@ -5749,6 +6065,9 @@ static void scope_inject_platform_constants(Scope *scope) {
 #else
     scope_add_comptime_enum(scope, "TARGET_OS", 9, g_os_enum_type, 0, BUILTIN_LOC);
 #endif
+    /* Mark built-in constants as visible from all modules */
+    Variable *target_os = scope_lookup(scope, "TARGET_OS", 9);
+    if (target_os) target_os->module_id = MODULE_BUILTIN;
 }
 
 /* ========================== Function Table ========================== */
@@ -5807,12 +6126,29 @@ static FunctionEntry *func_table_lookup(FunctionTable *table,
     return NULL;
 }
 
+static FunctionEntry *func_table_lookup_in_module(FunctionTable *table,
+                                                    const char *name_start,
+                                                    size_t name_length,
+                                                    size_t module_id) {
+    for (size_t i = 0; i < table->count; i++) {
+        if (table->functions[i].module_id == module_id &&
+            table->functions[i].name_length == name_length &&
+            memcmp(table->functions[i].name_start, name_start, name_length) == 0) {
+            return &table->functions[i];
+        }
+    }
+    return NULL;
+}
+
 static void func_table_add(FunctionTable *table, Ast *func_decl) {
     const char *name_start = func_decl->as.func_decl.name_start;
     size_t name_length = func_decl->as.func_decl.name_length;
 
-    /* Check for duplicates */
-    if (func_table_lookup(table, name_start, name_length) != NULL) {
+    /* Derive module_id early for per-module duplicate check */
+    size_t mod = module_for_file(func_decl->loc.file);
+
+    /* Check for duplicates within the same module */
+    if (func_table_lookup_in_module(table, name_start, name_length, mod) != NULL) {
         diagnostic(func_decl->loc.file, ERR_S008_DUPLICATE_FUNCTION, func_decl->loc.line,
                    func_decl->loc.column, "Duplicate function '%.*s'",
                    (int)name_length, name_start);
@@ -5834,15 +6170,7 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
     entry->loc = func_decl->loc;
     entry->returns_arena_slices = false;
     entry->is_public = func_decl->as.func_decl.is_public;
-    /* Derive module_id from source file (func_table_add runs during typecheck,
-       after parsing is complete, so g_current_module_id is no longer valid) */
-    entry->module_id = 0;
-    for (size_t m = 0; m < g_module_count; m++) {
-        if (g_modules[m].path == func_decl->loc.file) {
-            entry->module_id = m;
-            break;
-        }
-    }
+    entry->module_id = mod;
 
     /* Store parameter types and ref flags */
     size_t param_count = func_decl->as.func_decl.param_count;
@@ -5868,6 +6196,9 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
 
 /* Current function entry for escape analysis (set during typecheck_function) */
 static FunctionEntry *g_current_func_entry = NULL;
+
+/* Current module being typechecked (for module-aware lookups) */
+static size_t g_typecheck_module_id = 0;
 
 /* ============================= Constant Folding ============================ */
 
@@ -6393,22 +6724,53 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_IDENTIFIER: {
-            Variable *v = scope_lookup(scope, node->as.identifier.start,
-                                        node->as.identifier.length);
+            const char *id_start = node->as.identifier.start;
+            size_t id_len = node->as.identifier.length;
+            Variable *v = NULL;
+
+            if (node->as.identifier.module_id >= 0) {
+                /* Qualified access: globals live in root scope only */
+                size_t mod = (size_t)node->as.identifier.module_id;
+                Scope *root = scope;
+                while (root->parent != NULL) root = root->parent;
+                for (size_t i = 0; i < root->count; i++) {
+                    if (root->vars[i].module_id == mod &&
+                        root->vars[i].name_length == id_len &&
+                        memcmp(root->vars[i].name_start, id_start, id_len) == 0) {
+                        v = &root->vars[i];
+                        break;
+                    }
+                }
+                if (v && !v->is_public) {
+                    diagnostic(node->loc.file, ERR_S085_NOT_PUBLIC_VALUE,
+                               node->loc.line, node->loc.column,
+                               "Value '%.*s' is not public in module '%.*s'",
+                               (int)id_len, id_start,
+                               (int)g_modules[mod].alias_length,
+                               g_modules[mod].alias);
+                }
+            } else {
+                /* Unqualified access: try local scope first, then filter globals */
+                v = scope_lookup(scope, id_start, id_len);
+                if (v && v->is_global &&
+                    v->module_id != g_typecheck_module_id &&
+                    v->module_id != MODULE_BUILTIN) {
+                    v = NULL;  /* not visible from this module */
+                }
+            }
+
             if (v == NULL) {
                 diagnostic(node->loc.file, ERR_S002_UNDECLARED_VARIABLE, node->loc.line,
                            node->loc.column, "Undeclared variable '%.*s'",
-                           (int)node->as.identifier.length,
-                           node->as.identifier.start);
-                node->expr_type = TYPE_I64;  /* Default to prevent cascading */
+                           (int)id_len, id_start);
+                node->expr_type = TYPE_I64;
                 return TYPE_I64;
             }
             if (v->is_invalidated) {
                 diagnostic(node->loc.file, ERR_S056_SLICE_INVALIDATED, node->loc.line,
                            node->loc.column,
                            "Use of slice '%.*s' after arena reset",
-                           (int)node->as.identifier.length,
-                           node->as.identifier.start);
+                           (int)id_len, id_start);
             }
             node->expr_type = v->type;
             return v->type;
@@ -6662,14 +7024,44 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             const char *name_start = node->as.func_call.name_start;
             size_t name_length = node->as.func_call.name_length;
 
-            /* Look up function in table */
-            FunctionEntry *entry = func_table_lookup(func_table, name_start, name_length);
-            if (entry == NULL) {
-                diagnostic(node->loc.file, ERR_S016_UNDEFINED_FUNCTION, node->loc.line,
-                           node->loc.column, "Undefined function '%.*s'",
-                           (int)name_length, name_start);
-                node->expr_type = TYPE_I64;  /* Default to prevent cascading */
-                return TYPE_I64;
+            /* Module-aware function lookup */
+            FunctionEntry *entry;
+            if (node->as.func_call.module_id >= 0) {
+                /* Qualified access: look up in specific module */
+                size_t mod = (size_t)node->as.func_call.module_id;
+                entry = func_table_lookup_in_module(func_table, name_start,
+                                                     name_length, mod);
+                if (entry == NULL) {
+                    diagnostic(node->loc.file, ERR_S016_UNDEFINED_FUNCTION,
+                               node->loc.line, node->loc.column,
+                               "Function '%.*s' not found in module '%.*s'",
+                               (int)name_length, name_start,
+                               (int)g_modules[mod].alias_length,
+                               g_modules[mod].alias);
+                    node->expr_type = TYPE_I64;
+                    return TYPE_I64;
+                }
+                if (!entry->is_public) {
+                    diagnostic(node->loc.file, ERR_S083_NOT_PUBLIC_FUNC,
+                               node->loc.line, node->loc.column,
+                               "Function '%.*s' is not public in module '%.*s'",
+                               (int)name_length, name_start,
+                               (int)g_modules[mod].alias_length,
+                               g_modules[mod].alias);
+                }
+            } else {
+                /* Unqualified access: look up in current module only */
+                entry = func_table_lookup_in_module(func_table, name_start,
+                                                     name_length,
+                                                     g_typecheck_module_id);
+                if (entry == NULL) {
+                    diagnostic(node->loc.file, ERR_S016_UNDEFINED_FUNCTION,
+                               node->loc.line, node->loc.column,
+                               "Undefined function '%.*s'",
+                               (int)name_length, name_start);
+                    node->expr_type = TYPE_I64;
+                    return TYPE_I64;
+                }
             }
 
             /* Check argument count */
@@ -8164,7 +8556,10 @@ static Variable *scope_add_global(Scope *scope, const char *name_start,
                                   Type type, SourceLoc loc) {
     Variable *v = scope_add(scope, name_start, name_length,
                             is_mutable, type, loc);
-    if (v) v->is_global = true;
+    if (v) {
+        v->is_global = true;
+        v->module_id = module_for_file(loc.file);
+    }
     return v;
 }
 
@@ -8271,15 +8666,32 @@ static void typecheck_global_decl(Ast *node, Scope *scope, FunctionTable *func_t
                          node->as.mut_decl.name_length, true, declared,
                          node->loc);
     }
+
+    /* Set is_public on the variable we just added */
+    bool pub = (node->kind == AST_VAL_DECL) ? node->as.val_decl.is_public
+                                             : node->as.mut_decl.is_public;
+    if (pub) {
+        const char *vname = (node->kind == AST_VAL_DECL)
+                            ? node->as.val_decl.name_start
+                            : node->as.mut_decl.name_start;
+        size_t vlen = (node->kind == AST_VAL_DECL)
+                      ? node->as.val_decl.name_length
+                      : node->as.mut_decl.name_length;
+        Variable *gv = scope_lookup_local(scope, vname, vlen);
+        if (gv) gv->is_public = true;
+    }
 }
 
 /* Type check a function declaration */
 static void typecheck_function(Ast *func_decl, FunctionTable *func_table,
                                Scope *global_scope) {
+    /* Set current module for module-aware lookups */
+    g_typecheck_module_id = module_for_file(func_decl->loc.file);
+
     /* Set current function entry for escape analysis */
-    g_current_func_entry = func_table_lookup(func_table,
+    g_current_func_entry = func_table_lookup_in_module(func_table,
         func_decl->as.func_decl.name_start,
-        func_decl->as.func_decl.name_length);
+        func_decl->as.func_decl.name_length, g_typecheck_module_id);
 
     /* Create scope with parameters (global scope as parent) */
     Scope *scope = scope_create(global_scope);
@@ -8481,9 +8893,11 @@ static void typecheck_program(Ast *program) {
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
         if (node->kind == AST_VAL_DECL || node->kind == AST_MUT_DECL) {
+            g_typecheck_module_id = module_for_file(node->loc.file);
             typecheck_global_decl(node, global_scope, func_table);
         }
     }
+    g_typecheck_module_id = 0;
 
     /* Second pass: type check each function */
     for (size_t i = 0; i < program->as.program.count; i++) {
@@ -8544,6 +8958,38 @@ static void typecheck_program(Ast *program) {
 
 /* ============================ Code Generation ============================= */
 
+/* Emit a module-prefixed name: ni_<alias>__<name> for module > 0, ni_<name> for module 0 */
+static void codegen_emit_mangled_name(FILE *out, const char *name, size_t name_len,
+                                       size_t module_id) {
+    if (module_id > 0 && module_id != MODULE_BUILTIN && g_modules[module_id].alias) {
+        fprintf(out, "ni_%.*s__%.*s",
+                (int)g_modules[module_id].alias_length, g_modules[module_id].alias,
+                (int)name_len, name);
+    } else {
+        fprintf(out, "ni_%.*s", (int)name_len, name);
+    }
+}
+
+/* Return a module-prefixed name as a static string for type names */
+static const char *codegen_mangled_name_str(const char *name, size_t name_len,
+                                              size_t module_id) {
+    static char bufs[4][128];
+    static int idx = 0;
+    char *buf = bufs[idx++ % 4];
+    if (module_id > 0 && module_id != MODULE_BUILTIN && g_modules[module_id].alias) {
+        snprintf(buf, 128, "ni_%.*s__%.*s",
+                 (int)g_modules[module_id].alias_length, g_modules[module_id].alias,
+                 (int)name_len, name);
+    } else {
+        snprintf(buf, 128, "ni_%.*s", (int)name_len, name);
+    }
+    /* Replace dots with underscores (for Table.Row types) */
+    for (char *p = buf; *p; p++) {
+        if (*p == '.') *p = '_';
+    }
+    return buf;
+}
+
 static const char *codegen_type_to_c(Type type);  /* forward declaration */
 static int codegen_temp_counter = 0;
 static int codegen_match_counter = 0;
@@ -8593,6 +9039,17 @@ static void codegen_emit_identifier(FILE *out, const char *name_start, size_t na
                 fprintf(out, "%ldL", v->comptime_value.int_value);
             } else {
                 fprintf(out, "%g", v->comptime_value.float_value);
+            }
+            return;
+        }
+        /* Use module-aware mangling for global variables */
+        if (v && v->is_global && v->module_id > 0 && v->module_id != MODULE_BUILTIN) {
+            if (codegen_is_ref(name_start, name_length)) {
+                fprintf(out, "(*");
+                codegen_emit_mangled_name(out, name_start, name_length, v->module_id);
+                fprintf(out, ")");
+            } else {
+                codegen_emit_mangled_name(out, name_start, name_length, v->module_id);
             }
             return;
         }
@@ -8753,14 +9210,27 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         }
 
         case AST_FUNC_CALL: {
-            fprintf(out, "ni_%.*s(", (int)node->as.func_call.name_length,
-                    node->as.func_call.name_start);
-            /* Look up function entry for param type info (needed for slice coercion) */
-            FunctionEntry *fentry = g_codegen_func_table
-                ? func_table_lookup(g_codegen_func_table,
-                                    node->as.func_call.name_start,
-                                    node->as.func_call.name_length)
-                : NULL;
+            /* Look up function entry for module_id and param type info */
+            FunctionEntry *fentry = NULL;
+            if (g_codegen_func_table) {
+                int call_mod = node->as.func_call.module_id;
+                if (call_mod >= 0) {
+                    fentry = func_table_lookup_in_module(g_codegen_func_table,
+                                node->as.func_call.name_start,
+                                node->as.func_call.name_length, (size_t)call_mod);
+                } else {
+                    fentry = func_table_lookup_in_module(g_codegen_func_table,
+                                node->as.func_call.name_start,
+                                node->as.func_call.name_length,
+                                module_for_file(node->loc.file));
+                }
+            }
+            size_t func_mod = fentry ? fentry->module_id
+                : (node->as.func_call.module_id >= 0
+                   ? (size_t)node->as.func_call.module_id : 0);
+            codegen_emit_mangled_name(out, node->as.func_call.name_start,
+                                      node->as.func_call.name_length, func_mod);
+            fprintf(out, "(");
             for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
                 if (i > 0) fprintf(out, ", ");
                 Ast *arg = node->as.func_call.arguments[i];
@@ -8977,8 +9447,9 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_TABLE_ALLOC: {
             TableDeclEntry *te = table_decl_for_type(node->expr_type);
             if (!te) { fprintf(out, "0 /* error */"); break; }
-            fprintf(out, "ni_table_alloc_%.*s(&",
-                    (int)te->name_length, te->name_start);
+            fprintf(out, "%s__alloc(&",
+                    codegen_mangled_name_str(te->name_start, te->name_length,
+                                             te->module_id));
             codegen_emit_lvalue(out, node->as.table_alloc.arena);
             fprintf(out, ", ");
             codegen_emit_expression(out, node->as.table_alloc.count);
@@ -8995,8 +9466,9 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             Type table_type = node->as.table_get.table->expr_type;
             TableDeclEntry *te = table_decl_for_type(table_type);
             if (!te) { fprintf(out, "0 /* error */"); break; }
-            fprintf(out, "ni_table_get_%.*s(&",
-                    (int)te->name_length, te->name_start);
+            fprintf(out, "%s__get(&",
+                    codegen_mangled_name_str(te->name_start, te->name_length,
+                                             te->module_id));
             codegen_emit_lvalue(out, node->as.table_get.table);
             fprintf(out, ", ");
             codegen_emit_expression(out, node->as.table_get.index);
@@ -9008,8 +9480,9 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             Type table_type = node->as.table_insert.table->expr_type;
             TableDeclEntry *te = table_decl_for_type(table_type);
             if (!te) { fprintf(out, "0 /* error */"); break; }
-            fprintf(out, "ni_table_insert_%.*s(&",
-                    (int)te->name_length, te->name_start);
+            fprintf(out, "%s__insert(&",
+                    codegen_mangled_name_str(te->name_start, te->name_length,
+                                             te->module_id));
             codegen_emit_lvalue(out, node->as.table_insert.table);
             fprintf(out, ", ");
             codegen_emit_expression(out, node->as.table_insert.row);
@@ -9231,13 +9704,8 @@ static const char *codegen_type_to_c(Type type) {
             static int buf_idx = 0;
             ValueTypeEntry *vt = value_table_get(type);
             if (vt) {
-                char *buf = bufs[buf_idx++ % 4];
-                snprintf(buf, 80, "ni_%.*s",
-                         (int)vt->name_length, vt->name_start);
-                for (char *p = buf + 3; *p; p++) {
-                    if (*p == '.') *p = '_';
-                }
-                return buf;
+                return codegen_mangled_name_str(vt->name_start, vt->name_length,
+                                                vt->module_id);
             }
             if (type_is_array(type)) {
                 char *buf = bufs[buf_idx++ % 4];
@@ -9251,10 +9719,8 @@ static const char *codegen_type_to_c(Type type) {
             }
             EnumTypeEntry *et = enum_table_get(type);
             if (et) {
-                char *buf = bufs[buf_idx++ % 4];
-                snprintf(buf, 80, "ni_%.*s",
-                         (int)et->name_length, et->name_start);
-                return buf;
+                return codegen_mangled_name_str(et->name_start, et->name_length,
+                                                et->module_id);
             }
             return "int64_t";
         }
@@ -9787,15 +10253,16 @@ static void codegen_emit_global_decl(FILE *out, Ast *node) {
     Ast *init = is_val ? node->as.val_decl.initializer
                        : node->as.mut_decl.initializer;
     const char *const_prefix = is_val ? "const " : "";
+    size_t mod = module_for_file(node->loc.file);
 
     /* Comptime vals: skip C emission (inlined at use sites) */
     if (is_val && type_is_comptime(type)) return;
 
     /* String literal: use brace initializer (val only, mut string rejected by typecheck) */
     if (is_val && type_is_str(type)) {
-        fprintf(out, "const %s ni_%.*s = {.data = (uint8_t *)\"%.*s\", .len = %zuL};\n",
-                codegen_type_to_c(type),
-                (int)name_length, name_start,
+        fprintf(out, "const %s ", codegen_type_to_c(type));
+        codegen_emit_mangled_name(out, name_start, name_length, mod);
+        fprintf(out, " = {.data = (uint8_t *)\"%.*s\", .len = %zuL};\n",
                 (int)init->as.string_literal.raw_length,
                 init->as.string_literal.start,
                 init->as.string_literal.byte_length);
@@ -9804,9 +10271,11 @@ static void codegen_emit_global_decl(FILE *out, Ast *node) {
 
     /* Arena: declaration only -- init deferred to main */
     if (!is_val && type == TYPE_ARENA) {
-        fprintf(out, "ni_Arena ni_%.*s;\n", (int)name_length, name_start);
-        fprintf(out, "static const int64_t ni_%.*s_cap = ",
-                (int)name_length, name_start);
+        fprintf(out, "ni_Arena ");
+        codegen_emit_mangled_name(out, name_start, name_length, mod);
+        fprintf(out, ";\nstatic const int64_t ");
+        codegen_emit_mangled_name(out, name_start, name_length, mod);
+        fprintf(out, "_cap = ");
         codegen_emit_expression(out, init->as.arena_new.capacity);
         fprintf(out, ";\n");
         return;
@@ -9814,8 +10283,9 @@ static void codegen_emit_global_decl(FILE *out, Ast *node) {
 
     /* Value constructor: brace initializer */
     if (type_is_value(type) && init->kind == AST_VALUE_CONSTRUCTOR) {
-        fprintf(out, "%s%s ni_%.*s = {", const_prefix,
-                codegen_type_to_c(type), (int)name_length, name_start);
+        fprintf(out, "%s%s ", const_prefix, codegen_type_to_c(type));
+        codegen_emit_mangled_name(out, name_start, name_length, mod);
+        fprintf(out, " = {");
         for (size_t i = 0; i < init->as.value_constructor.field_count; i++) {
             if (i > 0) fprintf(out, ", ");
             FieldInit *fi = &init->as.value_constructor.fields[i];
@@ -9829,8 +10299,9 @@ static void codegen_emit_global_decl(FILE *out, Ast *node) {
     /* Array literal: brace initializer */
     if (type_is_array(type) && init->kind == AST_ARRAY_LITERAL) {
         Type concrete = codegen_concrete_array_type(init->expr_type);
-        fprintf(out, "%s%s ni_%.*s = {{", const_prefix,
-                codegen_type_to_c(concrete), (int)name_length, name_start);
+        fprintf(out, "%s%s ", const_prefix, codegen_type_to_c(concrete));
+        codegen_emit_mangled_name(out, name_start, name_length, mod);
+        fprintf(out, " = {{");
         for (size_t i = 0; i < init->as.array_literal.element_count; i++) {
             if (i > 0) fprintf(out, ", ");
             codegen_emit_expression(out, init->as.array_literal.elements[i]);
@@ -9840,8 +10311,9 @@ static void codegen_emit_global_decl(FILE *out, Ast *node) {
     }
 
     /* Scalar */
-    fprintf(out, "%s%s ni_%.*s = ", const_prefix,
-            codegen_type_to_c(type), (int)name_length, name_start);
+    fprintf(out, "%s%s ", const_prefix, codegen_type_to_c(type));
+    codegen_emit_mangled_name(out, name_start, name_length, mod);
+    fprintf(out, " = ");
     codegen_emit_expression(out, init);
     fprintf(out, ";\n");
 }
@@ -9853,9 +10325,10 @@ static void codegen_emit_global_arena_inits(FILE *out, int indent) {
         Variable *v = &g_global_codegen_scope->vars[i];
         if (v->type == TYPE_ARENA && v->is_global) {
             codegen_indent(out, indent);
-            fprintf(out, "ni_%.*s = ni_arena_new(ni_%.*s_cap);\n",
-                    (int)v->name_length, v->name_start,
-                    (int)v->name_length, v->name_start);
+            codegen_emit_mangled_name(out, v->name_start, v->name_length, v->module_id);
+            fprintf(out, " = ni_arena_new(");
+            codegen_emit_mangled_name(out, v->name_start, v->name_length, v->module_id);
+            fprintf(out, "_cap);\n");
         }
     }
 }
@@ -9867,8 +10340,9 @@ static void codegen_emit_global_arena_frees(FILE *out, int indent) {
         Variable *v = &g_global_codegen_scope->vars[i];
         if (v->type == TYPE_ARENA && v->is_global) {
             codegen_indent(out, indent);
-            fprintf(out, "free(ni_%.*s.data);\n",
-                    (int)v->name_length, v->name_start);
+            fprintf(out, "free(");
+            codegen_emit_mangled_name(out, v->name_start, v->name_length, v->module_id);
+            fprintf(out, ".data);\n");
         }
     }
 }
@@ -9881,11 +10355,14 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     /* Special case: main function generates int main(void) */
     bool is_main = (name_length == 4 && memcmp(name_start, "main", 4) == 0);
 
+    size_t func_mod = module_for_file(func_decl->loc.file);
+
     if (is_main) {
         fprintf(out, "int main(");
     } else {
-        fprintf(out, "%s ni_%.*s(", codegen_type_to_c(return_type),
-                (int)name_length, name_start);
+        fprintf(out, "%s ", codegen_type_to_c(return_type));
+        codegen_emit_mangled_name(out, name_start, name_length, func_mod);
+        fprintf(out, "(");
     }
 
     /* Emit parameters */
@@ -10107,8 +10584,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     for (size_t i = 0; i < g_enum_count; i++) {
         EnumTypeEntry *et = &g_enum_table[i];
         if (!et->has_data) {
-            fprintf(out, "typedef int64_t ni_%.*s;\n",
-                    (int)et->name_length, et->name_start);
+            fprintf(out, "typedef int64_t %s;\n",
+                    codegen_mangled_name_str(et->name_start, et->name_length,
+                                             et->module_id));
         }
     }
     if (g_enum_count > 0) fprintf(out, "\n");
@@ -10181,8 +10659,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
                     codegen_type_to_c(ev->payload_type),
                     (int)ev->name_length, ev->name_start);
         }
-        fprintf(out, "\n    } data;\n} ni_%.*s;\n\n",
-                (int)et->name_length, et->name_start);
+        fprintf(out, "\n    } data;\n} %s;\n\n",
+                codegen_mangled_name_str(et->name_start, et->name_length,
+                                         et->module_id));
     }
 
     /* Emit I/O runtime helpers if any I/O built-ins are used */
@@ -10218,14 +10697,20 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     /* Emit per-table helper functions */
     for (size_t ti = 0; ti < g_table_decl_count; ti++) {
         TableDeclEntry *te = &g_table_decls[ti];
-        const char *tname = te->name_start;
-        int tlen = (int)te->name_length;
+        /* Copy mangled names to local buffers (rotating buffer in
+         * codegen_mangled_name_str gets overwritten by codegen_type_to_c) */
+        char tc_buf[128], mname_buf[128];
+        snprintf(tc_buf, sizeof(tc_buf), "%s", codegen_type_to_c(te->struct_type));
+        snprintf(mname_buf, sizeof(mname_buf), "%s",
+                 codegen_mangled_name_str(te->name_start,
+                                          te->name_length, te->module_id));
+        const char *tc = tc_buf;
+        const char *mname = mname_buf;
         ValueTypeEntry *struct_vt = value_table_get(te->struct_type);
 
         /* ni_table_alloc_Name */
-        fprintf(out, "static ni_%.*s ni_table_alloc_%.*s(ni_Arena *a, int64_t cap) {\n",
-                tlen, tname, tlen, tname);
-        fprintf(out, "    return (ni_%.*s){", tlen, tname);
+        fprintf(out, "static %s %s__alloc(ni_Arena *a, int64_t cap) {\n", tc, mname);
+        fprintf(out, "    return (%s){", tc);
         for (size_t f = 0; f < te->field_count; f++) {
             Type slice_type = struct_vt->fields[f].type;
             Type elem_type = type_element_type(slice_type);
@@ -10238,9 +10723,11 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "\n        .ni__len = 0\n    };\n}\n\n");
 
         /* ni_table_get_Name */
-        const char *row_c = codegen_type_to_c(te->row_type);
-        fprintf(out, "static %s ni_table_get_%.*s(const ni_%.*s *t, int64_t idx) {\n",
-                row_c, tlen, tname, tlen, tname);
+        char row_buf[128];
+        snprintf(row_buf, sizeof(row_buf), "%s", codegen_type_to_c(te->row_type));
+        const char *row_c = row_buf;
+        fprintf(out, "static %s %s__get(const %s *t, int64_t idx) {\n",
+                row_c, mname, tc);
         fprintf(out, "    if ((uint64_t)idx >= (uint64_t)t->ni__len) {\n");
         fprintf(out, "        fprintf(stderr, \"error[R002]: Table index out of bounds: %%ld not in [0, %%ld)\\n\", (long)idx, (long)t->ni__len);\n");
         fprintf(out, "        exit(2);\n");
@@ -10255,9 +10742,8 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "};\n}\n\n");
 
         /* ni_table_insert_Name */
-        row_c = codegen_type_to_c(te->row_type);
-        fprintf(out, "static void ni_table_insert_%.*s(ni_%.*s *t, %s row) {\n",
-                tlen, tname, tlen, tname, row_c);
+        fprintf(out, "static void %s__insert(%s *t, %s row) {\n",
+                mname, tc, row_c);
         /* Use first column's .len as capacity */
         fprintf(out, "    if (t->ni__len >= t->ni_%.*s.len) {\n",
                 (int)te->fields[0].name_length, te->fields[0].name_start);

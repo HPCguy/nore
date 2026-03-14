@@ -1,25 +1,25 @@
 // Standard file operations for Nore
 
 // Open flags (POSIX)
-val O_RDONLY: i32 = 0
-val O_WRONLY: i32 = 1
-val O_RDWR: i32 = 2
-val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
-val O_TRUNC: i32 = if (TARGET_OS == OS.MacOS) { 1024 } else { 512 }
-val O_APPEND: i32 = if (TARGET_OS == OS.MacOS) { 8 } else { 1024 }
+pub val O_RDONLY: i32 = 0
+pub val O_WRONLY: i32 = 1
+pub val O_RDWR: i32 = 2
+pub val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
+pub val O_TRUNC: i32 = if (TARGET_OS == OS.MacOS) { 1024 } else { 512 }
+pub val O_APPEND: i32 = if (TARGET_OS == OS.MacOS) { 8 } else { 1024 }
 
 // Seek whence constants
-val SEEK_SET: i32 = 0
-val SEEK_CUR: i32 = 1
-val SEEK_END: i32 = 2
+pub val SEEK_SET: i32 = 0
+pub val SEEK_CUR: i32 = 1
+pub val SEEK_END: i32 = 2
 
 // Result types for file operations
-enum ReadResult { Ok([u8]), Err(i32) }
-enum WriteResult { Ok(i64), Err(i32) }
+pub enum ReadResult { Ok([u8]), Err(i32) }
+pub enum WriteResult { Ok(i64), Err(i32) }
 
 // Read an entire file into a byte slice (arena-allocated).
 // Returns ReadResult.Ok(data) on success, ReadResult.Err(fd) on error.
-func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
+pub func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
     val fd: i32 = fd_open(ref path, O_RDONLY)
     if (fd < 0) {
         return ReadResult.Err(fd)
@@ -53,7 +53,7 @@ func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
 
 // Write a byte slice to a file (creates or overwrites).
 // Returns WriteResult.Ok(bytes_written) on success, WriteResult.Err(fd) on error.
-func write_file(ref path: str, ref data: [u8]): WriteResult = {
+pub func write_file(ref path: str, ref data: [u8]): WriteResult = {
     val fd: i32 = fd_open(ref path, O_WRONLY | O_CREAT | O_TRUNC)
     if (fd < 0) {
         return WriteResult.Err(fd)

@@ -1,11 +1,11 @@
 import types "import_helpers/types_helper.nore"
 
 func main(): void = {
-    val v: Vec2 = Vec2 { x: 1.0, y: 2.0 }
+    val v: types.Vec2 = types.Vec2 { x: 1.0, y: 2.0 }
     assert v.x == 1.0
     assert v.y == 2.0
 
-    val d: Direction = Direction.North
-    assert d == Direction.North
-    assert d != Direction.South
+    val d: types.Direction = types.Direction.North
+    assert d == types.Direction.North
+    assert d != types.Direction.South
 }

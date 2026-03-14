@@ -1,5 +1,5 @@
 import types "types_helper.nore"
 
-func make_vec2(x: f64, y: f64): Vec2 = {
-    Vec2 { x: x, y: y }
+pub func make_vec2(x: f64, y: f64): types.Vec2 = {
+    types.Vec2 { x: x, y: y }
 }
