@@ -262,6 +262,17 @@ static size_t g_imported_count = 0;
 static char *g_import_sources[MAX_IMPORTS];
 static size_t g_import_source_count = 0;
 
+/* Module registry: each file (main + imports) is a module */
+typedef struct {
+    const char *path;           /* canonical path */
+    const char *alias;          /* NULL for the main file */
+    size_t alias_length;
+} ModuleEntry;
+
+static ModuleEntry g_modules[MAX_IMPORTS];
+static size_t g_module_count = 0;
+static size_t g_current_module_id = 0;
+
 /* Error collection for multi-error reporting */
 #define MAX_ERRORS 10
 
@@ -1069,6 +1080,8 @@ typedef struct {
     size_t field_count;
     SourceLoc loc;
     bool is_struct;
+    bool is_public;
+    size_t module_id;
 } ValueTypeEntry;
 
 typedef struct {
@@ -1131,7 +1144,7 @@ static ValueTypeEntry *value_table_get(Type type) {
 /* Register a new value/struct type, copying the fields array. Returns the assigned Type. */
 static Type value_table_add(const char *name_start, size_t name_length,
                              Parameter *fields, size_t field_count,
-                             SourceLoc loc, bool is_struct) {
+                             SourceLoc loc, bool is_struct, bool is_public) {
     if (g_value_table->count >= g_value_table->capacity) {
         g_value_table->capacity *= 2;
         g_value_table->types = realloc(g_value_table->types,
@@ -1149,6 +1162,8 @@ static Type value_table_add(const char *name_start, size_t name_length,
     entry->field_count = field_count;
     entry->loc = loc;
     entry->is_struct = is_struct;
+    entry->is_public = is_public;
+    entry->module_id = g_current_module_id;
     return (Type)(TYPE_VALUE_BASE + (int)g_value_table->count++);
 }
 
@@ -1349,6 +1364,7 @@ typedef struct {
     bool has_data;          /* true if any variant has a payload */
     bool has_slice_payload; /* true if any variant has a slice type */
     bool is_public;
+    size_t module_id;
 } EnumTypeEntry;
 
 static EnumTypeEntry *g_enum_table = NULL;
@@ -1357,7 +1373,7 @@ static size_t g_enum_capacity = 0;
 
 static Type enum_table_add(const char *name_start, size_t name_length,
                             EnumVariant *variants, size_t variant_count,
-                            SourceLoc loc) {
+                            SourceLoc loc, bool is_public) {
     if (g_enum_count >= g_enum_capacity) {
         g_enum_capacity = g_enum_capacity ? g_enum_capacity * 2 : 8;
         g_enum_table = realloc(g_enum_table,
@@ -1372,7 +1388,8 @@ static Type enum_table_add(const char *name_start, size_t name_length,
     entry->loc = loc;
     entry->has_data = false;
     entry->has_slice_payload = false;
-    entry->is_public = false;
+    entry->is_public = is_public;
+    entry->module_id = g_current_module_id;
     for (size_t i = 0; i < variant_count; i++) {
         if (variants[i].payload_type != TYPE_VOID) {
             entry->has_data = true;
@@ -1427,6 +1444,7 @@ typedef struct {
     Parameter *fields;         /* original fields (value-compatible) */
     size_t field_count;
     bool is_public;
+    size_t module_id;
 } TableDeclEntry;
 
 static TableDeclEntry *g_table_decls = NULL;
@@ -1435,7 +1453,8 @@ static size_t g_table_decl_capacity = 0;
 
 static void table_decl_add(const char *name_start, size_t name_length,
                             char *row_name, Type struct_type, Type row_type,
-                            Parameter *fields, size_t field_count) {
+                            Parameter *fields, size_t field_count,
+                            bool is_public) {
     if (g_table_decl_count >= g_table_decl_capacity) {
         g_table_decl_capacity = g_table_decl_capacity ? g_table_decl_capacity * 2 : 8;
         g_table_decls = realloc(g_table_decls,
@@ -1450,7 +1469,8 @@ static void table_decl_add(const char *name_start, size_t name_length,
     e->row_type = row_type;
     e->fields = fields;
     e->field_count = field_count;
-    e->is_public = false;
+    e->is_public = is_public;
+    e->module_id = g_current_module_id;
 }
 
 static TableDeclEntry *table_decl_for_type(Type t) {
@@ -4654,7 +4674,8 @@ static Ast *parser_parse_value_decl(Parser *parser, bool is_struct,
         return NULL;
     }
 
-    value_table_add(name_start, name_length, fields, field_count, loc, is_struct);
+    value_table_add(name_start, name_length, fields, field_count, loc, is_struct,
+                    is_public);
 
     return ast_make_value_decl(name_start, name_length, fields, field_count,
                                is_struct, is_public, loc);
@@ -4774,7 +4795,8 @@ static Ast *parser_parse_enum_decl(Parser *parser, bool is_public) {
         return NULL;
     }
 
-    enum_table_add(name_start, name_length, variants, variant_count, loc);
+    enum_table_add(name_start, name_length, variants, variant_count, loc,
+                   is_public);
     return ast_make_enum_decl(name_start, name_length, variant_count, is_public,
                               loc);
 }
@@ -4842,7 +4864,8 @@ static Ast *parser_parse_table_decl(Parser *parser, bool is_public) {
 
     /* Register struct (columnar) type in g_value_table */
     Type struct_type = value_table_add(name_start, name_length,
-                                       struct_fields, struct_field_count, loc, true);
+                                       struct_fields, struct_field_count, loc,
+                                       true, is_public);
 
     /* Synthesize row name: Name.Row */
     char *row_name = malloc(name_length + 4 + 1);
@@ -4852,11 +4875,13 @@ static Ast *parser_parse_table_decl(Parser *parser, bool is_public) {
 
     /* Register row (value) type in g_value_table */
     Type row_type = value_table_add(row_name, name_length + 4,
-                                     orig_fields, field_count, loc, false);
+                                     orig_fields, field_count, loc, false,
+                                     is_public);
 
     /* Register in g_table_decls (orig_fields ownership transfers here) */
     table_decl_add(name_start, name_length, row_name,
-                   struct_type, row_type, orig_fields, field_count);
+                   struct_type, row_type, orig_fields, field_count,
+                   is_public);
 
     return ast_make_value_decl(name_start, name_length, struct_fields,
                                struct_field_count, true, is_public, loc);
@@ -4910,9 +4935,21 @@ static void parser_parse_import(const char *resolved_path, Ast *program) {
     }
     g_import_sources[g_import_source_count++] = source;
 
-    /* Save and set source file for diagnostics */
+    /* Register as a module (alias is NULL for now, set in Phase 3) */
+    if (g_module_count >= MAX_IMPORTS) {
+        panic(ERR_I002_INTERNAL_ERROR, "too many modules");
+    }
+    size_t module_id = g_module_count;
+    g_modules[module_id].path = resolved_path;
+    g_modules[module_id].alias = NULL;
+    g_modules[module_id].alias_length = 0;
+    g_module_count++;
+
+    /* Save and set source file and module context */
     const char *saved_source_file = g_source_file;
+    size_t saved_module_id = g_current_module_id;
     g_source_file = resolved_path;
+    g_current_module_id = module_id;
 
     /* Lex and parse */
     Lexer lexer;
@@ -4923,8 +4960,9 @@ static void parser_parse_import(const char *resolved_path, Ast *program) {
     /* Parse all declarations from the imported file */
     parser_parse_declarations(&parser, program);
 
-    /* Restore source file */
+    /* Restore source file and module context */
     g_source_file = saved_source_file;
+    g_current_module_id = saved_module_id;
 }
 
 /* Parse top-level declarations from the current parser into the program AST.
@@ -5060,6 +5098,13 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
 }
 
 static Ast *parser_parse_program(Parser *parser) {
+    /* Register the main file as module 0 */
+    g_modules[0].path = g_source_file;
+    g_modules[0].alias = NULL;
+    g_modules[0].alias_length = 0;
+    g_module_count = 1;
+    g_current_module_id = 0;
+
     Ast *program = ast_make_program();
     parser_parse_declarations(parser, program);
     return program;
@@ -5535,6 +5580,7 @@ struct Variable {
         double float_value;
     } comptime_value;
     bool is_global;                   /* true for global variables */
+    size_t module_id;
     bool arena_is_local;              /* for slices: true if arena is local (not ref param) */
     const char *arena_source_start;   /* for slices: name of source arena */
     size_t arena_source_length;
@@ -5627,6 +5673,7 @@ static Variable *scope_add(Scope *scope, const char *name_start,
     v->type = type;
     v->is_comptime = false;
     v->is_global = false;
+    v->module_id = g_current_module_id;
     v->arena_is_local = false;
     v->arena_source_start = NULL;
     v->arena_source_length = 0;
@@ -5678,7 +5725,7 @@ static void platform_inject_os_enum(void) {
     if (!variants) panic(ERR_I001_OUT_OF_MEMORY, "allocating OS enum variants");
     variants[0] = (EnumVariant){"Linux", 5, 0, TYPE_VOID};
     variants[1] = (EnumVariant){"MacOS", 5, 1, TYPE_VOID};
-    g_os_enum_type = enum_table_add("OS", 2, variants, 2, BUILTIN_LOC);
+    g_os_enum_type = enum_table_add("OS", 2, variants, 2, BUILTIN_LOC, false);
 }
 
 static void scope_inject_platform_constants(Scope *scope) {
@@ -5701,6 +5748,8 @@ typedef struct {
     size_t param_count;
     SourceLoc loc;
     bool returns_arena_slices;
+    bool is_public;
+    size_t module_id;
 } FunctionEntry;
 
 typedef struct {
@@ -5769,6 +5818,16 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
     entry->return_type = func_decl->as.func_decl.return_type;
     entry->loc = func_decl->loc;
     entry->returns_arena_slices = false;
+    entry->is_public = func_decl->as.func_decl.is_public;
+    /* Derive module_id from source file (func_table_add runs during typecheck,
+       after parsing is complete, so g_current_module_id is no longer valid) */
+    entry->module_id = 0;
+    for (size_t m = 0; m < g_module_count; m++) {
+        if (g_modules[m].path == func_decl->loc.file) {
+            entry->module_id = m;
+            break;
+        }
+    }
 
     /* Store parameter types and ref flags */
     size_t param_count = func_decl->as.func_decl.param_count;
