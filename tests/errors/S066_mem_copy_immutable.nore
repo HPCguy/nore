@@ -1,4 +1,5 @@
 // mem_copy() dst must be mutable
+native func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
 func main(): void = {
     val dst: [u8; 3] = [0, 0, 0]
     val src: [u8; 2] = [10, 20]

@@ -1,5 +1,12 @@
 // Test I/O built-in functions
 
+native func fd_write(fd: i32, ref data: [u8]): i64
+native func fd_read(fd: i32, mut ref buf: [u8]): i64
+native func fd_open(ref path: str, flags: i32): i32
+native func fd_close(fd: i32): void
+native func fd_seek(fd: i32, offset: i64, whence: i32): i64
+native func exit(code: i32): void
+
 import io "std/io.nore"
 import file "std/file.nore"
 

@@ -1,5 +1,8 @@
 // Standard I/O utilities for Nore
 
+native func fd_write(fd: i32, ref data: [u8]): i64
+native func fd_read(fd: i32, mut ref buf: [u8]): i64
+
 import string "std/string.nore"
 
 // Standard file descriptors

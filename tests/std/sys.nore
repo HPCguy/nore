@@ -1,0 +1,9 @@
+// Test std/sys.nore
+
+import sys "std/sys.nore"
+
+func main(): void = {
+    // sys.exit terminates the process with the given code
+    // exit(0) means success, so this test passes if it runs without error
+    sys.exit(0)
+}

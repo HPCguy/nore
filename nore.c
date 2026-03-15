@@ -111,6 +111,8 @@ typedef enum {
     ERR_P056_PUB_NOT_DECLARATION   = ERR_GROUP_PARSER + 56,
     ERR_P057_PUB_IMPORT            = ERR_GROUP_PARSER + 57,
     ERR_P058_EXPECTED_MODULE_ALIAS = ERR_GROUP_PARSER + 58,
+    ERR_P059_NATIVE_NOT_FUNC       = ERR_GROUP_PARSER + 59,
+    ERR_P060_NATIVE_HAS_BODY       = ERR_GROUP_PARSER + 60,
 
     /* Semantic errors: S001-S099 */
     ERR_S001_DUPLICATE_VARIABLE    = ERR_GROUP_SEMANTIC + 1,
@@ -198,6 +200,8 @@ typedef enum {
     ERR_S083_NOT_PUBLIC_FUNC       = ERR_GROUP_SEMANTIC + 83,
     ERR_S084_NOT_PUBLIC_TYPE       = ERR_GROUP_SEMANTIC + 84,
     ERR_S085_NOT_PUBLIC_VALUE      = ERR_GROUP_SEMANTIC + 85,
+    ERR_S086_UNKNOWN_NATIVE        = ERR_GROUP_SEMANTIC + 86,
+    ERR_S087_MISSING_NATIVE_DECL   = ERR_GROUP_SEMANTIC + 87,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -451,6 +455,7 @@ typedef enum {
     TOKEN_ENUM,
     TOKEN_IMPORT,
     TOKEN_PUB,
+    TOKEN_NATIVE,
     TOKEN_REF,
     TOKEN_ARENA,
     TOKEN_STR,
@@ -735,6 +740,7 @@ static TokenKind lexer_identify_keyword(const char *start, size_t length) {
             if (memcmp(start, "assert", 6) == 0) return TOKEN_ASSERT;
             if (memcmp(start, "struct", 6) == 0) return TOKEN_STRUCT;
             if (memcmp(start, "import", 6) == 0) return TOKEN_IMPORT;
+            if (memcmp(start, "native", 6) == 0) return TOKEN_NATIVE;
             break;
         case 8:
             if (memcmp(start, "continue", 8) == 0) return TOKEN_CONTINUE;
@@ -1316,6 +1322,44 @@ static bool g_has_casts = false;
 static bool g_has_io = false;
 static bool g_has_mem = false;
 
+/* Native declaration table (separate from function table to avoid name collisions) */
+typedef struct {
+    const char *name_start;
+    size_t name_length;
+    size_t module_id;
+    SourceLoc loc;
+} NativeEntry;
+
+#define MAX_NATIVES 64
+static NativeEntry g_native_table[MAX_NATIVES];
+static size_t g_native_count = 0;
+
+/* Known native function names (compiler-provided implementations) */
+static bool is_known_native(const char *name, size_t length) {
+    static const struct { const char *name; size_t len; } known[] = {
+        {"fd_write", 8}, {"fd_read", 7}, {"fd_open", 7},
+        {"fd_close", 8}, {"fd_seek", 7}, {"mem_copy", 8}, {"exit", 4}
+    };
+    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
+        if (length == known[i].len && memcmp(name, known[i].name, length) == 0)
+            return true;
+    }
+    return false;
+}
+
+/* Look up native declaration in a specific module */
+static NativeEntry *native_table_lookup(const char *name, size_t length,
+                                        size_t module_id) {
+    for (size_t i = 0; i < g_native_count; i++) {
+        if (g_native_table[i].name_length == length &&
+            memcmp(g_native_table[i].name_start, name, length) == 0 &&
+            g_native_table[i].module_id == module_id) {
+            return &g_native_table[i];
+        }
+    }
+    return NULL;
+}
+
 /* Deferred arena escape checks — processed after all functions are typechecked */
 typedef struct {
     SourceLoc loc;
@@ -1721,6 +1765,7 @@ typedef enum {
     AST_ENUM_VARIANT,
     AST_MATCH,
     AST_MATCH_ARM,
+    AST_NATIVE_DECL,
     AST_PROGRAM
 } AstKind;
 
@@ -1935,6 +1980,11 @@ typedef struct Ast {
         struct { struct Ast *fd; struct Ast *offset; struct Ast *whence; } fd_seek;
         struct { struct Ast *code; } exit_call;
         struct { struct Ast *dst; struct Ast *src; } mem_copy;
+
+        struct {
+            const char *name_start;
+            size_t name_length;
+        } native_decl;
 
         struct {
             const char *name_start;
@@ -2346,6 +2396,17 @@ static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
     return node;
 }
 
+static Ast *ast_make_native_decl(const char *name_start, size_t name_length,
+                                  SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_NATIVE_DECL;
+    node->loc = loc;
+    node->as.native_decl.name_start = name_start;
+    node->as.native_decl.name_length = name_length;
+    return node;
+}
+
 static Ast *ast_make_value_decl(const char *name_start, size_t name_length,
                                  Parameter *fields, size_t field_count,
                                  bool is_struct, bool is_public,
@@ -2747,6 +2808,8 @@ static void ast_free(Ast *node) {
             break;
         case AST_MATCH_ARM:
             ast_free(node->as.match_arm.body);
+            break;
+        case AST_NATIVE_DECL:
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -5282,6 +5345,15 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                 parser_synchronize(parser);
                 continue;
             }
+            /* pub native is an error (native declarations are always module-private) */
+            if (parser_check(parser, TOKEN_NATIVE)) {
+                diagnostic(g_source_file, ERR_P056_PUB_NOT_DECLARATION,
+                           parser->previous.line, parser->previous.column,
+                           "'pub' cannot be used on native declarations"
+                           " (use a pub wrapper function instead)");
+                parser_synchronize(parser);
+                continue;
+            }
             /* pub must be followed by a declaration keyword */
             if (!parser_check(parser, TOKEN_FUNC) &&
                 !parser_check(parser, TOKEN_VALUE) &&
@@ -5373,6 +5445,75 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
             parser_parse_import(g_imported_files[g_imported_count - 1],
                                 alias_start, alias_length, program);
 
+        } else if (parser_match(parser, TOKEN_NATIVE)) {
+            /* native func name(params): return_type */
+            SourceLoc native_loc = token_loc(&parser->previous);
+            if (!parser_match(parser, TOKEN_FUNC)) {
+                diagnostic(g_source_file, ERR_P059_NATIVE_NOT_FUNC,
+                           parser->current.line, parser->current.column,
+                           "'native' must be followed by 'func'");
+                parser_synchronize(parser);
+                continue;
+            }
+            /* Parse function signature (name, params, return type) */
+            if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+                diagnostic(g_source_file, ERR_P017_EXPECTED_FUNC_NAME,
+                           parser->current.line, parser->current.column,
+                           "Expected function name after 'native func'");
+                parser_synchronize(parser);
+                continue;
+            }
+            const char *native_name = parser->previous.start;
+            size_t native_name_len = parser->previous.length;
+            if (!parser_match(parser, TOKEN_LPAREN)) {
+                diagnostic(g_source_file, ERR_P018_EXPECTED_LPAREN_FUNC,
+                           parser->current.line, parser->current.column,
+                           "Expected '(' after function name");
+                parser_synchronize(parser);
+                continue;
+            }
+            /* Parse and discard params (signature is documentation) */
+            size_t pcount = 0;
+            Parameter *params = parser_parse_param_list(parser, &pcount, TOKEN_RPAREN);
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P019_EXPECTED_RPAREN_FUNC,
+                           parser->current.line, parser->current.column,
+                           "Expected ')' after parameters");
+                if (params) free(params);
+                parser_synchronize(parser);
+                continue;
+            }
+            if (!parser_match(parser, TOKEN_COLON)) {
+                diagnostic(g_source_file, ERR_P020_EXPECTED_COLON_FUNC,
+                           parser->current.line, parser->current.column,
+                           "Expected ':' before return type");
+                if (params) free(params);
+                parser_synchronize(parser);
+                continue;
+            }
+            Type rtype = parser_parse_type(parser, true);
+            if (rtype == TYPE_UNKNOWN) {
+                diagnostic(g_source_file, ERR_P021_EXPECTED_RETURN_TYPE,
+                           parser->current.line, parser->current.column,
+                           "Expected return type");
+                if (params) free(params);
+                parser_synchronize(parser);
+                continue;
+            }
+            free(params);
+            /* Native must NOT have a body */
+            if (parser_check(parser, TOKEN_EQUALS)) {
+                diagnostic(g_source_file, ERR_P060_NATIVE_HAS_BODY,
+                           parser->current.line, parser->current.column,
+                           "Native function must not have a body");
+                parser_synchronize(parser);
+                continue;
+            }
+            Ast *ndecl = ast_make_native_decl(native_name, native_name_len,
+                                               native_loc);
+            if (ndecl) {
+                ast_program_add_statement(program, ndecl);
+            }
         } else if (parser_match(parser, TOKEN_FUNC)) {
             Ast *func = parser_parse_function(parser, is_public);
             if (func) {
@@ -5417,6 +5558,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                    !parser_check(parser, TOKEN_VAL) &&
                    !parser_check(parser, TOKEN_MUT) &&
                    !parser_check(parser, TOKEN_PUB) &&
+                   !parser_check(parser, TOKEN_NATIVE) &&
                    !parser_check(parser, TOKEN_EOF)) {
                 parser_advance(parser);
             }
@@ -5875,6 +6017,12 @@ static void parser_print_ast_step(Ast *node, int indent) {
                    (int)node->as.match_arm.variant_length,
                    node->as.match_arm.variant_name);
             parser_print_ast_step(node->as.match_arm.body, indent + 1);
+            break;
+
+        case AST_NATIVE_DECL:
+            printf("NATIVE_DECL(%.*s)\n",
+                   (int)node->as.native_decl.name_length,
+                   node->as.native_decl.name_start);
             break;
 
         case AST_PROGRAM:
@@ -6686,6 +6834,16 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
     }
     free(covered);
     return common_type;
+}
+
+/* Check that a native declaration exists for a built-in call */
+static void require_native_decl(Ast *node, const char *name, size_t len,
+                                const char *hint) {
+    if (!native_table_lookup(name, len, g_typecheck_module_id)) {
+        diagnostic(node->loc.file, ERR_S087_MISSING_NATIVE_DECL,
+                   node->loc.line, node->loc.column,
+                   "%s() requires: %s", name, hint);
+    }
 }
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
@@ -7700,6 +7858,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_FD_WRITE: {
+            require_native_decl(node, "fd_write", 8,
+                "native func fd_write(fd: i32, ref data: [u8]): i64");
             Type fd_type = typecheck_expression(node->as.fd_write.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
                 diagnostic(node->as.fd_write.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_write.fd->loc.line,
@@ -7720,6 +7880,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_FD_READ: {
+            require_native_decl(node, "fd_read", 7,
+                "native func fd_read(fd: i32, mut ref buf: [u8]): i64");
             Type fd_type = typecheck_expression(node->as.fd_read.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
                 diagnostic(node->as.fd_read.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_read.fd->loc.line,
@@ -7751,6 +7913,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_FD_OPEN: {
+            require_native_decl(node, "fd_open", 7,
+                "native func fd_open(ref path: str, flags: i32): i32");
             Type path_type = typecheck_expression(node->as.fd_open.path, scope, func_table);
             if (!type_is_byte_buffer(path_type)) {
                 diagnostic(node->as.fd_open.path->loc.file, ERR_S065_IO_DATA_TYPE, node->as.fd_open.path->loc.line,
@@ -7771,6 +7935,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_FD_CLOSE: {
+            require_native_decl(node, "fd_close", 8,
+                "native func fd_close(fd: i32): void");
             Type fd_type = typecheck_expression(node->as.fd_close.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
                 diagnostic(node->as.fd_close.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_close.fd->loc.line,
@@ -7784,6 +7950,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_FD_SEEK: {
+            require_native_decl(node, "fd_seek", 7,
+                "native func fd_seek(fd: i32, offset: i64, whence: i32): i64");
             Type fd_type = typecheck_expression(node->as.fd_seek.fd, scope, func_table);
             if (!type_is_integer(fd_type)) {
                 diagnostic(node->as.fd_seek.fd->loc.file, ERR_S064_IO_FD_TYPE, node->as.fd_seek.fd->loc.line,
@@ -7811,6 +7979,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_EXIT: {
+            require_native_decl(node, "exit", 4,
+                "native func exit(code: i32): void");
             Type code_type = typecheck_expression(node->as.exit_call.code, scope, func_table);
             if (!type_is_integer(code_type)) {
                 diagnostic(node->as.exit_call.code->loc.file, ERR_S006_TYPE_MISMATCH, node->as.exit_call.code->loc.line,
@@ -7823,6 +7993,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_MEM_COPY: {
+            require_native_decl(node, "mem_copy", 8,
+                "native func mem_copy(mut ref dst: [u8], ref src: [u8]): i64");
             Type dst_type = typecheck_expression(node->as.mem_copy.dst, scope, func_table);
             if (!type_is_byte_buffer(dst_type)) {
                 diagnostic(node->as.mem_copy.dst->loc.file, ERR_S065_IO_DATA_TYPE, node->as.mem_copy.dst->loc.line,
@@ -8860,10 +9032,37 @@ static void typecheck_program(Ast *program) {
         }
     }
 
-    /* First pass: register all functions */
+    /* First pass: register all functions and native declarations */
     for (size_t i = 0; i < program->as.program.count; i++) {
         Ast *node = program->as.program.statements[i];
-        if (node->kind == AST_FUNC_DECL) {
+        if (node->kind == AST_NATIVE_DECL) {
+            const char *nname = node->as.native_decl.name_start;
+            size_t nlen = node->as.native_decl.name_length;
+            size_t mod = module_for_file(node->loc.file);
+
+            /* Validate against known native names */
+            if (!is_known_native(nname, nlen)) {
+                diagnostic(node->loc.file, ERR_S086_UNKNOWN_NATIVE,
+                           node->loc.line, node->loc.column,
+                           "Unknown native function '%.*s'",
+                           (int)nlen, nname);
+                continue;
+            }
+            /* Check for duplicate native in same module */
+            if (native_table_lookup(nname, nlen, mod)) {
+                diagnostic(node->loc.file, ERR_S008_DUPLICATE_FUNCTION,
+                           node->loc.line, node->loc.column,
+                           "Duplicate native declaration '%.*s'",
+                           (int)nlen, nname);
+                continue;
+            }
+            if (g_native_count >= MAX_NATIVES) {
+                panic(ERR_I002_INTERNAL_ERROR, "too many native declarations");
+            }
+            g_native_table[g_native_count++] = (NativeEntry){
+                nname, nlen, mod, node->loc
+            };
+        } else if (node->kind == AST_FUNC_DECL) {
             func_table_add(func_table, node);
 
             /* Check if this is main */
@@ -9671,6 +9870,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_FUNC_DECL:
         case AST_VALUE_DECL:
         case AST_ENUM_DECL:
+        case AST_NATIVE_DECL:
         case AST_MATCH:
         case AST_MATCH_ARM:
         case AST_PROGRAM:
@@ -10217,7 +10417,8 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
         case AST_VALUE_DECL:
         case AST_ENUM_DECL:
-            /* Typedef already emitted at top level */
+        case AST_NATIVE_DECL:
+            /* Typedef already emitted at top level / no codegen needed */
             break;
 
         case AST_FUNC_CALL:

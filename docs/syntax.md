@@ -1411,6 +1411,7 @@ func main(): void = {
 - `match` - Match expression/statement (tagged unions)
 - `import` - Import declarations
 - `pub` - Public visibility modifier for declarations
+- `native` - Native function declaration (compiler-provided implementation)
 - `str` - String type (byte slice `[u8]`)
 - `Arena` - Arena type (heap memory)
 - `ref` - Reference parameter/argument
@@ -1442,7 +1443,35 @@ func main(): void = {
 - `&&` `||` `!` - Logical
 - `=` - Assignment
 
-### Built-in Functions
+### Native Function Declarations
+
+The `native` keyword declares a function whose implementation is provided by the compiler. Each module must declare the native functions it uses. The declaration serves as documentation and as a compiler gate: calling a native without declaring it produces error S087.
+
+```nore
+native func fd_write(fd: i32, ref data: [u8]): i64
+native func exit(code: i32): void
+```
+
+- Must be at top level (alongside other declarations)
+- Parsed as a function signature with no body (error P060 if `=` follows)
+- The name must match a known compiler-provided function (error S086 otherwise)
+- Always module-private (`pub native` is an error; use a pub wrapper function to expose to importers)
+- Multiple modules can declare the same native independently
+- Inside a module, native names take precedence over regular function names with the same name. This enables the wrapper pattern: a module can declare `native func exit(...)` and `pub func exit(...)` without recursion, because `exit(code)` in the wrapper body resolves to the native built-in, not to itself
+
+**Known native functions:**
+
+| Native | Signature | Used by |
+|--------|-----------|---------|
+| `fd_write` | `(fd: i32, ref data: [u8]): i64` | `std/io.nore`, `std/file.nore` |
+| `fd_read` | `(fd: i32, mut ref buf: [u8]): i64` | `std/io.nore`, `std/file.nore` |
+| `fd_open` | `(ref path: str, flags: i32): i32` | `std/file.nore` |
+| `fd_close` | `(fd: i32): void` | `std/file.nore` |
+| `fd_seek` | `(fd: i32, offset: i64, whence: i32): i64` | `std/file.nore` |
+| `mem_copy` | `(mut ref dst: [u8], ref src: [u8]): i64` | `std/string.nore` |
+| `exit` | `(code: i32): void` | `std/sys.nore` |
+
+### Built-in Functions (always available)
 - `arena(capacity)` - Create a new Arena with the given byte capacity
 - `arena_alloc(mut ref arena, count)` - Allocate a slice of `count` elements from an Arena
 - `arena_reset(mut ref arena)` - Reclaim all arena memory (invalidates existing slices)
@@ -1450,13 +1479,6 @@ func main(): void = {
 - `table_len(ref table)` - Get the current row count of a table
 - `table_get(ref table, index)` - Get a row value at the given index (bounds checked)
 - `table_insert(mut ref table, row)` - Insert a row into the table
-- `fd_write(fd, ref data)` - Write bytes to a file descriptor, returns `i64` bytes written
-- `fd_read(fd, mut ref buf)` - Read bytes from a file descriptor, returns `i64` bytes read
-- `fd_open(ref path, flags)` - Open a file, returns `i32` file descriptor
-- `fd_close(fd)` - Close a file descriptor
-- `fd_seek(fd, offset, whence)` - Seek in a file, returns `i64` new position
-- `mem_copy(mut ref dst, ref src)` - Copy bytes between buffers, returns `i64` bytes copied
-- `exit(code)` - Terminate the process
 
 ### Standard Library Functions
 
@@ -1482,6 +1504,9 @@ Available via `import file "std/file.nore"` (access as `file.read_file(...)` etc
 - `file.write_file(ref path, ref data)` - Write bytes to file (create/overwrite), returns `file.WriteResult`
 - `file.ReadResult` - Enum type: `Ok([u8])` or `Err(i32)`
 - `file.WriteResult` - Enum type: `Ok(i64)` or `Err(i32)`
+
+Available via `import sys "std/sys.nore"` (access as `sys.exit(...)` etc.):
+- `sys.exit(code)` - Terminate the process with given exit code
 
 ### Predefined Constants
 - `TARGET_OS` - Compiler-injected, `OS.Linux` or `OS.MacOS` (no import needed)

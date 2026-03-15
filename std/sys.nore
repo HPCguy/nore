@@ -1,0 +1,7 @@
+// Standard system utilities for Nore
+
+native func exit(code: i32): void
+
+pub func exit(code: i32): void = {
+    exit(code)
+}

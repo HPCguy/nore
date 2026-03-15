@@ -1,4 +1,5 @@
 // error[S064]: fd_write() fd must be integer
+native func fd_write(fd: i32, ref data: [u8]): i64
 func main(): void = {
     fd_write(true, ref "data")
 }

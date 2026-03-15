@@ -40,8 +40,9 @@ Compiler-injected constants: `TARGET_OS`.
 |--------|-----------------|
 | `std/math.nore` | `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64` |
 | `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`) |
-| `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64` (imports `std/string.nore`) |
-| `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`) |
+| `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64` (imports `std/string.nore`). Declares native: `fd_write`, `fd_read` |
+| `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`). Declares native: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek` |
+| `std/sys.nore` | `exit(code)` process termination. Declares native: `exit` |
 
 All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
 
@@ -113,23 +114,31 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 - Three-level dot access for enum variants: `file.ReadResult.Ok(data)`
 - Built-in functions (`fd_write`, `arena`, `exit`, etc.) remain in global scope
 
-**Gate built-ins behind `native` declarations:** Not started. Currently, compiler built-ins (`fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`) are injected into every program's global namespace. Instead, a `native` keyword would let any `.nore` module declare a built-in's signature, and the compiler provides the implementation only when the signature matches a known built-in. For example, `std/io.nore` would declare `native func fd_write(fd: i32, ref data: [u8]): i64` and the function becomes available only to code that imports that module. This means built-ins are not a prerogative of any specific compiler path; they live in whatever domain module makes sense. The `.nore` file becomes the documentation, the compiler just has a table of known native signatures to match against.
+**Gate built-ins behind `native` declarations:** Done (Category A). The `native func` keyword lets `.nore` modules declare built-in function signatures. The compiler validates the name against a known list and requires the declaration before the built-in can be used. Seven native functions are gated: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`. Each stdlib module declares only the natives it uses:
+- `std/io.nore`: `native func fd_write(...)`, `native func fd_read(...)`
+- `std/file.nore`: `native func fd_write(...)`, `native func fd_read(...)`, `native func fd_open(...)`, `native func fd_close(...)`, `native func fd_seek(...)`
+- `std/string.nore`: `native func mem_copy(...)`
+- `std/sys.nore` (new): `native func exit(...)` with `pub func exit(code: i32)` wrapper
 
-**Remaining requires:** Built-in gating (language prereq #2b).
+Arena/table built-ins (`arena`, `arena_alloc`, `arena_reset`, `table_alloc`, `table_len`, `table_get`, `table_insert`) remain in global scope (Category B, deferred).
+
+**Remaining requires:** None for Milestone 0 (foundation complete).
 
 ### Milestone 1: Cat Clone
 
 Read a file, write it to stdout. The simplest useful program.
 
 ```nore
-import "std/io.nore"
-import "std/file.nore"
+import io "std/io.nore"
+import file "std/file.nore"
 
-mut mem: Arena = arena(65536)
-val result: ReadResult = read_file(mut ref mem, ref "input.txt")
-match (result) {
-    Ok(contents) = { fd_write(STDOUT, ref contents) }
-    Err(code) = { println(ref "error reading file") }
+func main(): void = {
+    mut mem: Arena = arena(65536)
+    val result: file.ReadResult = file.read_file(mut ref mem, ref "input.txt")
+    match (result) {
+        Ok(contents) = { io.print(ref contents) }
+        Err(code) = { io.println(ref "error reading file") }
+    }
 }
 ```
 
@@ -201,30 +210,9 @@ Shipped. Enums carry associated data. `match` expressions with exhaustiveness ch
 
 Shipped. The import system now uses `import alias "path"` with mandatory module aliases and qualified access (`alias.name`). The `pub` keyword controls visibility: only `pub` declarations are accessible from other modules. No transitive visibility. Name mangling in generated C prevents cross-module collisions.
 
-### 2b. Native Keyword for Built-in Declarations
+### ~~2b. Native Keyword for Built-in Declarations~~ (done, Category A)
 
-**Priority: next. Needs design.**
-
-A `native` keyword lets `.nore` modules declare built-in function signatures. The compiler maintains a table of known native functions and provides the implementation when a declaration's signature matches. No match means a compile error.
-
-```nore
-// in std/io.nore
-native func fd_write(fd: i32, ref data: [u8]): i64
-native func fd_read(fd: i32, mut ref buf: [u8]): i64
-
-// in std/file.nore
-native func fd_open(ref path: str, flags: i32): i32
-native func fd_close(fd: i32): void
-native func fd_seek(fd: i32, offset: i64, whence: i32): i64
-```
-
-**Blocks:** Milestone 0 (clean global namespace).
-
-**Design space:**
-- Built-ins are not a prerogative of any specific module. They live in whatever domain module makes sense. `fd_write` belongs in `std/io.nore`, `fd_open` in `std/file.nore`, etc.
-- Where do `exit` and `mem_copy` live? Possibly `std/sys.nore` or `std/core.nore`, or in existing modules where they're most relevant.
-- The `.nore` file becomes the documentation for each built-in. The signature is visible, the `native` keyword signals compiler-provided implementation.
-- Interaction with module v2: native declarations follow the same namespace/visibility rules as regular functions. If a module doesn't export a native function, importers don't see it.
+Shipped. The `native func` keyword lets `.nore` modules declare built-in function signatures. The compiler validates the name against a known list and requires the declaration before the built-in can be used. Seven functions are gated: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`. Native declarations are always module-private (`pub native` is an error). To expose a native to importers, a module declares the native privately and provides a `pub` wrapper function with the same name. Inside the module, the native name takes precedence over the wrapper, preventing infinite recursion (e.g., `std/sys.nore` wraps `exit` this way). Arena/table built-ins remain in global scope (Category B, to be gated in a future phase).
 
 ### 3. Command-Line Arguments
 
@@ -306,7 +294,7 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 The stdlib is "done enough" when Nore can write a non-trivial program. The milestones form the progression:
 
 1. **"Hello, World"**: done. `print(ref "hello")` works.
-2. **Milestone 0**: mostly done. Tagged unions shipped, stdlib retrofitted, module system complete. Native declarations still pending.
+2. **Milestone 0**: done. Tagged unions shipped, stdlib retrofitted, module system complete, native declarations shipped (Category A).
 3. **Cat clone**: file I/O end-to-end, command-line arguments.
 4. **Word count**: string processing, counting, formatted output.
 5. **JSON parser**: recursive data, tagged unions, error reporting.

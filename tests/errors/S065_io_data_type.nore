@@ -1,4 +1,5 @@
 // error[S065]: fd_write() data must be []u8
+native func fd_write(fd: i32, ref data: [u8]): i64
 func main(): void = {
     val x: i32 = 42
     fd_write(1, ref x)

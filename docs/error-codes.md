@@ -81,6 +81,8 @@ error[D002]: Unknown flag: --invalid
 - **P056**: 'pub' must be followed by a declaration
 - **P057**: 'pub' cannot be used on imports
 - **P058**: Expected module alias after 'import'
+- **P059**: 'native' must be followed by 'func'
+- **P060**: Native function must not have a body
 - **D007**: Cannot find imported file
 
 - **S001**: Duplicate variable declaration
@@ -168,6 +170,8 @@ error[D002]: Unknown flag: --invalid
 - **S083**: Function is not public in the target module (qualified access to non-pub func)
 - **S084**: Type is not public in the target module (qualified access to non-pub type)
 - **S085**: Value is not public in the target module (qualified access to non-pub val/mut)
+- **S086**: Unknown native function name (not a compiler-provided built-in)
+- **S087**: Built-in function requires native declaration in the current module
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

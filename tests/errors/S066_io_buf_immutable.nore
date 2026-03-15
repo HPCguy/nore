@@ -1,4 +1,5 @@
 // error[S066]: fd_read() buffer must be mutable
+native func fd_read(fd: i32, mut ref buf: [u8]): i64
 func main(): void = {
     val buf: str = "hello"
     fd_read(0, mut ref buf)

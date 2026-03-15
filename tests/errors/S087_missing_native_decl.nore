@@ -1,0 +1,4 @@
+// Built-in requires native declaration
+func main(): void = {
+    fd_write(1, ref "hello")
+}

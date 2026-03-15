@@ -1,5 +1,7 @@
 // Test std/file.nore
 
+native func exit(code: i32): void
+
 import file "std/file.nore"
 import string "std/string.nore"
 
