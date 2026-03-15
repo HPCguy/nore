@@ -20,3 +20,7 @@ core
 #tmp folder
 tmp
 a.out
+
+#macOS
+.DS_Store
+
