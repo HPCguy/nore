@@ -1,0 +1,27 @@
+// Test: command-line arguments via native args() built-in
+
+native func args(mut ref mem: Arena): [str]
+
+func count_total_bytes(ref items: [str]): i64 = {
+    mut total: i64 = 0
+    mut i: i64 = 0
+    while (i < items.len) {
+        total = total + items[i].len
+        i = i + 1
+    }
+    total
+}
+
+func main(): void = {
+    mut mem: Arena = arena(4096)
+
+    // args() always returns at least the program name
+    val argv: [str] = args(mut ref mem)
+    assert argv.len >= 1
+
+    // argv is a [str] (slice of slices), supports .len and indexing
+    assert argv[0].len > 0
+
+    // Nested slice operations work
+    assert count_total_bytes(ref argv) > 0
+}

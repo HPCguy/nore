@@ -1,7 +1,12 @@
 // Standard system utilities for Nore
 
 native func exit(code: i32): void
+native func args(mut ref mem: Arena): [str]
 
 pub func exit(code: i32): void = {
     exit(code)
+}
+
+pub func get_args(mut ref mem: Arena): [str] = {
+    args(mut ref mem)
 }

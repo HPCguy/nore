@@ -1,0 +1,12 @@
+// Test: command-line arguments via std/sys.nore
+
+import sys "std/sys.nore"
+
+func main(): void = {
+    mut mem: Arena = arena(4096)
+
+    // get_args returns [str] with at least the program name
+    val argv: [str] = sys.get_args(mut ref mem)
+    assert argv.len >= 1
+    assert argv[0].len > 0
+}

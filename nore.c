@@ -1321,6 +1321,7 @@ static bool g_has_arena = false;
 static bool g_has_casts = false;
 static bool g_has_io = false;
 static bool g_has_mem = false;
+static bool g_has_args = false;
 
 /* Native declaration table (separate from function table to avoid name collisions) */
 typedef struct {
@@ -1338,7 +1339,8 @@ static size_t g_native_count = 0;
 static bool is_known_native(const char *name, size_t length) {
     static const struct { const char *name; size_t len; } known[] = {
         {"fd_write", 8}, {"fd_read", 7}, {"fd_open", 7},
-        {"fd_close", 8}, {"fd_seek", 7}, {"mem_copy", 8}, {"exit", 4}
+        {"fd_close", 8}, {"fd_seek", 7}, {"mem_copy", 8}, {"exit", 4},
+        {"args", 4}
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (length == known[i].len && memcmp(name, known[i].name, length) == 0)
@@ -1761,6 +1763,7 @@ typedef enum {
     AST_FD_SEEK,
     AST_EXIT,
     AST_MEM_COPY,
+    AST_ARGS,
     AST_ENUM_DECL,
     AST_ENUM_VARIANT,
     AST_MATCH,
@@ -1980,6 +1983,7 @@ typedef struct Ast {
         struct { struct Ast *fd; struct Ast *offset; struct Ast *whence; } fd_seek;
         struct { struct Ast *code; } exit_call;
         struct { struct Ast *dst; struct Ast *src; } mem_copy;
+        struct { struct Ast *arena; } args;
 
         struct {
             const char *name_start;
@@ -2629,6 +2633,15 @@ static Ast *ast_make_mem_copy(Ast *dst, Ast *src, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_args(Ast *arena, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_ARGS;
+    node->loc = loc;
+    node->as.args.arena = arena;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2793,6 +2806,9 @@ static void ast_free(Ast *node) {
         case AST_MEM_COPY:
             ast_free(node->as.mem_copy.dst);
             ast_free(node->as.mem_copy.src);
+            break;
+        case AST_ARGS:
+            ast_free(node->as.args.arena);
             break;
         case AST_ENUM_DECL:
             break;
@@ -3732,6 +3748,33 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_mem_copy(dst, src, loc);
         }
 
+        /* args(mut ref arena) — built-in command-line argument access */
+        if (name_length == 4 && memcmp(name_start, "args", 4) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before arena argument in args()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in args()");
+                return NULL;
+            }
+            Ast *arena = parser_parse_expression(parser);
+            if (!arena) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after args arena");
+                ast_free(arena);
+                return NULL;
+            }
+            return ast_make_args(arena, loc);
+        }
+
         /* Check for module-qualified access: alias.name */
         if (parser_check(parser, TOKEN_DOT)) {
             int mod_id = module_lookup_alias(name_start, name_length);
@@ -4381,7 +4424,8 @@ static Ast *parser_parse_block(Parser *parser) {
                            expr->kind == AST_FD_CLOSE ||
                            expr->kind == AST_FD_SEEK ||
                            expr->kind == AST_MEM_COPY ||
-                           expr->kind == AST_EXIT) {
+                           expr->kind == AST_EXIT ||
+                           expr->kind == AST_ARGS) {
                     /* Bare function call or built-in as statement */
                     ast_block_add_statement(block, expr);
                 } else {
@@ -5985,6 +6029,13 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("SRC:\n");
             parser_print_ast_step(node->as.mem_copy.src, indent + 2);
+            break;
+
+        case AST_ARGS:
+            printf("ARGS\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("ARENA:\n");
+            parser_print_ast_step(node->as.args.arena, indent + 2);
             break;
 
         case AST_ENUM_DECL:
@@ -8024,6 +8075,35 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return TYPE_I64;
         }
 
+        case AST_ARGS: {
+            require_native_decl(node, "args", 4,
+                "native func args(mut ref mem: Arena): [str]");
+            Type arena_type = typecheck_expression(node->as.args.arena, scope, func_table);
+            if (!type_is_arena(arena_type)) {
+                diagnostic(node->as.args.arena->loc.file, ERR_S051_ARENA_ALLOC_TYPE, node->as.args.arena->loc.line,
+                           node->as.args.arena->loc.column,
+                           "args() requires Arena, got %s",
+                           type_name(arena_type));
+            }
+            /* Check arena is mutable */
+            if (node->as.args.arena->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.args.arena->as.identifier.start,
+                    node->as.args.arena->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(node->as.args.arena->loc.file, ERR_S052_ARENA_IMMUTABLE, node->as.args.arena->loc.line,
+                               node->as.args.arena->loc.column,
+                               "Cannot args() from immutable Arena, use 'mut'");
+                }
+            }
+            g_has_arena = true;
+            g_has_args = true;
+            Type str_slice = slice_table_intern(TYPE_U8);
+            Type args_type = slice_table_intern(str_slice);
+            node->expr_type = args_type;
+            return args_type;
+        }
+
         default:
             break;
     }
@@ -8238,6 +8318,16 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 break;
             }
 
+            /* Slice local via args() — returns [str] from arena */
+            if (type_is_slice(declared) &&
+                node->as.val_decl.initializer->kind == AST_ARGS) {
+                Variable *sv = scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                typecheck_mark_arena_locality(sv,
+                    node->as.val_decl.initializer->as.args.arena, *scope);
+                break;
+            }
+
             /* String literal exemption: val s: str = "..." */
             if (type_is_str(declared) &&
                 node->as.val_decl.initializer->kind == AST_STRING_LITERAL) {
@@ -8353,6 +8443,16 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                           node->as.mut_decl.name_length, true, declared, node->loc);
                 typecheck_mark_arena_locality(sv,
                     node->as.mut_decl.initializer->as.arena_alloc.arena, *scope);
+                break;
+            }
+
+            /* Slice local via args() — returns [str] from arena */
+            if (type_is_slice(declared) &&
+                node->as.mut_decl.initializer->kind == AST_ARGS) {
+                Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                typecheck_mark_arena_locality(sv,
+                    node->as.mut_decl.initializer->as.args.arena, *scope);
                 break;
             }
 
@@ -8638,6 +8738,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_FD_SEEK:
         case AST_MEM_COPY:
         case AST_EXIT:
+        case AST_ARGS:
             typecheck_expression(node, *scope, func_table);
             break;
 
@@ -9858,6 +9959,12 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
 
+        case AST_ARGS:
+            fprintf(out, "ni_args(&");
+            codegen_emit_lvalue(out, node->as.args.arena);
+            fprintf(out, ")");
+            break;
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -10430,6 +10537,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_FD_SEEK:
         case AST_MEM_COPY:
         case AST_EXIT:
+        case AST_ARGS:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
             fprintf(out, ";\n");
@@ -10559,7 +10667,11 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     size_t func_mod = module_for_file(func_decl->loc.file);
 
     if (is_main) {
-        fprintf(out, "int main(");
+        if (g_has_args) {
+            fprintf(out, "int main(int argc, char **argv");
+        } else {
+            fprintf(out, "int main(");
+        }
     } else {
         fprintf(out, "%s ", codegen_type_to_c(return_type));
         codegen_emit_mangled_name(out, name_start, name_length, func_mod);
@@ -10567,7 +10679,9 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     }
 
     /* Emit parameters */
-    if (func_decl->as.func_decl.param_count == 0) {
+    if (is_main && g_has_args) {
+        /* argc/argv already emitted above */
+    } else if (func_decl->as.func_decl.param_count == 0) {
         fprintf(out, "void");
     } else {
         for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
@@ -10610,6 +10724,14 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
 
     /* For main: emit global arena initializations */
     if (is_main) codegen_emit_global_arena_inits(out, 1);
+
+    /* For main: save argc/argv to static globals for ni_args() */
+    if (is_main && g_has_args) {
+        codegen_indent(out, 1);
+        fprintf(out, "ni_argc = argc;\n");
+        codegen_indent(out, 1);
+        fprintf(out, "ni_argv = argv;\n");
+    }
 
     /* Emit body */
     Ast *body = func_decl->as.func_decl.body;
@@ -10681,7 +10803,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
     if (g_has_casts) fprintf(out, "#include <limits.h>\n");
-    if (g_has_arena || g_has_io || g_has_mem) fprintf(out, "#include <string.h>\n");
+    if (g_has_arena || g_has_io || g_has_mem || g_has_args) fprintf(out, "#include <string.h>\n");
     if (g_has_io) {
         fprintf(out, "#include <unistd.h>\n");
         fprintf(out, "#include <fcntl.h>\n");
@@ -10895,6 +11017,31 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "}\n\n");
     }
 
+    /* Emit args runtime helper if used */
+    if (g_has_args) {
+        Type str_type = slice_table_intern(TYPE_U8);
+        Type args_type = slice_table_intern(str_type);
+        const char *str_c = codegen_type_to_c(str_type);
+        char str_buf[64];
+        snprintf(str_buf, sizeof(str_buf), "%s", str_c);
+        const char *args_c = codegen_type_to_c(args_type);
+        char args_buf[64];
+        snprintf(args_buf, sizeof(args_buf), "%s", args_c);
+        fprintf(out, "static int ni_argc;\n");
+        fprintf(out, "static char **ni_argv;\n");
+        fprintf(out, "static %s ni_args(ni_Arena *mem) {\n", args_buf);
+        fprintf(out, "    %s *arr = (%s *)ni_arena_alloc(mem, (int64_t)ni_argc, sizeof(%s));\n",
+                str_buf, str_buf, str_buf);
+        fprintf(out, "    for (int i = 0; i < ni_argc; i++) {\n");
+        fprintf(out, "        size_t len = strlen(ni_argv[i]);\n");
+        fprintf(out, "        uint8_t *data = (uint8_t *)ni_arena_alloc(mem, (int64_t)len, 1);\n");
+        fprintf(out, "        memcpy(data, ni_argv[i], len);\n");
+        fprintf(out, "        arr[i] = (%s){.data = data, .len = (int64_t)len};\n", str_buf);
+        fprintf(out, "    }\n");
+        fprintf(out, "    return (%s){.data = arr, .len = (int64_t)ni_argc};\n", args_buf);
+        fprintf(out, "}\n\n");
+    }
+
     /* Emit per-table helper functions */
     for (size_t ti = 0; ti < g_table_decl_count; ti++) {
         TableDeclEntry *te = &g_table_decls[ti];
@@ -11100,9 +11247,17 @@ int main(int argc, char **argv) {
     const char *output_arg = NULL;
     CompilerFlags flags = {0};
 
+    /* Extra arguments after -- (forwarded to program in --run mode) */
+    int extra_argc = 0;
+    char **extra_argv = NULL;
+
     /* Parse command-line arguments */
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--lexer") == 0) {
+        if (strcmp(argv[i], "--") == 0) {
+            extra_argc = argc - i - 1;
+            extra_argv = &argv[i + 1];
+            break;
+        } else if (strcmp(argv[i], "--lexer") == 0) {
             flags.print_tokens = 1;
         } else if (strcmp(argv[i], "--parser") == 0) {
             flags.print_ast = 1;
@@ -11232,7 +11387,24 @@ int main(int argc, char **argv) {
             codegen_compile(ast, temp_bin);
 
             if (!g_had_error) {
-                int status = system(temp_bin);
+                /* Build argv: [temp_bin, extra_argv..., NULL] */
+                char **run_argv = malloc((size_t)(1 + extra_argc + 1) * sizeof(char *));
+                if (!run_argv) panic(ERR_I001_OUT_OF_MEMORY, "allocating run argv");
+                run_argv[0] = temp_bin;
+                for (int i = 0; i < extra_argc; i++) run_argv[1 + i] = extra_argv[i];
+                run_argv[1 + extra_argc] = NULL;
+
+                pid_t pid = fork();
+                if (pid < 0) {
+                    free(run_argv);
+                    panic(ERR_I002_INTERNAL_ERROR, "fork failed: %s", strerror(errno));
+                } else if (pid == 0) {
+                    execv(temp_bin, run_argv);
+                    _exit(127);
+                }
+                int status;
+                waitpid(pid, &status, 0);
+                free(run_argv);
                 if (WIFEXITED(status)) {
                     run_exit_code = WEXITSTATUS(status);
                 } else {

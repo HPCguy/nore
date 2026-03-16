@@ -1470,6 +1470,7 @@ native func exit(code: i32): void
 | `fd_seek` | `(fd: i32, offset: i64, whence: i32): i64` | `std/file.nore` |
 | `mem_copy` | `(mut ref dst: [u8], ref src: [u8]): i64` | `std/string.nore` |
 | `exit` | `(code: i32): void` | `std/sys.nore` |
+| `args` | `(mut ref mem: Arena): [str]` | `std/sys.nore` |
 
 ### Built-in Functions (always available)
 - `arena(capacity)` - Create a new Arena with the given byte capacity
@@ -1507,6 +1508,7 @@ Available via `import file "std/file.nore"` (access as `file.read_file(...)` etc
 
 Available via `import sys "std/sys.nore"` (access as `sys.exit(...)` etc.):
 - `sys.exit(code)` - Terminate the process with given exit code
+- `sys.get_args(mut ref mem)` - Get command-line arguments as `[str]` (arena-allocated)
 
 ### Predefined Constants
 - `TARGET_OS` - Compiler-injected, `OS.Linux` or `OS.MacOS` (no import needed)

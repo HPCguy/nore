@@ -31,6 +31,7 @@ Things that require compiler support because they cannot be expressed in Nore:
 | `fd_seek(fd, offset, whence)` | Seek within a file |
 | `mem_copy(mut ref dst, ref src)` | Bulk byte copy (maps to C `memmove`) |
 | `exit(code)` | Terminate the process |
+| `args(mut ref mem)` | Get command-line arguments as `[str]` (arena-allocated) |
 
 Compiler-injected constants: `TARGET_OS`.
 
@@ -42,7 +43,7 @@ Compiler-injected constants: `TARGET_OS`.
 | `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`) |
 | `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64` (imports `std/string.nore`). Declares native: `fd_write`, `fd_read` |
 | `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`). Declares native: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek` |
-| `std/sys.nore` | `exit(code)` process termination. Declares native: `exit` |
+| `std/sys.nore` | `exit(code)` process termination, `get_args(mut ref mem)` command-line arguments as `[str]`. Declares native: `exit`, `args` |
 
 All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
 
@@ -114,11 +115,11 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 - Three-level dot access for enum variants: `file.ReadResult.Ok(data)`
 - Built-in functions (`fd_write`, `arena`, `exit`, etc.) remain in global scope
 
-**Gate built-ins behind `native` declarations:** Done (Category A). The `native func` keyword lets `.nore` modules declare built-in function signatures. The compiler validates the name against a known list and requires the declaration before the built-in can be used. Seven native functions are gated: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`. Each stdlib module declares only the natives it uses:
+**Gate built-ins behind `native` declarations:** Done (Category A). The `native func` keyword lets `.nore` modules declare built-in function signatures. The compiler validates the name against a known list and requires the declaration before the built-in can be used. Eight native functions are gated: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`, `args`. Each stdlib module declares only the natives it uses:
 - `std/io.nore`: `native func fd_write(...)`, `native func fd_read(...)`
 - `std/file.nore`: `native func fd_write(...)`, `native func fd_read(...)`, `native func fd_open(...)`, `native func fd_close(...)`, `native func fd_seek(...)`
 - `std/string.nore`: `native func mem_copy(...)`
-- `std/sys.nore` (new): `native func exit(...)` with `pub func exit(code: i32)` wrapper
+- `std/sys.nore`: `native func exit(...)`, `native func args(...)` with `pub` wrappers
 
 Arena/table built-ins (`arena`, `arena_alloc`, `arena_reset`, `table_alloc`, `table_len`, `table_get`, `table_insert`) remain in global scope (Category B, deferred).
 
@@ -147,8 +148,7 @@ func main(): void = {
 - Read file contents, write to stdout
 - Handle errors properly (file not found, read failure)
 
-**Known gaps:**
-- **Command-line arguments** (compiler built-in): access to argc/argv. Without this, the filename is hardcoded.
+**Known gaps:** None. Command-line arguments shipped via `sys.get_args()`.
 
 **Stdlib additions:** None expected. `read_file` and `fd_write` already exist. Error handling already fixed in Milestone 0.
 
@@ -214,15 +214,9 @@ Shipped. The import system now uses `import alias "path"` with mandatory module 
 
 Shipped. The `native func` keyword lets `.nore` modules declare built-in function signatures. The compiler validates the name against a known list and requires the declaration before the built-in can be used. Seven functions are gated: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek`, `mem_copy`, `exit`. Native declarations are always module-private (`pub native` is an error). To expose a native to importers, a module declares the native privately and provides a `pub` wrapper function with the same name. Inside the module, the native name takes precedence over the wrapper, preventing infinite recursion (e.g., `std/sys.nore` wraps `exit` this way). Arena/table built-ins remain in global scope (Category B, to be gated in a future phase).
 
-### 3. Command-Line Arguments
+### ~~3. Command-Line Arguments~~ (done)
 
-**Priority: needed for Milestone 1.**
-
-Access to argc/argv. Required for any program that takes input from the command line.
-
-**Blocks:** Milestone 1 (cat clone), Milestone 2 (word count).
-
-**Design space:** Could be a built-in function returning a slice of strings, or compiler-injected globals. Should follow the same pattern as `TARGET_OS`: simple, no magic.
+Shipped. The `native func args(mut ref mem: Arena): [str]` built-in copies C's `argc`/`argv` into arena-allocated Nore slices. Exposed via `std/sys.nore` as `pub func get_args(mut ref mem: Arena): [str]`. The `--run` mode forwards arguments after `--` separator (e.g. `nore --run prog.nore -- arg1 arg2`).
 
 ### 4. Varargs / Formatted Output
 
@@ -295,7 +289,7 @@ The stdlib is "done enough" when Nore can write a non-trivial program. The miles
 
 1. **"Hello, World"**: done. `print(ref "hello")` works.
 2. **Milestone 0**: done. Tagged unions shipped, stdlib retrofitted, module system complete, native declarations shipped (Category A).
-3. **Cat clone**: file I/O end-to-end, command-line arguments.
+3. **Cat clone**: file I/O end-to-end, command-line arguments (shipped).
 4. **Word count**: string processing, counting, formatted output.
 5. **JSON parser**: recursive data, tagged unions, error reporting.
 
@@ -309,6 +303,6 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - ~~**Pattern matching syntax**: `match` expression with exhaustiveness checking?~~ Resolved: `match (scrutinee) { Variant(binding) = { body } }` with exhaustiveness checking. See `docs/syntax.md`.
 - ~~**Error model migration**: when `Result`/`Option` arrive, how do existing stdlib APIs evolve?~~ Resolved: breaking change. `read_file`, `write_file`, `str_to_i64` all use new tagged union return types.
 - **Module visibility default**: export-by-default (add `private`) or private-by-default (add `pub`)? Nore's explicit philosophy suggests private-by-default.
-- **Command-line arguments API**: built-in function vs compiler-injected globals? Slice of strings or raw argc/argv?
+- ~~**Command-line arguments API**: built-in function vs compiler-injected globals? Slice of strings or raw argc/argv?~~ Resolved: `native func args(mut ref mem: Arena): [str]` built-in, arena-allocated, exposed via `std/sys.nore`.
 - **Varargs design**: language feature or stdlib pattern? Depends on tagged unions? Let Milestone 2 drive this.
 - **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
