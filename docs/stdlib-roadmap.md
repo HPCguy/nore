@@ -129,8 +129,8 @@ Arena/table built-ins (`arena`, `arena_alloc`, `arena_reset`, `table_alloc`, `ta
 
 Done. `examples/cat.nore` reads filenames from command-line arguments, reads each file via `file.read_file`, writes contents to stdout via `io.print`, and handles errors with proper exit codes. No compiler or stdlib changes were needed, validating that the v1 foundation supports real end-to-end programs.
 
-**Gaps observed (no action now):**
-- No stderr print: error messages go to stdout. An `eprint`/`eprintln` would be useful for Milestone 2.
+**Gaps observed:**
+- ~~No stderr print: error messages go to stdout.~~ Fixed: `eprint`/`eprintln` shipped in Milestone 2, cat.nore updated.
 - Arena reuse for multiple files: large files could fill the arena. A future improvement could reset between files (but argv slices also live in the arena).
 
 ### ~~Milestone 2: Word Count~~ (done)

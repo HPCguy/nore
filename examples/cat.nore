@@ -10,7 +10,7 @@ func main(): void = {
 
     // argv[0] is the program name, files start at argv[1]
     if (argv.len < 2) {
-        io.println(ref "usage: cat <file>...")
+        io.eprintln(ref "usage: cat <file>...")
         sys.exit(1)
     }
 
@@ -21,8 +21,8 @@ func main(): void = {
         match (result) {
             Ok(data) = { io.print(ref data) }
             Err(code) = {
-                io.print(ref "cat: error reading ")
-                io.println(ref argv[i])
+                io.eprint(ref "cat: error reading ")
+                io.eprintln(ref argv[i])
                 errors = errors + 1
             }
         }
