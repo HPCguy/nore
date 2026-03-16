@@ -125,32 +125,13 @@ Arena/table built-ins (`arena`, `arena_alloc`, `arena_reset`, `table_alloc`, `ta
 
 **Remaining requires:** None for Milestone 0 (foundation complete).
 
-### Milestone 1: Cat Clone
+### ~~Milestone 1: Cat Clone~~ (done)
 
-Read a file, write it to stdout. The simplest useful program.
+Done. `examples/cat.nore` reads filenames from command-line arguments, reads each file via `file.read_file`, writes contents to stdout via `io.print`, and handles errors with proper exit codes. No compiler or stdlib changes were needed, validating that the v1 foundation supports real end-to-end programs.
 
-```nore
-import io "std/io.nore"
-import file "std/file.nore"
-
-func main(): void = {
-    mut mem: Arena = arena(65536)
-    val result: file.ReadResult = file.read_file(mut ref mem, ref "input.txt")
-    match (result) {
-        Ok(contents) = { io.print(ref contents) }
-        Err(code) = { io.println(ref "error reading file") }
-    }
-}
-```
-
-**What it needs:**
-- Read a filename from command-line arguments
-- Read file contents, write to stdout
-- Handle errors properly (file not found, read failure)
-
-**Known gaps:** None. Command-line arguments shipped via `sys.get_args()`.
-
-**Stdlib additions:** None expected. `read_file` and `fd_write` already exist. Error handling already fixed in Milestone 0.
+**Gaps observed (no action now):**
+- No stderr print: error messages go to stdout. An `eprint`/`eprintln` would be useful for Milestone 2.
+- Arena reuse for multiple files: large files could fill the arena. A future improvement could reset between files (but argv slices also live in the arena).
 
 ### Milestone 2: Word Count
 
@@ -289,7 +270,7 @@ The stdlib is "done enough" when Nore can write a non-trivial program. The miles
 
 1. **"Hello, World"**: done. `print(ref "hello")` works.
 2. **Milestone 0**: done. Tagged unions shipped, stdlib retrofitted, module system complete, native declarations shipped (Category A).
-3. **Cat clone**: file I/O end-to-end, command-line arguments (shipped).
+3. **Cat clone**: done. `examples/cat.nore` proves file I/O, args, error handling work end-to-end.
 4. **Word count**: string processing, counting, formatted output.
 5. **JSON parser**: recursive data, tagged unions, error reporting.
 

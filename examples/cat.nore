@@ -1,0 +1,35 @@
+// cat: read files and write them to stdout
+
+import io "std/io.nore"
+import file "std/file.nore"
+import sys "std/sys.nore"
+
+func main(): void = {
+    mut mem: Arena = arena(65536)
+    val argv: [str] = sys.get_args(mut ref mem)
+
+    // argv[0] is the program name, files start at argv[1]
+    if (argv.len < 2) {
+        io.println(ref "usage: cat <file>...")
+        sys.exit(1)
+    }
+
+    mut errors: i64 = 0
+    mut i: i64 = 1
+    while (i < argv.len) {
+        val result: file.ReadResult = file.read_file(mut ref mem, ref argv[i])
+        match (result) {
+            Ok(data) = { io.print(ref data) }
+            Err(code) = {
+                io.print(ref "cat: error reading ")
+                io.println(ref argv[i])
+                errors = errors + 1
+            }
+        }
+        i = i + 1
+    }
+
+    if (errors > 0) {
+        sys.exit(1)
+    }
+}
