@@ -9389,6 +9389,43 @@ static void codegen_emit_field(FILE *out, Ast *node,
 static void codegen_emit_lvalue(FILE *out, Ast *node);       /* forward declaration */
 static void codegen_emit_expression(FILE *out, Ast *node);  /* forward declaration */
 
+/* Emit a C binary operator token. */
+static void codegen_emit_binary_op(FILE *out, BinaryOp op) {
+    switch (op) {
+        case OP_ADD: fprintf(out, " + "); break;
+        case OP_SUB: fprintf(out, " - "); break;
+        case OP_MUL: fprintf(out, " * "); break;
+        case OP_DIV: fprintf(out, " / "); break;
+        case OP_MOD: fprintf(out, " %% "); break;
+        case OP_EQ:  fprintf(out, " == "); break;
+        case OP_NEQ: fprintf(out, " != "); break;
+        case OP_LT:  fprintf(out, " < "); break;
+        case OP_GT:  fprintf(out, " > "); break;
+        case OP_LE:  fprintf(out, " <= "); break;
+        case OP_GE:  fprintf(out, " >= "); break;
+        case OP_AND:    fprintf(out, " && "); break;
+        case OP_OR:     fprintf(out, " || "); break;
+        case OP_BITAND: fprintf(out, " & "); break;
+        case OP_BITOR:  fprintf(out, " | "); break;
+        case OP_BITXOR: fprintf(out, " ^ "); break;
+        case OP_SHL:    fprintf(out, " << "); break;
+        case OP_SHR:    fprintf(out, " >> "); break;
+    }
+}
+
+/* Emit a condition for if/while. Skips outer parentheses on binary
+ * expressions since the caller provides if(...)/while(...), avoiding
+ * clang's -Wparentheses-equality warning on patterns like if ((a == b)). */
+static void codegen_emit_condition(FILE *out, Ast *node) {
+    if (node->kind == AST_BINARY) {
+        codegen_emit_expression(out, node->as.binary.left);
+        codegen_emit_binary_op(out, node->as.binary.op);
+        codegen_emit_expression(out, node->as.binary.right);
+    } else {
+        codegen_emit_expression(out, node);
+    }
+}
+
 /* Helpers for AST_SLICE_ACCESS codegen to avoid repetition */
 static void codegen_emit_slice_start(FILE *out, Ast *node) {
     if (node->as.slice_access.start)
@@ -9470,28 +9507,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_BINARY: {
             fprintf(out, "(");
             codegen_emit_expression(out, node->as.binary.left);
-
-            switch (node->as.binary.op) {
-                case OP_ADD: fprintf(out, " + "); break;
-                case OP_SUB: fprintf(out, " - "); break;
-                case OP_MUL: fprintf(out, " * "); break;
-                case OP_DIV: fprintf(out, " / "); break;
-                case OP_MOD: fprintf(out, " %% "); break;
-                case OP_EQ:  fprintf(out, " == "); break;
-                case OP_NEQ: fprintf(out, " != "); break;
-                case OP_LT:  fprintf(out, " < "); break;
-                case OP_GT:  fprintf(out, " > "); break;
-                case OP_LE:  fprintf(out, " <= "); break;
-                case OP_GE:  fprintf(out, " >= "); break;
-                case OP_AND:    fprintf(out, " && "); break;
-                case OP_OR:     fprintf(out, " || "); break;
-                case OP_BITAND: fprintf(out, " & "); break;
-                case OP_BITOR:  fprintf(out, " | "); break;
-                case OP_BITXOR: fprintf(out, " ^ "); break;
-                case OP_SHL:    fprintf(out, " << "); break;
-                case OP_SHR:    fprintf(out, " >> "); break;
-            }
-
+            codegen_emit_binary_op(out, node->as.binary.op);
             codegen_emit_expression(out, node->as.binary.right);
             fprintf(out, ")");
             break;
@@ -9598,7 +9614,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             /* Only simple if (both branches are simple blocks) can be emitted inline */
             if (codegen_is_simple_if(node)) {
                 fprintf(out, "(");
-                codegen_emit_expression(out, node->as.if_stmt.condition);
+                codegen_emit_condition(out, node->as.if_stmt.condition);
                 fprintf(out, " ? ");
                 codegen_emit_expression(out, node->as.if_stmt.then_block->as.block.value_expr);
                 fprintf(out, " : ");
@@ -10224,7 +10240,7 @@ static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int inde
 
     codegen_indent(out, indent);
     fprintf(out, "if (");
-    codegen_emit_expression(out, node->as.if_stmt.condition);
+    codegen_emit_condition(out, node->as.if_stmt.condition);
     fprintf(out, ") {\n");
     codegen_emit_block_body(out, node->as.if_stmt.then_block, temp_idx, scope, indent + 1);
     codegen_indent(out, indent);
@@ -10409,7 +10425,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
             codegen_indent(out, indent);
             fprintf(out, "if (");
-            codegen_emit_expression(out, node->as.if_stmt.condition);
+            codegen_emit_condition(out, node->as.if_stmt.condition);
             fprintf(out, ") {\n");
 
             codegen_emit_block_statements(out, then_block, scope, indent + 1, false);
@@ -10432,7 +10448,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
 
             codegen_indent(out, indent);
             fprintf(out, "while (");
-            codegen_emit_expression(out, node->as.while_stmt.condition);
+            codegen_emit_condition(out, node->as.while_stmt.condition);
             fprintf(out, ") {\n");
 
             codegen_emit_block_statements(out, body, scope, indent + 1, true);

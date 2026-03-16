@@ -30,3 +30,20 @@ A clone of the Unix `cat` utility. Reads files and writes their contents to stdo
 ```
 
 Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`
+
+### wc.nore
+
+A clone of the Unix `wc` utility. Counts lines, words, and bytes in files.
+
+```bash
+# Single file
+./nore --run examples/wc.nore -- file.txt
+
+# Multiple files (prints per-file counts and totals)
+./nore --run examples/wc.nore -- file1.txt file2.txt
+
+# No arguments prints usage
+./nore --run examples/wc.nore
+```
+
+Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`, `std/string.nore`

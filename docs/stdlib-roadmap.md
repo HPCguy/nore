@@ -41,7 +41,7 @@ Compiler-injected constants: `TARGET_OS`.
 |--------|-----------------|
 | `std/math.nore` | `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64` |
 | `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`) |
-| `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64` (imports `std/string.nore`). Declares native: `fd_write`, `fd_read` |
+| `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64`, `eprint`, `eprintln`, buffered `Writer` struct with `writer_new`, `write_str`, `write_byte`, `write_i64`, `write_i64_padded`, `flush`, `writer_reset` (imports `std/string.nore`). Declares native: `fd_write`, `fd_read`, `mem_copy` |
 | `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`). Declares native: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek` |
 | `std/sys.nore` | `exit(code)` process termination, `get_args(mut ref mem)` command-line arguments as `[str]`. Declares native: `exit`, `args` |
 
@@ -133,27 +133,23 @@ Done. `examples/cat.nore` reads filenames from command-line arguments, reads eac
 - No stderr print: error messages go to stdout. An `eprint`/`eprintln` would be useful for Milestone 2.
 - Arena reuse for multiple files: large files could fill the arena. A future improvement could reset between files (but argv slices also live in the arena).
 
-### Milestone 2: Word Count
+### ~~Milestone 2: Word Count~~ (done)
 
-Read a file, count lines, words, and characters. Print formatted results.
+Done. `examples/wc.nore` reads files, counts lines, words, and bytes, and prints wc-style formatted output with right-aligned columns. Results match POSIX `wc` exactly. Multiple files print per-file counts plus a totals line. Errors go to stderr via `eprint`/`eprintln`.
 
-```nore
-// Desired output: "  42  108  723 input.txt"
-```
+**Stdlib additions shipped:**
+- `eprint`/`eprintln` for stderr output in `std/io.nore`
+- Buffered `Writer` struct in `std/io.nore`: `writer_new`, `write_str`, `write_byte`, `write_i64`, `write_i64_padded`, `flush`, `writer_reset`
 
-**What it needs:**
-- Everything from Milestone 1
-- Split text on whitespace boundaries
-- Count lines, words, characters
-- Print multiple values in a formatted line
+**Formatted output resolved:** The writer/buffer pattern was chosen over varargs or string interpolation. No new language features needed. The pattern is explicit (caller owns the arena, sees every write) and composable (build a line, flush to any fd).
 
-**Known gaps:**
-- **Formatted output** (stdlib or language): printing `"  42  108  723 input.txt"` currently requires multiple `print`/`print_i64` calls with manual padding. This is where varargs or a format/writer pattern becomes necessary.
+**No string splitting needed:** Word counting uses byte-level iteration with `string.is_space()` and a simple state machine. No tokenizer or split function was required.
 
-**Stdlib additions likely needed:**
-- String splitting or tokenization (iterate words in a string)
-- Number padding/formatting for aligned output
-- Possibly `eprint`/`eprintln` for stderr output
+**Compiler fix shipped:** `codegen_emit_condition` avoids double parentheses in generated C `if`/`while` conditions, eliminating clang `-Wparentheses-equality` warnings.
+
+**Gaps observed (no action now):**
+- Codegen bug: string literals passed directly as `ref` to user-defined functions with many parameters can produce wrong C types. Workaround: bind to a `val` first.
+- Arena reuse for multiple files: same gap as Milestone 1, large files could fill the arena.
 
 ### Milestone 3: JSON Parser
 
@@ -199,20 +195,11 @@ Shipped. The `native func` keyword lets `.nore` modules declare built-in functio
 
 Shipped. The `native func args(mut ref mem: Arena): [str]` built-in copies C's `argc`/`argv` into arena-allocated Nore slices. Exposed via `std/sys.nore` as `pub func get_args(mut ref mem: Arena): [str]`. The `--run` mode forwards arguments after `--` separator (e.g. `nore --run prog.nore -- arg1 arg2`).
 
-### 4. Varargs / Formatted Output
+### ~~4. Varargs / Formatted Output~~ (resolved via stdlib)
 
-**Priority: needed for Milestone 2. Needs design.**
+Resolved without new language features. The writer/buffer pattern (`std/io.nore` Writer struct) provides composable formatted output using explicit function calls. Milestone 2 validated this approach.
 
-The current model (one function per type: `print`, `print_i64`) does not scale. Printing `"lines: 42 words: 108"` requires six separate calls. Real programs need a better pattern.
-
-**Blocks:** Milestone 2 (word count needs formatted output).
-
-**Design space:** This needs careful thought. Options include:
-- **Varargs with type dispatch**: `println(ref "count: ", n, ref " items")`. Requires variadic parameters and some form of runtime or comptime type dispatch. May depend on tagged unions.
-- **Writer/buffer pattern**: `write(mut ref w, ref "count: ") ; write_i64(mut ref w, n)`. No new language feature, but verbose.
-- **String interpolation**: `println(ref f"count: {n}")`. Compiler desugars into format calls. Powerful but a significant compiler addition.
-
-The right answer may emerge from attempting Milestone 2. Listed as "needs design" until then.
+Varargs and string interpolation remain possible future additions for ergonomics, but are no longer blockers. The writer pattern is sufficient for real programs.
 
 ### 5. Recursive Data Structures
 
@@ -271,7 +258,7 @@ The stdlib is "done enough" when Nore can write a non-trivial program. The miles
 1. **"Hello, World"**: done. `print(ref "hello")` works.
 2. **Milestone 0**: done. Tagged unions shipped, stdlib retrofitted, module system complete, native declarations shipped (Category A).
 3. **Cat clone**: done. `examples/cat.nore` proves file I/O, args, error handling work end-to-end.
-4. **Word count**: string processing, counting, formatted output.
+4. **Word count**: done. `examples/wc.nore` proves string processing, counting, and formatted output via the Writer pattern.
 5. **JSON parser**: recursive data, tagged unions, error reporting.
 
 Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, generics) beyond what the stdlib alone provides.
@@ -285,5 +272,5 @@ Each milestone proves the stdlib supports more real work. The ultimate test is s
 - ~~**Error model migration**: when `Result`/`Option` arrive, how do existing stdlib APIs evolve?~~ Resolved: breaking change. `read_file`, `write_file`, `str_to_i64` all use new tagged union return types.
 - **Module visibility default**: export-by-default (add `private`) or private-by-default (add `pub`)? Nore's explicit philosophy suggests private-by-default.
 - ~~**Command-line arguments API**: built-in function vs compiler-injected globals? Slice of strings or raw argc/argv?~~ Resolved: `native func args(mut ref mem: Arena): [str]` built-in, arena-allocated, exposed via `std/sys.nore`.
-- **Varargs design**: language feature or stdlib pattern? Depends on tagged unions? Let Milestone 2 drive this.
-- **String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush? The right pattern depends on how programs actually use it.
+- ~~**Varargs design**: language feature or stdlib pattern?~~ Resolved: stdlib Writer pattern (arena-allocated buffer with explicit writes and flush). No language change needed.
+- ~~**String builder pattern**: arena-allocated growing buffer? Or a fixed-size buffer with explicit flush?~~ Resolved: fixed-size arena-allocated buffer with `writer_new`, explicit writes, and `flush` to fd. `writer_reset` allows reuse.

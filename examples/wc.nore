@@ -1,0 +1,84 @@
+// wc: count lines, words, and bytes in files
+
+import io "std/io.nore"
+import file "std/file.nore"
+import sys "std/sys.nore"
+import string "std/string.nore"
+
+func print_counts(mut ref w: io.Writer, lines: i64, words: i64, bytes: i64, ref name: str): void = {
+    io.writer_reset(mut ref w)
+    io.write_i64_padded(mut ref w, lines, 8)
+    io.write_i64_padded(mut ref w, words, 8)
+    io.write_i64_padded(mut ref w, bytes, 8)
+    io.write_str(mut ref w, ref " ")
+    io.write_str(mut ref w, ref name)
+    io.write_byte(mut ref w, '\n')
+    io.flush(ref w, io.STDOUT)
+}
+
+func main(): void = {
+    mut mem: Arena = arena(65536)
+    val argv: [str] = sys.get_args(mut ref mem)
+
+    if (argv.len < 2) {
+        io.eprintln(ref "usage: wc <file>...")
+        sys.exit(1)
+    }
+
+    mut w: io.Writer = io.writer_new(mut ref mem, 256)
+
+    mut total_lines: i64 = 0
+    mut total_words: i64 = 0
+    mut total_bytes: i64 = 0
+    mut errors: i64 = 0
+
+    mut i: i64 = 1
+    while (i < argv.len) {
+        val result: file.ReadResult = file.read_file(mut ref mem, ref argv[i])
+        match (result) {
+            Ok(data) = {
+                mut lines: i64 = 0
+                mut words: i64 = 0
+                mut in_word: bool = false
+
+                mut j: i64 = 0
+                while (j < data.len) {
+                    val c: u8 = data[j]
+                    if (string.is_space(c)) {
+                        if (c == '\n') {
+                            lines = lines + 1
+                        }
+                        in_word = false
+                    } else {
+                        if (!in_word) {
+                            words = words + 1
+                            in_word = true
+                        }
+                    }
+                    j = j + 1
+                }
+
+                print_counts(mut ref w, lines, words, data.len, ref argv[i])
+
+                total_lines = total_lines + lines
+                total_words = total_words + words
+                total_bytes = total_bytes + data.len
+            }
+            Err(code) = {
+                io.eprint(ref "wc: error reading ")
+                io.eprintln(ref argv[i])
+                errors = errors + 1
+            }
+        }
+        i = i + 1
+    }
+
+    if (argv.len > 2) {
+        val label: str = "total"
+        print_counts(mut ref w, total_lines, total_words, total_bytes, ref label)
+    }
+
+    if (errors > 0) {
+        sys.exit(1)
+    }
+}

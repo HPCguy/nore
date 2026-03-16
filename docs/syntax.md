@@ -1487,6 +1487,16 @@ Available via `import io "std/io.nore"` (access as `io.print(...)` etc.):
 - `io.print(ref s)` - Print bytes to stdout
 - `io.println(ref s)` - Print bytes + newline to stdout
 - `io.print_i64(n)` - Print integer as decimal to stdout
+- `io.eprint(ref s)` - Print bytes to stderr
+- `io.eprintln(ref s)` - Print bytes + newline to stderr
+- `io.Writer` - Struct type: buffered writer with `buf: [u8]` and `pos: i64`
+- `io.writer_new(mut ref mem, capacity)` - Create a Writer with arena-allocated buffer
+- `io.write_str(mut ref w, ref s)` - Append string to writer buffer
+- `io.write_byte(mut ref w, b)` - Append single byte to writer buffer
+- `io.write_i64(mut ref w, n)` - Append formatted integer to writer buffer
+- `io.write_i64_padded(mut ref w, n, width)` - Append right-aligned integer with leading spaces
+- `io.flush(ref w, fd)` - Write buffer contents to file descriptor
+- `io.writer_reset(mut ref w)` - Reset write position to 0 (reuse buffer)
 
 Available via `import math "std/math.nore"` (access as `math.min_i64(...)` etc.):
 - `math.min_i64(a, b)`, `math.max_i64(a, b)`, `math.abs_i64(a)`, `math.clamp_i64(x, lo, hi)`
@@ -1508,7 +1518,7 @@ Available via `import file "std/file.nore"` (access as `file.read_file(...)` etc
 
 Available via `import sys "std/sys.nore"` (access as `sys.exit(...)` etc.):
 - `sys.exit(code)` - Terminate the process with given exit code
-- `sys.get_args(mut ref mem)` - Get command-line arguments as `[str]` (arena-allocated)
+- `sys.get_args(mut ref mem)` - Get command-line arguments as `[str]` (arena-allocated). Returns a slice where `argv[0]` is the program name. When using `--run` mode, arguments after `--` are forwarded to the program: `nore --run prog.nore -- arg1 arg2`
 
 ### Predefined Constants
 - `TARGET_OS` - Compiler-injected, `OS.Linux` or `OS.MacOS` (no import needed)
