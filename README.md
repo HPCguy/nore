@@ -168,6 +168,15 @@ See [docs/syntax.md](docs/syntax.md) for the complete language syntax reference.
 
 The compiler uses structured error codes (e.g., `S053`, `P014`) with source locations and collects up to 10 errors before stopping. See [docs/error-codes.md](docs/error-codes.md) for the full reference.
 
+## Examples
+
+The [examples/](examples/) directory contains real programs built on the standard library. 
+
+```bash
+# Run the cat clone
+./nore --run examples/cat.nore -- file1.txt file2.txt
+```
+
 ## Testing
 ```bash
 make test          # Run all tests (errors + success + stdlib)
