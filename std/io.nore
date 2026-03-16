@@ -2,6 +2,7 @@
 
 native func fd_write(fd: i32, ref data: [u8]): i64
 native func fd_read(fd: i32, mut ref buf: [u8]): i64
+native func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
 
 import string "std/string.nore"
 
@@ -9,6 +10,8 @@ import string "std/string.nore"
 pub val STDIN: i32 = 0
 pub val STDOUT: i32 = 1
 pub val STDERR: i32 = 2
+
+// Print to stdout
 
 pub func print(ref s: str): void = {
     fd_write(STDOUT, ref s)
@@ -23,4 +26,72 @@ pub func print_i64(n: i64): void = {
     mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
     val pos: i64 = string.fmt_i64(mut ref buf, n)
     fd_write(STDOUT, ref buf[pos..20])
+}
+
+// Print to stderr
+
+pub func eprint(ref s: str): void = {
+    fd_write(STDERR, ref s)
+}
+
+pub func eprintln(ref s: str): void = {
+    fd_write(STDERR, ref s)
+    fd_write(STDERR, ref "\n")
+}
+
+// Buffered writer
+
+pub struct Writer {
+    buf: [u8],
+    pos: i64
+}
+
+pub func writer_new(mut ref mem: Arena, capacity: i64): Writer = {
+    mut buf: [u8] = arena_alloc(mut ref mem, capacity)
+    return Writer { buf: buf, pos: 0 }
+}
+
+pub func write_str(mut ref w: Writer, ref s: str): void = {
+    mut dst: [u8] = w.buf[w.pos .. w.pos + s.len]
+    mem_copy(mut ref dst, ref s)
+    w.pos = w.pos + s.len
+}
+
+pub func write_byte(mut ref w: Writer, b: u8): void = {
+    w.buf[w.pos] = b
+    w.pos = w.pos + 1
+}
+
+pub func write_i64(mut ref w: Writer, n: i64): void = {
+    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val pos: i64 = string.fmt_i64(mut ref buf, n)
+    val len: i64 = 20 - pos
+    mut dst: [u8] = w.buf[w.pos .. w.pos + len]
+    mem_copy(mut ref dst, ref buf[pos..20])
+    w.pos = w.pos + len
+}
+
+pub func write_i64_padded(mut ref w: Writer, n: i64, width: i64): void = {
+    // Compute number length to determine padding
+    mut buf: [u8; 21] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    val pos: i64 = string.fmt_i64(mut ref buf, n)
+    val len: i64 = 20 - pos
+    mut pad: i64 = width - len
+    while (pad > 0) {
+        w.buf[w.pos] = ' '
+        w.pos = w.pos + 1
+        pad = pad - 1
+    }
+    // Write the number digits
+    mut dst: [u8] = w.buf[w.pos .. w.pos + len]
+    mem_copy(mut ref dst, ref buf[pos..20])
+    w.pos = w.pos + len
+}
+
+pub func flush(ref w: Writer, fd: i32): void = {
+    fd_write(fd, ref w.buf[0..w.pos])
+}
+
+pub func writer_reset(mut ref w: Writer): void = {
+    w.pos = 0
 }
