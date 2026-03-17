@@ -12,8 +12,7 @@ Found a compiler crash, wrong codegen, or a misleading error message? Open an is
 
 ### Design Feedback
 Nore makes opinionated choices (arenas over GC, value/struct split, tables as columnar sugar). If you have experience with data-oriented design, systems programming, or compiler implementation, feedback on the design documents is valuable:
-- [docs/data-oriented-design.md](docs/data-oriented-design.md) — type model and memory approach
-- [docs/arena-safety.md](docs/arena-safety.md) — escape analysis and lifetime tracking
+- [docs/nore.md](docs/nore.md) — language guide (philosophy, type model, memory model, syntax, safety)
 
 ### Code Contributions
 Before writing code, open an issue to discuss what you want to change. This avoids wasted effort on things that don't fit the project direction.
