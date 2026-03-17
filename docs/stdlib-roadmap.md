@@ -47,16 +47,17 @@ Compiler-injected constants: `TARGET_OS`.
 
 All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
 
-### Error Handling Debt (mostly resolved)
+### Error Handling Debt (resolved)
 
-The v1 stdlib originally used sentinel values for errors because tagged unions did not exist yet. Tagged unions have since shipped, and most functions have been retrofitted:
+The v1 stdlib originally used sentinel values for errors because tagged unions did not exist yet. Tagged unions have since shipped, and all stdlib functions have been retrofitted:
 
 | Function | Status | Current behavior |
 |----------|--------|-----------------|
 | `read_file` | Fixed | Returns `ReadResult.Ok([u8])` or `ReadResult.Err(i32)` |
 | `write_file` | Fixed | Returns `WriteResult.Ok(i64)` or `WriteResult.Err(i32)` |
 | `str_to_i64` | Fixed | Returns `ParseResult.Ok(i64)` or `ParseResult.None` |
-| `fd_open` | Open | Still returns raw `i32` (negative on error). A stdlib wrapper returning a Result type is not yet implemented. |
+
+`fd_open` intentionally returns raw `i32` (negative on error). As a native function, it is the thin bridge to the OS, not a stdlib API. Higher-level functions (`read_file`, `write_file`) already wrap it and surface errors via Result types.
 
 ---
 
@@ -104,7 +105,7 @@ Before writing new programs, fix the existing stdlib. This is real work that val
 - `read_file` returns `ReadResult { Ok([u8]), Err(i32) }`
 - `write_file` returns `WriteResult { Ok(i64), Err(i32) }`
 - `str_to_i64` returns `ParseResult { Ok(i64), None }`
-- `fd_open` stdlib wrapper returning Result: not yet done
+- `fd_open` stays raw `i32` by design (native layer, not stdlib API)
 
 **Module namespaces and visibility:** Done. The import system now provides proper module boundaries:
 - `import alias "path"` syntax with mandatory module alias
@@ -153,25 +154,47 @@ Done. `examples/wc.nore` reads files, counts lines, words, and bytes, and prints
 
 ### Milestone 3: JSON Parser
 
-Parse a JSON string into a structured representation. This is the big jump: it requires recursive data structures and non-trivial string processing.
+Parse a JSON string into a structured representation. This validates Nore's data-oriented design: trees are modeled with indices into tables, not with recursive pointer types.
 
 ```nore
-// Desired: parse '{"name": "nore", "version": 1}' into a tree
+// Desired: parse '{"name": "nore", "version": 1}' into a flat node table
+```
+
+**The DOD approach:** A JSON tree is a table of nodes where parent/child/sibling relationships are expressed as integer indices. No recursive types, no pointers. This is the canonical data-oriented pattern for trees (see `docs/data-oriented-design.md`).
+
+```nore
+enum JsonKind { Null, Bool, Number, Str, Array, Object }
+
+table JsonNodes {
+    kind: JsonKind,
+    num_val: f64,         // valid when kind == Number
+    bool_val: i64,        // valid when kind == Bool (0 or 1)
+    str_start: i64,       // byte offset into source (valid when kind == Str)
+    str_len: i64,
+    parent: i64,          // index of parent node (-1 for root)
+    first_child: i64,     // index of first child (-1 for leaf)
+    next_sibling: i64,    // index of next sibling (-1 for last)
+    child_count: i64,
+}
 ```
 
 **What it needs:**
 - Everything from Milestone 2
-- Recursive data types (a JSON value can contain other JSON values)
-- Tagged unions for variant types: already shipped (a JSON value is one of: string, number, bool, null, array, object)
+- Tables for flat node storage (already shipped)
+- Tagged unions for parse results (already shipped)
 - Error reporting (line/column of parse failure)
 
-**Known gaps:**
-- **Recursive data structures** (compiler feature): self-referential types for trees
-- Possibly dynamic arrays or growable buffers for unknown-size JSON arrays/objects
+**What it validates:**
+- The DOD claim that indices replace pointers for tree structures
+- Arena-based allocation for variable-size parsing
+- Tables as the natural container for heterogeneous node data
+- No compiler changes needed, the type model already supports this
 
 **Stdlib additions likely needed:**
 - String escaping/unescaping
 - More string manipulation (trim, split on delimiter)
+
+**Design note:** Unused columns per node type (e.g., `num_val` on a Null node) waste some space, but enable cache-friendly iteration by kind. This is the standard DOD tradeoff: layout for access pattern, not for minimal per-element size.
 
 ---
 
@@ -201,15 +224,11 @@ Resolved without new language features. The writer/buffer pattern (`std/io.nore`
 
 Varargs and string interpolation remain possible future additions for ergonomics, but are no longer blockers. The writer pattern is sufficient for real programs.
 
-### 5. Recursive Data Structures
+### ~~5. Recursive Data Structures~~ (deferred, not needed for Milestone 3)
 
-**Priority: needed for Milestone 3.**
+Originally believed to be a prerequisite for the JSON parser. The data-oriented approach (flat tables with index-based relationships) sidesteps recursive types entirely. Trees, graphs, and other recursive structures are modeled with indices into tables, which is the DOD-canonical pattern.
 
-Self-referential types for trees, linked lists, and other recursive structures.
-
-**Blocks:** Milestone 3 (JSON tree).
-
-**Design space:** Requires heap-allocated nodes (arena or explicit). Interacts with tagged unions (a JSON value contains a slice of JSON values).
+Self-referential types may still be useful for future use cases (e.g., interpreter ASTs, general-purpose linked lists), but they are no longer on the critical path. The JSON parser validates that the existing type model handles tree structures without compiler changes.
 
 ---
 
@@ -259,9 +278,9 @@ The stdlib is "done enough" when Nore can write a non-trivial program. The miles
 2. **Milestone 0**: done. Tagged unions shipped, stdlib retrofitted, module system complete, native declarations shipped (Category A).
 3. **Cat clone**: done. `examples/cat.nore` proves file I/O, args, error handling work end-to-end.
 4. **Word count**: done. `examples/wc.nore` proves string processing, counting, and formatted output via the Writer pattern.
-5. **JSON parser**: recursive data, tagged unions, error reporting.
+5. **JSON parser**: data-oriented tree (flat table + indices), string processing, error reporting. Validates the DOD type model.
 
-Each milestone proves the stdlib supports more real work. The ultimate test is self-hosting (writing the Nore compiler in Nore), but that requires language features (recursive data structures, generics) beyond what the stdlib alone provides.
+Each milestone proves the stdlib supports more real work. The JSON parser is a key inflection point: it proves trees work without recursive types, validating the data-oriented design. The ultimate test is self-hosting (writing the Nore compiler in Nore), which will likely need generics and possibly recursive types, but the DOD approach may push that boundary further than expected.
 
 ---
 
