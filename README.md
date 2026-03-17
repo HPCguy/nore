@@ -97,13 +97,6 @@ The mind shift is real: instead of "this object contains its data," you think "d
 
 That said, if your natural model is trees of objects and your dataset is small, Nore will feel like unnecessary ceremony. It's not the right tool for everything, and that's okay.
 
-## Design Documents
-
-- [docs/data-oriented-design.md](docs/data-oriented-design.md): Type model, tables, arenas, and memory safety approach
-- [docs/arena-safety.md](docs/arena-safety.md): Escape analysis, slice lifetime tracking, and safety guarantees
-- [docs/error-codes.md](docs/error-codes.md): All compiler error codes and error handling internals
-- [docs/stdlib-roadmap.md](docs/stdlib-roadmap.md): Standard library design, prerequisites, and implementation sequence
-
 ## Architecture
 
 The compiler follows a multi-stage pipeline:
@@ -160,9 +153,9 @@ make clean
 ./nore program.nore --parser --codegen -o program
 ```
 
-## Language Syntax
+## Language Guide
 
-See [docs/syntax.md](docs/syntax.md) for the complete language syntax reference.
+See [docs/nore.md](docs/nore.md) for the holistic language guide (philosophy, type model, memory model, syntax, safety). For a terse quick-reference, see [docs/syntax.md](docs/syntax.md).
 
 ## Error Handling
 
@@ -197,20 +190,7 @@ make test-std      # Run stdlib tests only
 4. **Phase 4**: Clang integration and native compilation
 5. **Phase 5**: Language feature expansion
 6. **Phase 6**: Standard library development
-
-### DOD Type System Implementation Sequence
-
-Each step builds on the previous one. See [docs/data-oriented-design.md](docs/data-oriented-design.md) for the full design.
-
-1. **`value` types**: composite data with named fields, stack-only, pass by copy
-2. **Fixed-size arrays** `[T; N]`: stack-allocated, value-compatible
-3. **`ref` parameters**: pass by reference for functions (required before structs)
-4. **`struct` types**: resource owners, ref-only passing, may contain slices
-5. **Slices `[T]` + Arenas**: first heap allocation, compile-time lifetime checks
-6. **`str` type**: byte slice, falls out of slice implementation
-7. **`table` sugar**: generates struct + value, the DOD payoff
-8. **`enum` types**: named integer constants with type safety, dot-qualified access
-9. **`import` system**: multi-file compilation, `std/` prefix for stdlib
+7. **Phase 7**: Self-hosting (writing the Nore compiler in Nore)
 
 ## Technical Decisions
 
