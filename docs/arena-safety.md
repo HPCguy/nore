@@ -353,20 +353,3 @@ This is a **correctness** issue (surprising behavior) rather than a **safety** i
 
 Nore's safety model is **domain-specific**: it covers the class of bugs that arena-based systems languages face in practice. This includes dangling pointers, buffer overflows, and use-after-free through scope and reset. It is substantially safer than C, with a much simpler mental model than Rust. It is not a universal aliasing and lifetime proof like Rust's borrow checker, but it targets the problems that matter most for data-oriented design.
 
----
-
-## Implementation Order
-
-All steps completed:
-
-1. ~~Add `returns_arena_slices` flag to `FunctionEntry`~~
-2. ~~Set the flag during `typecheck_function` return statement processing~~
-3. ~~Add dependency tracking for transitive propagation~~
-4. ~~Add deferred check infrastructure (list + post-typecheck propagation + check pass)~~
-5. ~~Lift S048, allow bare slice returns with `arena_is_local` check~~
-6. ~~Update S053 messages for both direct and indirect cases~~
-7. ~~Update tests and documentation~~
-
-Additional:
-- S046 extended to allow slice locals initialized from function calls (needed for callers to receive returned slices).
-- Slice-bearing tagged unions integrated into escape analysis: `type_return_has_slices()` checks `enum_has_slice_payload()`, arena reset invalidation covers slice-bearing enums, match arm bindings propagate arena tracking from scrutinee.
