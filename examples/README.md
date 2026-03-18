@@ -47,3 +47,17 @@ A clone of the Unix `wc` utility. Counts lines, words, and bytes in files.
 ```
 
 Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`, `std/string.nore`
+
+### json.nore
+
+A JSON parser and tree printer. Reads a JSON file, parses it into a flat node table, and prints an indented tree.
+
+```bash
+# Parse and print a JSON file
+./nore --run examples/json.nore -- data.json
+
+# No arguments prints usage
+./nore --run examples/json.nore
+```
+
+Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`, `std/json.nore`
