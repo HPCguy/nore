@@ -157,6 +157,24 @@ make clean
 
 See [docs/nore.md](docs/nore.md) for the holistic language guide (philosophy, type model, memory model, syntax, safety). For a terse quick-reference, see [docs/syntax.md](docs/syntax.md).
 
+## Editor Support
+
+Editor integrations live in [`editors/`](editors/) so they can evolve alongside the language syntax.
+
+Current support:
+- [`editors/nvim/`](editors/nvim/) — Neovim runtime package with filetype detection for `*.nore`, syntax highlighting, basic comment settings, and simple brace-based indentation
+
+Quick start with `lazy.nvim`:
+
+```lua
+{
+  dir = "/absolute/path/to/nore/editors/nvim",
+  name = "nore.nvim",
+}
+```
+
+Replace the path with your local checkout. For manual installation and package layout details, see [`editors/nvim/README.md`](editors/nvim/README.md).
+
 ## Error Handling
 
 The compiler uses structured error codes (e.g., `S053`, `P014`) with source locations and collects up to 10 errors before stopping. See [docs/error-codes.md](docs/error-codes.md) for the full reference.
