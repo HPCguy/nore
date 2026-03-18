@@ -1082,5 +1082,5 @@ C is the universal systems language. Every platform has a C compiler. Using C as
 - [syntax.md](syntax.md) for the complete syntax quick-reference
 - [arena-safety.md](arena-safety.md) for compiler-internal escape analysis details
 - [error-codes.md](error-codes.md) for all compiler error codes
-- [stdlib-roadmap.md](stdlib-roadmap.md) for standard library design and roadmap
+- [stdlib-design.md](stdlib-design.md) for standard library design principles
 - `examples/` directory for real programs (cat clone, word count, JSON parser)
