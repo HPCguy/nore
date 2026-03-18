@@ -607,8 +607,9 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 - `string.str_eq(ref a, ref b)`, `string.str_starts_with(...)`, `string.str_ends_with(...)` - comparison
 - `string.str_find(ref s, ref needle)`, `string.str_contains(...)` - searching
 - `string.str_concat(mut ref mem, ref a, ref b)` - concatenation
-- `string.fmt_i64(mut ref buf, n)`, `string.i64_to_str(mut ref mem, n)`, `string.str_to_i64(ref s)`
+- `string.fmt_i64(mut ref buf, n)`, `string.i64_to_str(mut ref mem, n)`, `string.str_to_i64(ref s)`, `string.str_to_f64(ref s)`
 - `string.ParseResult` - `Ok(i64)` or `None`
+- `string.ParseFloatResult` - `Ok(f64)` or `None`
 
 **`std/file.nore`** (import as `file`):
 - `file.read_file(mut ref mem, ref path)` - returns `file.ReadResult` (`Ok([u8])` / `Err(i32)`)
@@ -617,6 +618,15 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 **`std/sys.nore`** (import as `sys`):
 - `sys.exit(code)` - terminate process
 - `sys.get_args(mut ref mem)` - command-line args as `[str]` (`argv[0]` is program name, `--run` forwards args after `--`)
+
+**`std/json.nore`** (import as `json`):
+- `json.json_parse(mut ref nodes, ref src)` - parse JSON, returns `json.JsonResult` (`Ok(i64)` root index / `Err(JsonError)`)
+- `json.json_kind(ref nodes, node)` - node kind (`json.JsonKind`: Null, Bool, Number, Str, Array, Object)
+- `json.json_child(ref nodes, parent)` / `json.json_next(ref nodes, node)` - tree traversal
+- `json.json_str(ref src, ref nodes, node)` / `json.json_key(ref src, ref nodes, node)` - string/key access
+- `json.json_num(ref nodes, node)` / `json.json_bool(ref nodes, node)` - value access
+- `json.json_len(ref nodes, node)` / `json.json_count(ref nodes)` - child count / total nodes
+- `json.json_find(ref src, ref nodes, parent, ref key)` - find child by key
 
 ---
 
@@ -649,6 +659,8 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 
 ## Future Extensions
 
+- Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`)
+- `else if` syntax (currently requires `else { if (...) { } }`)
 - Multiline strings
 - Additional types (`f32`)
 - While as expressions

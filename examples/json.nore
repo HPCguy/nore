@@ -1,0 +1,147 @@
+// json: read a JSON file and print an indented tree
+
+import io "std/io.nore"
+import file "std/file.nore"
+import sys "std/sys.nore"
+import json "std/json.nore"
+
+func print_indent(mut ref w: io.Writer, depth: i64): void = {
+    mut i: i64 = 0
+    while (i < depth) {
+        val sp: str = "  "
+        io.write_str(mut ref w, ref sp)
+        i = i + 1
+    }
+}
+
+func print_key(mut ref w: io.Writer, ref src: str, ref nodes: json.JsonNodes, node: i64, depth: i64): void = {
+    val kl: i64 = nodes.key_len[node]
+    if (kl > 0) {
+        print_indent(mut ref w, depth)
+        val q: str = "\""
+        io.write_str(mut ref w, ref q)
+        val key: str = json.json_key(ref src, ref nodes, node)
+        io.write_str(mut ref w, ref key)
+        val sep: str = "\": "
+        io.write_str(mut ref w, ref sep)
+    } else {
+        print_indent(mut ref w, depth)
+    }
+}
+
+func flush_line(mut ref w: io.Writer): void = {
+    io.write_byte(mut ref w, '\n')
+    io.flush(ref w, io.STDOUT)
+    io.writer_reset(mut ref w)
+}
+
+func print_tree(mut ref w: io.Writer, ref src: str, ref nodes: json.JsonNodes, node: i64, depth: i64): void = {
+    val kind: json.JsonKind = json.json_kind(ref nodes, node)
+    print_key(mut ref w, ref src, ref nodes, node, depth)
+
+    if (kind == json.JsonKind.Null) {
+        val s: str = "null"
+        io.write_str(mut ref w, ref s)
+        flush_line(mut ref w)
+        return
+    }
+    if (kind == json.JsonKind.Bool) {
+        if (json.json_bool(ref nodes, node)) {
+            val s: str = "true"
+            io.write_str(mut ref w, ref s)
+        } else {
+            val s: str = "false"
+            io.write_str(mut ref w, ref s)
+        }
+        flush_line(mut ref w)
+        return
+    }
+    if (kind == json.JsonKind.Number) {
+        val n: f64 = json.json_num(ref nodes, node)
+        val ni: i64 = i64(n)
+        if (f64(ni) == n) {
+            io.write_i64(mut ref w, ni)
+        } else {
+            val s: str = "<float>"
+            io.write_str(mut ref w, ref s)
+        }
+        flush_line(mut ref w)
+        return
+    }
+    if (kind == json.JsonKind.Str) {
+        val q: str = "\""
+        io.write_str(mut ref w, ref q)
+        val sv: str = json.json_str(ref src, ref nodes, node)
+        io.write_str(mut ref w, ref sv)
+        io.write_str(mut ref w, ref q)
+        flush_line(mut ref w)
+        return
+    }
+    if (kind == json.JsonKind.Array) {
+        val lbl: str = "[ ("
+        io.write_str(mut ref w, ref lbl)
+        io.write_i64(mut ref w, json.json_len(ref nodes, node))
+        val lbl2: str = " items)"
+        io.write_str(mut ref w, ref lbl2)
+        flush_line(mut ref w)
+        mut child: i64 = json.json_child(ref nodes, node)
+        while (child >= 0) {
+            print_tree(mut ref w, ref src, ref nodes, child, depth + 1)
+            child = json.json_next(ref nodes, child)
+        }
+        return
+    }
+    if (kind == json.JsonKind.Object) {
+        val lbl: str = "{ ("
+        io.write_str(mut ref w, ref lbl)
+        io.write_i64(mut ref w, json.json_len(ref nodes, node))
+        val lbl2: str = " keys)"
+        io.write_str(mut ref w, ref lbl2)
+        flush_line(mut ref w)
+        mut child: i64 = json.json_child(ref nodes, node)
+        while (child >= 0) {
+            print_tree(mut ref w, ref src, ref nodes, child, depth + 1)
+            child = json.json_next(ref nodes, child)
+        }
+        return
+    }
+}
+
+func main(): void = {
+    mut mem: Arena = arena(1048576)
+    val argv: [str] = sys.get_args(mut ref mem)
+
+    if (argv.len < 2) {
+        io.eprintln(ref "usage: json <file.json>")
+        sys.exit(1)
+    }
+
+    val result: file.ReadResult = file.read_file(mut ref mem, ref argv[1])
+    match (result) {
+        Ok(data) = {
+            mut nodes: json.JsonNodes = table_alloc(mut ref mem, 4096)
+            val parse_result: json.JsonResult = json.json_parse(mut ref nodes, ref data)
+            match (parse_result) {
+                Ok(root) = {
+                    mut w: io.Writer = io.writer_new(mut ref mem, 4096)
+                    print_tree(mut ref w, ref data, ref nodes, root, 0)
+                    io.print_i64(json.json_count(ref nodes))
+                    io.println(ref " nodes total")
+                }
+                Err(e) = {
+                    io.eprint(ref "json: parse error at line ")
+                    io.print_i64(e.line)
+                    io.eprint(ref ", col ")
+                    io.print_i64(e.col)
+                    io.eprintln(ref "")
+                    sys.exit(1)
+                }
+            }
+        }
+        Err(code) = {
+            io.eprint(ref "json: error reading ")
+            io.eprintln(ref argv[1])
+            sys.exit(1)
+        }
+    }
+}

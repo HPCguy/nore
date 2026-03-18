@@ -56,10 +56,10 @@ func main(): void = {
     // str_find
     assert string.str_find(ref "hello world", ref "world") == 6
     assert string.str_find(ref "hello world", ref "hello") == 0
-    assert string.str_find(ref "hello", ref "xyz") == 0 - 1
+    assert string.str_find(ref "hello", ref "xyz") == -1
     assert string.str_find(ref "hello", ref "") == 0
     assert string.str_find(ref "aababc", ref "abc") == 3
-    assert string.str_find(ref "", ref "a") == 0 - 1
+    assert string.str_find(ref "", ref "a") == -1
     assert string.str_find(ref "aaa", ref "aa") == 0
     assert string.str_find(ref "abcabc", ref "cab") == 2
 
@@ -93,7 +93,7 @@ func main(): void = {
     val s42: str = string.i64_to_str(mut ref mem, 42)
     assert string.str_eq(ref s42, ref "42")
 
-    val sneg: str = string.i64_to_str(mut ref mem, 0 - 123)
+    val sneg: str = string.i64_to_str(mut ref mem, -123)
     assert string.str_eq(ref sneg, ref "-123")
 
     val s1: str = string.i64_to_str(mut ref mem, 1)
@@ -116,7 +116,7 @@ func main(): void = {
 
     val rneg: string.ParseResult = string.str_to_i64(ref "-123")
     val vneg: i64 = match (rneg) { Ok(n) = { n } None = { -9999 } }
-    assert vneg == 0 - 123
+    assert vneg == -123
 
     // Empty string returns None
     val rempty: string.ParseResult = string.str_to_i64(ref "")
@@ -151,8 +151,45 @@ func main(): void = {
     val vrt: i64 = match (rrt) { Ok(n) = { n } None = { -9999 } }
     assert vrt == 12345
 
-    val rt_neg: str = string.i64_to_str(mut ref mem, 0 - 6789)
+    val rt_neg: str = string.i64_to_str(mut ref mem, -6789)
     val rrt_neg: string.ParseResult = string.str_to_i64(ref rt_neg)
     val vrt_neg: i64 = match (rrt_neg) { Ok(n) = { n } None = { -9999 } }
-    assert vrt_neg == 0 - 6789
+    assert vrt_neg == -6789
+
+    // str_to_f64
+    val f1: string.ParseFloatResult = string.str_to_f64(ref "42")
+    val fv1: f64 = match (f1) { Ok(n) = { n } None = { -9999.0 } }
+    assert fv1 == 42.0
+
+    val f2: string.ParseFloatResult = string.str_to_f64(ref "3.14")
+    val fv2: f64 = match (f2) { Ok(n) = { n } None = { -9999.0 } }
+    assert fv2 > 3.13 && fv2 < 3.15
+
+    val f3: string.ParseFloatResult = string.str_to_f64(ref "-17")
+    val fv3: f64 = match (f3) { Ok(n) = { n } None = { -9999.0 } }
+    assert fv3 == -17.0
+
+    val f4: string.ParseFloatResult = string.str_to_f64(ref "1e3")
+    val fv4: f64 = match (f4) { Ok(n) = { n } None = { -9999.0 } }
+    assert fv4 == 1000.0
+
+    val f5: string.ParseFloatResult = string.str_to_f64(ref "1.5e-2")
+    val fv5: f64 = match (f5) { Ok(n) = { n } None = { -9999.0 } }
+    assert fv5 > 0.014 && fv5 < 0.016
+
+    val f6: string.ParseFloatResult = string.str_to_f64(ref "0")
+    val fv6: f64 = match (f6) { Ok(n) = { n } None = { -9999.0 } }
+    assert fv6 == 0.0
+
+    // Invalid floats return None
+    val fbad1: bool = match (string.str_to_f64(ref "")) { Ok(n) = { false } None = { true } }
+    assert fbad1
+    val fbad2: bool = match (string.str_to_f64(ref "abc")) { Ok(n) = { false } None = { true } }
+    assert fbad2
+    val fbad3: bool = match (string.str_to_f64(ref "-")) { Ok(n) = { false } None = { true } }
+    assert fbad3
+    val fbad4: bool = match (string.str_to_f64(ref "1.")) { Ok(n) = { false } None = { true } }
+    assert fbad4
+    val fbad5: bool = match (string.str_to_f64(ref "1e")) { Ok(n) = { false } None = { true } }
+    assert fbad5
 }

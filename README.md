@@ -168,6 +168,9 @@ The [examples/](examples/) directory contains real programs built on the standar
 ```bash
 # Run the cat clone
 ./nore --run examples/cat.nore -- file1.txt file2.txt
+
+# Parse and print a JSON file as an indented tree
+./nore --run examples/json.nore -- data.json
 ```
 
 ## Testing

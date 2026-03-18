@@ -40,10 +40,11 @@ Compiler-injected constants: `TARGET_OS`.
 | Module | What it provides |
 |--------|-----------------|
 | `std/math.nore` | `min_i64`, `max_i64`, `abs_i64`, `clamp_i64`, `min_f64`, `max_f64`, `abs_f64`, `clamp_f64` |
-| `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`) |
+| `std/string.nore` | Character classification (`is_digit`, `is_alpha`, `is_space`), comparison (`str_eq`, `str_starts_with`, `str_ends_with`), searching (`str_find`, `str_contains`), concatenation (`str_concat`), formatting (`fmt_i64`, `i64_to_str`), parsing (`str_to_i64`, `str_to_f64`) |
 | `std/io.nore` | `STDIN`, `STDOUT`, `STDERR`, `print`, `println`, `print_i64`, `eprint`, `eprintln`, buffered `Writer` struct with `writer_new`, `write_str`, `write_byte`, `write_i64`, `write_i64_padded`, `flush`, `writer_reset` (imports `std/string.nore`). Declares native: `fd_write`, `fd_read`, `mem_copy` |
 | `std/file.nore` | `read_file`, `write_file`, platform-specific I/O constants (`O_RDONLY`, `O_CREAT`, `SEEK_SET`, etc. via `TARGET_OS`). Declares native: `fd_write`, `fd_read`, `fd_open`, `fd_close`, `fd_seek` |
 | `std/sys.nore` | `exit(code)` process termination, `get_args(mut ref mem)` command-line arguments as `[str]`. Declares native: `exit`, `args` |
+| `std/json.nore` | JSON parser: `json_parse`, `json_kind`, `json_child`, `json_next`, `json_str`, `json_key`, `json_num`, `json_bool`, `json_len`, `json_count`, `json_find`. Flat `JsonNodes` table with index-based tree relationships. Imports `std/string.nore` |
 
 All modules tested via `tests/std/`. Comprehensive success and error test suites cover the full language.
 
@@ -152,47 +153,40 @@ Done. `examples/wc.nore` reads files, counts lines, words, and bytes, and prints
 - Codegen bug: string literals passed directly as `ref` to user-defined functions with many parameters can produce wrong C types. Workaround: bind to a `val` first.
 - Arena reuse for multiple files: same gap as Milestone 1, large files could fill the arena.
 
-### Milestone 3: JSON Parser
+### ~~Milestone 3: JSON Parser~~ (done)
 
-Parse a JSON string into a structured representation. This validates Nore's data-oriented design: trees are modeled with indices into tables, not with recursive pointer types.
+Done. `std/json.nore` parses JSON strings into a flat node table with index-based relationships, validating Nore's data-oriented design: trees modeled as tables with integer indices, no recursive types needed.
 
-```nore
-// Desired: parse '{"name": "nore", "version": 1}' into a flat node table
-```
-
-**The DOD approach:** A JSON tree is a table of nodes where parent/child/sibling relationships are expressed as integer indices. No recursive types, no pointers. This is the canonical data-oriented pattern for trees (see `docs/data-oriented-design.md`).
+**Data model:** `JsonNodes` table stores kind, numeric/boolean/string values, and parent/child/sibling indices. String values are zero-copy offsets into the source buffer. Object keys stored as separate key_start/key_len fields.
 
 ```nore
 enum JsonKind { Null, Bool, Number, Str, Array, Object }
 
 table JsonNodes {
     kind: JsonKind,
-    num_val: f64,         // valid when kind == Number
-    bool_val: i64,        // valid when kind == Bool (0 or 1)
-    str_start: i64,       // byte offset into source (valid when kind == Str)
-    str_len: i64,
-    parent: i64,          // index of parent node (-1 for root)
-    first_child: i64,     // index of first child (-1 for leaf)
-    next_sibling: i64,    // index of next sibling (-1 for last)
-    child_count: i64,
+    num_val: f64,
+    bool_val: i64,
+    str_start: i64, str_len: i64,
+    key_start: i64, key_len: i64,
+    parent: i64, first_child: i64, next_sibling: i64, child_count: i64
 }
 ```
 
-**What it needs:**
-- Everything from Milestone 2
-- Tables for flat node storage (already shipped)
-- Tagged unions for parse results (already shipped)
-- Error reporting (line/column of parse failure)
+**Public API:** `json_parse`, `json_kind`, `json_child`, `json_next`, `json_str`, `json_key`, `json_num`, `json_bool`, `json_len`, `json_count`, `json_find`. Parse result is `JsonResult { Ok(i64), Err(JsonError) }` where the `i64` is the root node index.
 
-**What it validates:**
+**What it validated:**
 - The DOD claim that indices replace pointers for tree structures
+- Enum-as-table-column works (first real test of this pattern)
 - Arena-based allocation for variable-size parsing
 - Tables as the natural container for heterogeneous node data
-- No compiler changes needed, the type model already supports this
+- No compiler changes needed
 
-**Stdlib additions likely needed:**
-- String escaping/unescaping
-- More string manipulation (trim, split on delimiter)
+**Stdlib additions:** None needed. The parser is self-contained, importing only `std/string.nore` for character classification.
+
+**Language observations:**
+- No `else if` syntax: chains must use nested `else { if (...) { } }` or flat `if/return` patterns
+- No C forward declarations emitted for user functions: mutual recursion not supported. Self-recursion works fine. Workaround: merge mutually recursive functions into one
+- Known codegen bug with string literals as `ref` args in multi-parameter functions still present. Workaround: bind to `val` first
 
 **Design note:** Unused columns per node type (e.g., `num_val` on a Null node) waste some space, but enable cache-friendly iteration by kind. This is the standard DOD tradeoff: layout for access pattern, not for minimal per-element size.
 
@@ -278,9 +272,9 @@ The stdlib is "done enough" when Nore can write a non-trivial program. The miles
 2. **Milestone 0**: done. Tagged unions shipped, stdlib retrofitted, module system complete, native declarations shipped (Category A).
 3. **Cat clone**: done. `examples/cat.nore` proves file I/O, args, error handling work end-to-end.
 4. **Word count**: done. `examples/wc.nore` proves string processing, counting, and formatted output via the Writer pattern.
-5. **JSON parser**: data-oriented tree (flat table + indices), string processing, error reporting. Validates the DOD type model.
+5. **JSON parser**: done. `std/json.nore` + `examples/json.nore` proves trees work without recursive types. Flat table with index-based relationships handles arbitrary JSON nesting.
 
-Each milestone proves the stdlib supports more real work. The JSON parser is a key inflection point: it proves trees work without recursive types, validating the data-oriented design. The ultimate test is self-hosting (writing the Nore compiler in Nore), which will likely need generics and possibly recursive types, but the DOD approach may push that boundary further than expected.
+Each milestone proves the stdlib supports more real work. The JSON parser was a key inflection point: it proved trees work without recursive types, validating the data-oriented design. The ultimate test is self-hosting (writing the Nore compiler in Nore), which will likely need generics and possibly recursive types, but the DOD approach may push that boundary further than expected.
 
 ---
 

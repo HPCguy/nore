@@ -34,7 +34,7 @@ pub func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
     if (size <= 0) {
         fd_close(fd)
         if (size < 0) {
-            return ReadResult.Err(i32(0 - 1))
+            return ReadResult.Err(i32(-1))
         }
         // Empty file
         mut empty: [u8] = arena_alloc(mut ref mem, 1)
@@ -70,7 +70,7 @@ pub func write_file(ref path: str, ref data: [u8]): WriteResult = {
         val n: i64 = fd_write(fd, ref remaining)
         if (n <= 0) {
             fd_close(fd)
-            return WriteResult.Err(i32(0 - 1))
+            return WriteResult.Err(i32(-1))
         }
         written = written + n
     }

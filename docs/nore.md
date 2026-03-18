@@ -909,8 +909,9 @@ String processing. Import as `import string "std/string.nore"`.
 - Comparison: `string.str_eq`, `string.str_starts_with`, `string.str_ends_with`
 - Searching: `string.str_find`, `string.str_contains`
 - Concatenation: `string.str_concat(mut ref mem, ref a, ref b)`
-- Formatting: `string.fmt_i64`, `string.i64_to_str`, `string.str_to_i64`
+- Formatting: `string.fmt_i64`, `string.i64_to_str`, `string.str_to_i64`, `string.str_to_f64`
 - `string.ParseResult` enum: `Ok(i64)` or `None`
+- `string.ParseFloatResult` enum: `Ok(f64)` or `None`
 
 ### `std/file.nore`
 
@@ -926,6 +927,24 @@ Process control. Import as `import sys "std/sys.nore"`.
 
 - `sys.exit(code)` terminates the process
 - `sys.get_args(mut ref mem)` returns command-line arguments as `[str]`
+
+### `std/json.nore`
+
+JSON parser. Import as `import json "std/json.nore"`.
+
+Parses JSON strings into a flat `JsonNodes` table with index-based tree relationships (parent/child/sibling). No recursive types. String values are zero-copy offsets into the source buffer.
+
+- `json.json_parse(mut ref nodes, ref src)` returns `json.JsonResult` (`Ok(i64)` root index or `Err(JsonError)`)
+- `json.json_kind(ref nodes, node)` returns `json.JsonKind` (Null, Bool, Number, Str, Array, Object)
+- `json.json_child(ref nodes, parent)` returns first child index (-1 if none)
+- `json.json_next(ref nodes, node)` returns next sibling index (-1 if last)
+- `json.json_str(ref src, ref nodes, node)` returns string value as sub-slice of source
+- `json.json_key(ref src, ref nodes, node)` returns object key as sub-slice of source
+- `json.json_num(ref nodes, node)` returns number value as `f64`
+- `json.json_bool(ref nodes, node)` returns boolean value
+- `json.json_len(ref nodes, node)` returns child count
+- `json.json_count(ref nodes)` returns total node count
+- `json.json_find(ref src, ref nodes, parent, ref key)` finds child by key name (-1 if not found)
 
 ---
 
@@ -1064,4 +1083,4 @@ C is the universal systems language. Every platform has a C compiler. Using C as
 - [arena-safety.md](arena-safety.md) for compiler-internal escape analysis details
 - [error-codes.md](error-codes.md) for all compiler error codes
 - [stdlib-roadmap.md](stdlib-roadmap.md) for standard library design and roadmap
-- `examples/` directory for real programs (cat clone, word count)
+- `examples/` directory for real programs (cat clone, word count, JSON parser)

@@ -1,0 +1,593 @@
+// Tests for std/json.nore
+
+import json "std/json.nore"
+import string "std/string.nore"
+
+func main(): void = {
+    mut mem: Arena = arena(65536)
+
+    // --- Null ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "null"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert root == 0
+                assert json.json_count(ref nodes) == 1
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Null
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Bool true ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "true"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert root == 0
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Bool
+                assert json.json_bool(ref nodes, 0)
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Bool false ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "false"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert root == 0
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Bool
+                assert !json.json_bool(ref nodes, 0)
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- String ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "\"hello\""
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert root == 0
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Str
+                val s: str = json.json_str(ref src, ref nodes, 0)
+                assert string.str_eq(ref s, ref "hello")
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Empty string ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "\"\""
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert root == 0
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Str
+                val s: str = json.json_str(ref src, ref nodes, 0)
+                assert s.len == 0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- String with escapes ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "\"hello\\nworld\""
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Str
+                val s: str = json.json_str(ref src, ref nodes, 0)
+                // Raw offsets: "hello\nworld" with backslash included
+                assert s.len == 12
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Number: integer ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "42"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Number
+                assert json.json_num(ref nodes, 0) == 42.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Number: negative ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "-17"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Number
+                assert json.json_num(ref nodes, 0) == -17.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Number: decimal ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "3.14"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Number
+                // Approximate check
+                val n: f64 = json.json_num(ref nodes, 0)
+                assert n > 3.13 && n < 3.15
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Number: zero ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "0"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Number
+                assert json.json_num(ref nodes, 0) == 0.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Number: exponent ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "1e3"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_num(ref nodes, 0) == 1000.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Empty array ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "[]"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Array
+                assert json.json_len(ref nodes, 0) == 0
+                assert json.json_child(ref nodes, 0) == -1
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Flat array ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "[1, 2, 3]"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Array
+                assert json.json_len(ref nodes, 0) == 3
+                val c0: i64 = json.json_child(ref nodes, 0)
+                assert json.json_num(ref nodes, c0) == 1.0
+                val c1: i64 = json.json_next(ref nodes, c0)
+                assert json.json_num(ref nodes, c1) == 2.0
+                val c2: i64 = json.json_next(ref nodes, c1)
+                assert json.json_num(ref nodes, c2) == 3.0
+                assert json.json_next(ref nodes, c2) == -1
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Nested array ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "[[1, 2], [3]]"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Array
+                assert json.json_len(ref nodes, 0) == 2
+                val inner0: i64 = json.json_child(ref nodes, 0)
+                assert json.json_kind(ref nodes, inner0) == json.JsonKind.Array
+                assert json.json_len(ref nodes, inner0) == 2
+                val inner1: i64 = json.json_next(ref nodes, inner0)
+                assert json.json_kind(ref nodes, inner1) == json.JsonKind.Array
+                assert json.json_len(ref nodes, inner1) == 1
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Empty object ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "{}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Object
+                assert json.json_len(ref nodes, 0) == 0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Flat object ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "{\"name\": \"nore\", \"version\": 1}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Object
+                assert json.json_len(ref nodes, 0) == 2
+                // First child: "name" -> "nore"
+                val c0: i64 = json.json_child(ref nodes, 0)
+                val k0: str = json.json_key(ref src, ref nodes, c0)
+                assert string.str_eq(ref k0, ref "name")
+                assert json.json_kind(ref nodes, c0) == json.JsonKind.Str
+                val v0: str = json.json_str(ref src, ref nodes, c0)
+                assert string.str_eq(ref v0, ref "nore")
+                // Second child: "version" -> 1
+                val c1: i64 = json.json_next(ref nodes, c0)
+                val k1: str = json.json_key(ref src, ref nodes, c1)
+                assert string.str_eq(ref k1, ref "version")
+                assert json.json_kind(ref nodes, c1) == json.JsonKind.Number
+                assert json.json_num(ref nodes, c1) == 1.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Nested object ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "{\"a\": {\"b\": 2}}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Object
+                val a_node: i64 = json.json_find(ref src, ref nodes, 0, ref "a")
+                assert a_node >= 0
+                assert json.json_kind(ref nodes, a_node) == json.JsonKind.Object
+                val b_node: i64 = json.json_find(ref src, ref nodes, a_node, ref "b")
+                assert b_node >= 0
+                assert json.json_num(ref nodes, b_node) == 2.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- json_find: missing key ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "{\"x\": 1}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                val found: i64 = json.json_find(ref src, ref nodes, 0, ref "missing")
+                assert found == -1
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Mixed types in array ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "[null, true, 42, \"hi\"]"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_len(ref nodes, 0) == 4
+                val c0: i64 = json.json_child(ref nodes, 0)
+                assert json.json_kind(ref nodes, c0) == json.JsonKind.Null
+                val c1: i64 = json.json_next(ref nodes, c0)
+                assert json.json_kind(ref nodes, c1) == json.JsonKind.Bool
+                assert json.json_bool(ref nodes, c1)
+                val c2: i64 = json.json_next(ref nodes, c1)
+                assert json.json_kind(ref nodes, c2) == json.JsonKind.Number
+                assert json.json_num(ref nodes, c2) == 42.0
+                val c3: i64 = json.json_next(ref nodes, c2)
+                assert json.json_kind(ref nodes, c3) == json.JsonKind.Str
+                val sv: str = json.json_str(ref src, ref nodes, c3)
+                assert string.str_eq(ref sv, ref "hi")
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Whitespace tolerance ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "  {  \"x\"  :  1  }  "
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Object
+                assert json.json_len(ref nodes, 0) == 1
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Error: trailing content ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "null extra"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = { assert false }
+            Err(e) = {
+                assert e.line == 1
+                assert e.col == 6
+            }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Error: invalid token ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "xyz"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = { assert false }
+            Err(e) = {
+                assert e.line == 1
+            }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Error: unterminated string ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "\"hello"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = { assert false }
+            Err(e) = {
+                assert e.line == 1
+            }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Error: empty input ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = ""
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = { assert false }
+            Err(e) = {
+                assert e.line == 1
+            }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Error: whitespace only ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "   "
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = { assert false }
+            Err(e) = {
+                assert e.line == 1
+            }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Complex nested structure ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 128)
+        val src: str = "{\"users\": [{\"name\": \"alice\", \"age\": 30}, {\"name\": \"bob\", \"age\": 25}], \"count\": 2}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Object
+                // Find users array
+                val users: i64 = json.json_find(ref src, ref nodes, 0, ref "users")
+                assert users >= 0
+                assert json.json_kind(ref nodes, users) == json.JsonKind.Array
+                assert json.json_len(ref nodes, users) == 2
+                // First user
+                val u0: i64 = json.json_child(ref nodes, users)
+                assert json.json_kind(ref nodes, u0) == json.JsonKind.Object
+                val name0: i64 = json.json_find(ref src, ref nodes, u0, ref "name")
+                assert name0 >= 0
+                val n0: str = json.json_str(ref src, ref nodes, name0)
+                assert string.str_eq(ref n0, ref "alice")
+                val age0: i64 = json.json_find(ref src, ref nodes, u0, ref "age")
+                assert age0 >= 0
+                assert json.json_num(ref nodes, age0) == 30.0
+                // Second user
+                val u1: i64 = json.json_next(ref nodes, u0)
+                val name1: i64 = json.json_find(ref src, ref nodes, u1, ref "name")
+                val n1: str = json.json_str(ref src, ref nodes, name1)
+                assert string.str_eq(ref n1, ref "bob")
+                val age1: i64 = json.json_find(ref src, ref nodes, u1, ref "age")
+                assert json.json_num(ref nodes, age1) == 25.0
+                // Count field
+                val cnt: i64 = json.json_find(ref src, ref nodes, 0, ref "count")
+                assert cnt >= 0
+                assert json.json_num(ref nodes, cnt) == 2.0
+                // Total node count
+                assert json.json_count(ref nodes) == 9
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Number: negative exponent ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "1.5e-2"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                val n: f64 = json.json_num(ref nodes, 0)
+                assert n > 0.014 && n < 0.016
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Array of objects ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "[{\"a\": 1}, {\"b\": 2}]"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_kind(ref nodes, 0) == json.JsonKind.Array
+                assert json.json_len(ref nodes, 0) == 2
+                val o0: i64 = json.json_child(ref nodes, 0)
+                assert json.json_kind(ref nodes, o0) == json.JsonKind.Object
+                val a: i64 = json.json_find(ref src, ref nodes, o0, ref "a")
+                assert json.json_num(ref nodes, a) == 1.0
+                val o1: i64 = json.json_next(ref nodes, o0)
+                val b: i64 = json.json_find(ref src, ref nodes, o1, ref "b")
+                assert json.json_num(ref nodes, b) == 2.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Deeply nested ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "[[[[1]]]]"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                assert json.json_count(ref nodes) == 5
+                // Drill down
+                val l1: i64 = json.json_child(ref nodes, 0)
+                val l2: i64 = json.json_child(ref nodes, l1)
+                val l3: i64 = json.json_child(ref nodes, l2)
+                val val_node: i64 = json.json_child(ref nodes, l3)
+                assert json.json_num(ref nodes, val_node) == 1.0
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Boolean values in object ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "{\"active\": true, \"deleted\": false}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                val active: i64 = json.json_find(ref src, ref nodes, 0, ref "active")
+                assert json.json_bool(ref nodes, active)
+                val deleted: i64 = json.json_find(ref src, ref nodes, 0, ref "deleted")
+                assert !json.json_bool(ref nodes, deleted)
+            }
+            Err(e) = { assert false }
+        }
+    }
+
+    arena_reset(mut ref mem)
+
+    // --- Null in object ---
+    {
+        mut nodes: json.JsonNodes = table_alloc(mut ref mem, 64)
+        val src: str = "{\"data\": null}"
+        val result: json.JsonResult = json.json_parse(mut ref nodes, ref src)
+        match (result) {
+            Ok(root) = {
+                val data: i64 = json.json_find(ref src, ref nodes, 0, ref "data")
+                assert data >= 0
+                assert json.json_kind(ref nodes, data) == json.JsonKind.Null
+            }
+            Err(e) = { assert false }
+        }
+    }
+}
