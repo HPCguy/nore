@@ -6,9 +6,6 @@ syn case match
 
 syn keyword noreTodo TODO FIXME NOTE XXX contained
 
-syn match noreLineComment "//.*$" contains=noreTodo,@Spell
-syn region noreBlockComment start="/\*" end="\*/" contains=noreTodo,@Spell
-
 syn match noreEscape /\\[ntr0"\\']/ contained
 syn region noreString start=+"+ skip=+\\\\\|\\"+ end=+"+ contains=noreEscape
 syn region noreChar start=+'+ skip=+\\\\\|\\'+ end=+'+ contains=noreEscape
@@ -51,6 +48,9 @@ syn match noreTypeDecl /[A-Z][A-Za-z0-9_]*/ contained
 syn match noreFuncDecl /[a-z_][A-Za-z0-9_]*/ contained
 syn match noreImportAlias /[a-z_][A-Za-z0-9_]*/ contained
 syn match noreMatchArm /^\s*\zs[A-Z][A-Za-z0-9_]*\ze\(\s*(\|\s*=\)/
+
+syn match noreLineComment "//.*$" contains=noreTodo,@Spell containedin=ALLBUT,noreString,noreChar
+syn region noreBlockComment start="/\*" end="\*/" contains=noreTodo,@Spell containedin=ALLBUT,noreString,noreChar
 
 hi def link noreTodo Todo
 
