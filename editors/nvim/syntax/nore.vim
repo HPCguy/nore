@@ -82,7 +82,7 @@ hi def link noreDelimiter Delimiter
 
 hi def link noreTypeName Type
 hi def link noreQualifiedType Type
-hi def link noreConstructor Constant
+hi def link noreConstructor Type
 hi def link noreField Identifier
 hi def link noreSpecialField Special
 
