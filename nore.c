@@ -10158,7 +10158,8 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             codegen_emit_lvalue(out, node->as.arena_alloc.arena);
             fprintf(out, ", ");
             codegen_emit_expression(out, node->as.arena_alloc.count);
-            fprintf(out, ", sizeof(%s)), .len = ", codegen_type_to_c(elem_type));
+            fprintf(out, ", sizeof(%s), NI_ALIGNOF(%s)), .len = ",
+                    codegen_type_to_c(elem_type), codegen_type_to_c(elem_type));
             codegen_emit_expression(out, node->as.arena_alloc.count);
             fprintf(out, "}");
             break;
@@ -11274,6 +11275,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdio.h>\n");
     fprintf(out, "#include <stdlib.h>\n");
     fprintf(out, "#include <stdint.h>\n");
+    if (g_has_arena) fprintf(out, "#include <stddef.h>\n");
     if (g_has_casts) fprintf(out, "#include <limits.h>\n");
     if (g_has_arena || g_has_io || g_has_mem || g_has_args) fprintf(out, "#include <string.h>\n");
     if (g_has_io) {
@@ -11353,6 +11355,7 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
 
     /* Emit Arena runtime if arena is used */
     if (g_has_arena) {
+        fprintf(out, "#define NI_ALIGNOF(T) offsetof(struct { char c; T value; }, value)\n\n");
         fprintf(out, "typedef struct { uint8_t *data; size_t capacity; size_t offset; } ni_Arena;\n\n");
         fprintf(out, "static ni_Arena ni_arena_new(int64_t capacity) {\n");
         fprintf(out, "    ni_Arena a;\n");
@@ -11362,14 +11365,21 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "    a.offset = 0;\n");
         fprintf(out, "    return a;\n");
         fprintf(out, "}\n\n");
-        fprintf(out, "static void *ni_arena_alloc(ni_Arena *a, int64_t count, size_t elem_size) {\n");
+        fprintf(out, "static size_t ni_align_up(size_t offset, size_t align) {\n");
+        fprintf(out, "    if (align <= 1) return offset;\n");
+        fprintf(out, "    size_t rem = offset %% align;\n");
+        fprintf(out, "    if (rem == 0) return offset;\n");
+        fprintf(out, "    return offset + (align - rem);\n");
+        fprintf(out, "}\n\n");
+        fprintf(out, "static void *ni_arena_alloc(ni_Arena *a, int64_t count, size_t elem_size, size_t elem_align) {\n");
         fprintf(out, "    size_t bytes = (size_t)count * elem_size;\n");
-        fprintf(out, "    if (a->offset + bytes > a->capacity) {\n");
+        fprintf(out, "    size_t offset = ni_align_up(a->offset, elem_align);\n");
+        fprintf(out, "    if (offset + bytes > a->capacity) {\n");
         fprintf(out, "        fprintf(stderr, \"Arena out of memory\\n\"); exit(1);\n");
         fprintf(out, "    }\n");
-        fprintf(out, "    void *ptr = a->data + a->offset;\n");
+        fprintf(out, "    void *ptr = a->data + offset;\n");
         fprintf(out, "    memset(ptr, 0, bytes);\n");
-        fprintf(out, "    a->offset += bytes;\n");
+        fprintf(out, "    a->offset = offset + bytes;\n");
         fprintf(out, "    return ptr;\n");
         fprintf(out, "}\n\n");
         fprintf(out, "static void ni_arena_reset(ni_Arena *a) { a->offset = 0; }\n\n");
@@ -11502,11 +11512,11 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "static int ni_argc;\n");
         fprintf(out, "static char **ni_argv;\n");
         fprintf(out, "static %s ni_args(ni_Arena *mem) {\n", args_buf);
-        fprintf(out, "    %s *arr = (%s *)ni_arena_alloc(mem, (int64_t)ni_argc, sizeof(%s));\n",
-                str_buf, str_buf, str_buf);
+        fprintf(out, "    %s *arr = (%s *)ni_arena_alloc(mem, (int64_t)ni_argc, sizeof(%s), NI_ALIGNOF(%s));\n",
+                str_buf, str_buf, str_buf, str_buf);
         fprintf(out, "    for (int i = 0; i < ni_argc; i++) {\n");
         fprintf(out, "        size_t len = strlen(ni_argv[i]);\n");
-        fprintf(out, "        uint8_t *data = (uint8_t *)ni_arena_alloc(mem, (int64_t)len, 1);\n");
+        fprintf(out, "        uint8_t *data = (uint8_t *)ni_arena_alloc(mem, (int64_t)len, 1, NI_ALIGNOF(uint8_t));\n");
         fprintf(out, "        memcpy(data, ni_argv[i], len);\n");
         fprintf(out, "        arr[i] = (%s){.data = data, .len = (int64_t)len};\n", str_buf);
         fprintf(out, "    }\n");
@@ -11534,9 +11544,10 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         for (size_t f = 0; f < te->field_count; f++) {
             Type slice_type = struct_vt->fields[f].type;
             Type elem_type = type_element_type(slice_type);
-            fprintf(out, "\n        .ni_%.*s = (%s){.data = (%s *)ni_arena_alloc(a, cap, sizeof(%s)), .len = cap},",
+            fprintf(out, "\n        .ni_%.*s = (%s){.data = (%s *)ni_arena_alloc(a, cap, sizeof(%s), NI_ALIGNOF(%s)), .len = cap},",
                     (int)te->fields[f].name_length, te->fields[f].name_start,
                     codegen_type_to_c(slice_type),
+                    codegen_type_to_c(elem_type),
                     codegen_type_to_c(elem_type),
                     codegen_type_to_c(elem_type));
         }
