@@ -770,6 +770,14 @@ if (condition) {
     // else
 }
 
+if (score > 90) {
+    // A
+} else if (score > 80) {
+    // B
+} else {
+    // C
+}
+
 // As expression (val/mut initializer)
 val x: i64 = if (a < b) { a } else { b }
 
@@ -785,6 +793,7 @@ func abs(x: i64): i64 = {
 ```
 
 - Conditions must be `bool`
+- `else if` chains work in both statement and expression position
 - Both branches must have compatible types when used as an expression
 - Comptime if conditions are folded at compile time
 

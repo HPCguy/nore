@@ -14,15 +14,28 @@ func abs_i64(a: i64): i64 = {
     return if (a < 0) { 0 - a } else { a }
 }
 
-// Nested if/else as value_expr
+// else if as value_expr
 func clamp(x: i64, lo: i64, hi: i64): i64 = {
-    if (x < lo) { lo } else { if (x > hi) { hi } else { x } }
+    if (x < lo) { lo } else if (x > hi) { hi } else { x }
 }
 
-// if/else as value_expr in val initializer (already worked, but verify)
+// else if as value_expr in val initializer
 func sign(x: i64): i64 = {
-    val s: i64 = if (x > 0) { 1 } else { if (x < 0) { 0 - 1 } else { 0 } }
+    val s: i64 = if (x > 0) { 1 } else if (x < 0) { 0 - 1 } else { 0 }
     s
+}
+
+// else if as a complex function body value_expr (requires hoisting in codegen)
+func bucket(x: i64): i64 = {
+    if (x > 0) {
+        val y: i64 = 10
+        y
+    } else if (x < 0) {
+        val y: i64 = 0 - 10
+        y
+    } else {
+        0
+    }
 }
 
 // Statement if (no else) still works as statement in block
@@ -34,12 +47,14 @@ func count_positive(a: i64, b: i64, c: i64): i64 = {
     n
 }
 
-// Statement if/else (branches have side effects, no value) still works
+// Statement else if (branches have side effects, no value) still works
 func categorize(mut ref out: i64, x: i64): void = {
     if (x > 0) {
         out = 1
-    } else {
+    } else if (x < 0) {
         out = 0 - 1
+    } else {
+        out = 0
     }
 }
 
@@ -55,24 +70,31 @@ func main(): void = {
     assert abs_i64(0 - 3) == 3
     assert abs_i64(0) == 0
 
-    // Nested
+    // else if expression
     assert clamp(5, 1, 10) == 5
     assert clamp(0 - 3, 1, 10) == 1
     assert clamp(15, 1, 10) == 10
 
-    // val initializer with nested if/else
+    // val initializer with else if
     assert sign(42) == 1
     assert sign(0 - 7) == 0 - 1
     assert sign(0) == 0
+
+    // complex else if expression
+    assert bucket(5) == 10
+    assert bucket(0 - 5) == 0 - 10
+    assert bucket(0) == 0
 
     // Statement if still works
     assert count_positive(1, 0 - 2, 3) == 2
     assert count_positive(0 - 1, 0 - 2, 0 - 3) == 0
 
-    // Statement if/else with side effects
+    // Statement else if with side effects
     mut r: i64 = 0
     categorize(mut ref r, 5)
     assert r == 1
     categorize(mut ref r, 0 - 3)
     assert r == 0 - 1
+    categorize(mut ref r, 0)
+    assert r == 0
 }

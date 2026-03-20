@@ -436,11 +436,13 @@ p.life[0] = 50                             // direct column access
 ```nore
 if (condition) { ... }
 if (condition) { ... } else { ... }
+if (condition) { ... } else if (other) { ... } else { ... }
 val x: i64 = if (a < b) { a } else { b }   // expression
 return if (x < 0) { 0 - x } else { x }     // after return
 ```
 
 - Condition must be `bool`
+- `else if` chains are allowed in statements and expressions
 - Expression form: both branches must have compatible types
 - Comptime conditions folded at compile time
 
@@ -660,7 +662,6 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 ## Future Extensions
 
 - Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`)
-- `else if` syntax (currently requires `else { if (...) { } }`)
 - Multiline strings
 - Additional types (`f32`)
 - While as expressions

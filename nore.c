@@ -3140,6 +3140,7 @@ static Ast **parser_parse_arg_list(Parser *parser, size_t *count, bool *error,
 static Ast *parser_parse_block(Parser *parser);
 static Ast *parser_parse_if(Parser *parser);
 static Ast *parser_parse_match(Parser *parser);
+static bool ast_if_is_value_expr(Ast *node);
 
 static Type token_to_type(TokenKind kind) {
     switch (kind) {
@@ -4343,9 +4344,7 @@ static Ast *parser_parse_block(Parser *parser) {
             Ast *if_node = parser_parse_if(parser);
             if (if_node) {
                 if (parser_check(parser, TOKEN_RBRACE) &&
-                    if_node->as.if_stmt.else_block != NULL &&
-                    if_node->as.if_stmt.then_block->as.block.value_expr != NULL &&
-                    if_node->as.if_stmt.else_block->as.block.value_expr != NULL) {
+                    ast_if_is_value_expr(if_node)) {
                     block->as.block.value_expr = if_node;
                     break;
                 } else {
@@ -4487,16 +4486,39 @@ static Ast *parser_parse_if(Parser *parser) {
     /* Optional else */
     Ast *else_block = NULL;
     if (parser_match(parser, TOKEN_ELSE)) {
-        if (!parser_match(parser, TOKEN_LBRACE)) {
-            diagnostic(g_source_file, ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
-                       parser->current.column, "Expected '{' for else body");
-            parser_synchronize(parser);
-            return NULL;
+        if (parser_match(parser, TOKEN_IF)) {
+            Ast *else_if = parser_parse_if(parser);
+            if (!else_if) {
+                return NULL;
+            }
+            else_block = ast_make_block(else_if->loc);
+            else_block->as.block.value_expr = else_if;
+        } else {
+            if (!parser_match(parser, TOKEN_LBRACE)) {
+                diagnostic(g_source_file, ERR_P010_EXPECTED_LBRACE_IF, parser->current.line,
+                           parser->current.column, "Expected '{' for else body");
+                parser_synchronize(parser);
+                return NULL;
+            }
+            else_block = parser_parse_block(parser);
         }
-        else_block = parser_parse_block(parser);
     }
 
     return ast_make_if(condition, then_block, else_block, loc);
+}
+
+static bool ast_if_is_value_expr(Ast *node) {
+    if (!node || node->kind != AST_IF) return false;
+    if (!node->as.if_stmt.else_block) return false;
+    if (!node->as.if_stmt.then_block->as.block.value_expr) return false;
+    if (!node->as.if_stmt.else_block->as.block.value_expr) return false;
+
+    Ast *else_value = node->as.if_stmt.else_block->as.block.value_expr;
+    if (else_value->kind == AST_IF) {
+        return ast_if_is_value_expr(else_value);
+    }
+
+    return true;
 }
 
 static Ast *parser_parse_match(Parser *parser) {
@@ -8290,6 +8312,22 @@ static void typecheck_slice_escape(Ast *value, Type return_type, Scope *scope,
     }
 }
 
+static void typecheck_statement_block(Ast *block, Scope **scope, Type return_type,
+                                      FunctionTable *func_table) {
+    for (size_t i = 0; i < block->as.block.count; i++) {
+        typecheck_statement(block->as.block.statements[i], scope, return_type, func_table);
+    }
+
+    if (block->as.block.value_expr) {
+        Ast *tail = block->as.block.value_expr;
+        if (tail->kind == AST_IF || tail->kind == AST_MATCH) {
+            typecheck_statement(tail, scope, return_type, func_table);
+        } else {
+            typecheck_expression(tail, *scope, func_table);
+        }
+    }
+}
+
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table) {
     switch (node->kind) {
         case AST_VAL_DECL: {
@@ -8639,18 +8677,14 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             /* Typecheck then block */
             Ast *then_block = node->as.if_stmt.then_block;
             Scope *then_scope = scope_create(*scope);
-            for (size_t i = 0; i < then_block->as.block.count; i++) {
-                typecheck_statement(then_block->as.block.statements[i], &then_scope, return_type, func_table);
-            }
+            typecheck_statement_block(then_block, &then_scope, return_type, func_table);
             scope_destroy(then_scope);
 
             /* Typecheck else block if present */
             if (node->as.if_stmt.else_block) {
                 Ast *else_block = node->as.if_stmt.else_block;
                 Scope *else_scope = scope_create(*scope);
-                for (size_t i = 0; i < else_block->as.block.count; i++) {
-                    typecheck_statement(else_block->as.block.statements[i], &else_scope, return_type, func_table);
-                }
+                typecheck_statement_block(else_block, &else_scope, return_type, func_table);
                 scope_destroy(else_scope);
             }
             break;
@@ -8669,9 +8703,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             Ast *body = node->as.while_stmt.body;
             Scope *body_scope = scope_create(*scope);
             body_scope->loop_depth = (*scope)->loop_depth + 1;
-            for (size_t i = 0; i < body->as.block.count; i++) {
-                typecheck_statement(body->as.block.statements[i], &body_scope, return_type, func_table);
-            }
+            typecheck_statement_block(body, &body_scope, return_type, func_table);
             scope_destroy(body_scope);
             break;
         }
@@ -8699,9 +8731,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             body_scope->loop_depth = (*scope)->loop_depth + 1;
             scope_add(body_scope, node->as.for_stmt.var_start,
                       node->as.for_stmt.var_length, false, TYPE_I64, node->loc);
-            for (size_t i = 0; i < body->as.block.count; i++) {
-                typecheck_statement(body->as.block.statements[i], &body_scope, return_type, func_table);
-            }
+            typecheck_statement_block(body, &body_scope, return_type, func_table);
             scope_destroy(body_scope);
             break;
         }
@@ -8722,9 +8752,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
         case AST_BLOCK: {
             Scope *block_scope = scope_create(*scope);
-            for (size_t i = 0; i < node->as.block.count; i++) {
-                typecheck_statement(node->as.block.statements[i], &block_scope, return_type, func_table);
-            }
+            typecheck_statement_block(node, &block_scope, return_type, func_table);
             scope_destroy(block_scope);
             break;
         }
@@ -9297,15 +9325,33 @@ static Scope *g_codegen_scope = NULL;  /* current codegen scope for ref lookups 
 static Scope *g_global_codegen_scope = NULL;  /* global scope for codegen */
 
 /* Check if a block can be emitted as a simple expression (no hoisting needed) */
+static bool codegen_can_emit_inline(Ast *node) {
+    switch (node->kind) {
+        case AST_BLOCK:
+            return node->as.block.count == 0 &&
+                   node->as.block.value_expr != NULL &&
+                   codegen_can_emit_inline(node->as.block.value_expr);
+
+        case AST_IF:
+            return node->as.if_stmt.else_block != NULL &&
+                   codegen_can_emit_inline(node->as.if_stmt.then_block) &&
+                   codegen_can_emit_inline(node->as.if_stmt.else_block);
+
+        case AST_MATCH:
+            return false;
+
+        default:
+            return true;
+    }
+}
+
 static bool codegen_is_simple_block(Ast *block) {
-    return block->as.block.count == 0 && block->as.block.value_expr != NULL;
+    return codegen_can_emit_inline(block);
 }
 
 /* Check if an if expression can be emitted as a simple ternary */
 static bool codegen_is_simple_if(Ast *node) {
-    if (!node->as.if_stmt.else_block) return false;  /* needs else for ternary */
-    return codegen_is_simple_block(node->as.if_stmt.then_block) &&
-           codegen_is_simple_block(node->as.if_stmt.else_block);
+    return codegen_can_emit_inline(node);
 }
 
 /* Resolve comptime array types to their concrete C types for codegen.
@@ -10153,7 +10199,8 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
 
     /* Emit value_expr as a bare statement (e.g., trailing function call in if/while/for block) */
     if (block->as.block.value_expr) {
-        if (block->as.block.value_expr->kind == AST_MATCH) {
+        if (block->as.block.value_expr->kind == AST_MATCH ||
+            block->as.block.value_expr->kind == AST_IF) {
             codegen_emit_statement(out, block->as.block.value_expr, scope, indent);
         } else {
             codegen_indent(out, indent);
@@ -10172,20 +10219,15 @@ static void codegen_emit_block_statements(FILE *out, Ast *block, Scope **scope,
 
 /* Check if an expression needs hoisting (complex block, complex if, or match) */
 static bool codegen_needs_hoisting(Ast *node) {
-    if (node->kind == AST_BLOCK && !codegen_is_simple_block(node)) {
-        return true;
-    }
-    if (node->kind == AST_IF && !codegen_is_simple_if(node)) {
-        return true;
-    }
-    if (node->kind == AST_MATCH) {
-        return true;
-    }
-    return false;
+    return !codegen_can_emit_inline(node);
 }
 
 static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
                                        Scope **scope, int indent);
+static void codegen_emit_if_assign(FILE *out, Ast *node, int assign_temp,
+                                   Scope **scope, int indent);
+static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
+                                    Scope **scope, int indent);
 
 /* Emit block contents and assign value_expr to temp variable if present */
 static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
@@ -10199,6 +10241,10 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
         if (block->as.block.value_expr->kind == AST_MATCH) {
             codegen_emit_match_switch(out, block->as.block.value_expr,
                                        temp_idx, scope, indent);
+        } else if (block->as.block.value_expr->kind == AST_IF &&
+                   codegen_needs_hoisting(block->as.block.value_expr)) {
+            codegen_emit_if_assign(out, block->as.block.value_expr,
+                                   temp_idx, scope, indent);
         } else {
             codegen_indent(out, indent);
             fprintf(out, "__expr_%d = ", temp_idx);
@@ -10211,6 +10257,25 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
     *scope = old->parent;
     g_codegen_scope = *scope;
     scope_destroy(old);
+}
+
+static void codegen_emit_if_assign(FILE *out, Ast *node, int assign_temp,
+                                   Scope **scope, int indent) {
+    codegen_indent(out, indent);
+    fprintf(out, "if (");
+    codegen_emit_condition(out, node->as.if_stmt.condition);
+    fprintf(out, ") {\n");
+    codegen_emit_block_body(out, node->as.if_stmt.then_block, assign_temp, scope, indent + 1);
+    codegen_indent(out, indent);
+    fprintf(out, "}");
+
+    if (node->as.if_stmt.else_block) {
+        fprintf(out, " else {\n");
+        codegen_emit_block_body(out, node->as.if_stmt.else_block, assign_temp, scope, indent + 1);
+        codegen_indent(out, indent);
+        fprintf(out, "}");
+    }
+    fprintf(out, "\n");
 }
 
 /* Emit a complex block expression to a temp variable.
@@ -10237,23 +10302,7 @@ static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int inde
 
     codegen_indent(out, indent);
     fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(node->expr_type), temp_idx);
-
-    codegen_indent(out, indent);
-    fprintf(out, "if (");
-    codegen_emit_condition(out, node->as.if_stmt.condition);
-    fprintf(out, ") {\n");
-    codegen_emit_block_body(out, node->as.if_stmt.then_block, temp_idx, scope, indent + 1);
-    codegen_indent(out, indent);
-    fprintf(out, "}");
-
-    if (node->as.if_stmt.else_block) {
-        fprintf(out, " else {\n");
-        codegen_emit_block_body(out, node->as.if_stmt.else_block, temp_idx, scope, indent + 1);
-        codegen_indent(out, indent);
-        fprintf(out, "}");
-    }
-    fprintf(out, "\n");
-
+    codegen_emit_if_assign(out, node, temp_idx, scope, indent);
     return temp_idx;
 }
 
@@ -11453,4 +11502,3 @@ int main(int argc, char **argv) {
 
     return run_exit_code;
 }
-

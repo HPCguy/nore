@@ -5,7 +5,7 @@ pub func max_i64(a: i64, b: i64): i64 = { if (a > b) { a } else { b } }
 pub func abs_i64(a: i64): i64 = { if (a < 0) { 0 - a } else { a } }
 
 pub func clamp_i64(x: i64, lo: i64, hi: i64): i64 = {
-    if (x < lo) { lo } else { if (x > hi) { hi } else { x } }
+    if (x < lo) { lo } else if (x > hi) { hi } else { x }
 }
 
 pub func min_f64(a: f64, b: f64): f64 = { if (a < b) { a } else { b } }
@@ -13,5 +13,5 @@ pub func max_f64(a: f64, b: f64): f64 = { if (a > b) { a } else { b } }
 pub func abs_f64(a: f64): f64 = { if (a < 0.0) { 0.0 - a } else { a } }
 
 pub func clamp_f64(x: f64, lo: f64, hi: f64): f64 = {
-    if (x < lo) { lo } else { if (x > hi) { hi } else { x } }
+    if (x < lo) { lo } else if (x > hi) { hi } else { x }
 }
