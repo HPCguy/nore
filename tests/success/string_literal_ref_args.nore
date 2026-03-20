@@ -1,0 +1,83 @@
+import helper "import_helpers/string_literal_ref_helper.nore"
+
+func take12(
+    ref s0: str,
+    ref s1: str,
+    ref s2: str,
+    ref s3: str,
+    ref s4: str,
+    ref s5: str,
+    ref s6: str,
+    ref s7: str,
+    ref s8: str,
+    ref s9: str,
+    ref s10: str,
+    ref s11: str
+): i64 = {
+    s0.len + s1.len + s2.len + s3.len + s4.len + s5.len +
+    s6.len + s7.len + s8.len + s9.len + s10.len + s11.len
+}
+
+func mixed(
+    a: i64,
+    ref s0: str,
+    b: i64,
+    ref s1: str,
+    c: i64,
+    ref s2: str,
+    d: i64,
+    ref s3: str,
+    e: i64,
+    ref s4: str
+): i64 = {
+    a + b + c + d + e + s0.len + s1.len + s2.len + s3.len + s4.len
+}
+
+func main(): void = {
+    assert take12(
+        ref "a",
+        ref "bb",
+        ref "ccc",
+        ref "dddd",
+        ref "eeeee",
+        ref "ffffff",
+        ref "ggggggg",
+        ref "hhhhhhhh",
+        ref "iiiiiiiii",
+        ref "jjjjjjjjjj",
+        ref "kkkkkkkkkkk",
+        ref "llllllllllll"
+    ) == 78
+
+    assert mixed(
+        1,
+        ref "aa",
+        2,
+        ref "bbb",
+        3,
+        ref "cccc",
+        4,
+        ref "ddddd",
+        5,
+        ref "eeeeee"
+    ) == 35
+
+    assert helper.take16(
+        ref "a",
+        ref "bb",
+        ref "ccc",
+        ref "dddd",
+        ref "eeeee",
+        ref "ffffff",
+        ref "ggggggg",
+        ref "hhhhhhhh",
+        ref "iiiiiiiii",
+        ref "jjjjjjjjjj",
+        ref "kkkkkkkkkkk",
+        ref "llllllllllll",
+        ref "mmmmmmmmmmmmm",
+        ref "nnnnnnnnnnnnnn",
+        ref "ooooooooooooooo",
+        ref "pppppppppppppppp"
+    ) == 136
+}

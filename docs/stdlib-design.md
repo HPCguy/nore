@@ -87,9 +87,7 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 
 Language limitations observed while building real programs on the stdlib:
 
-- **No `else if` syntax**: chains must use nested `else { if (...) { } }` or flat `if/return` patterns
 - **No mutual recursion**: codegen doesn't emit C forward declarations for user functions. Self-recursion works. Workaround: merge mutually recursive functions into one
-- **Codegen bug with string literal `ref` args**: string literals passed directly as `ref` to user-defined functions with many parameters can produce wrong C types. Workaround: bind to a `val` first
 - **Arena reuse for multiple files**: large files could fill the arena. Resetting between files is tricky when argv slices share the arena
 
 ---
