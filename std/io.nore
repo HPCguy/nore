@@ -54,12 +54,12 @@ pub func writer_new(mut ref mem: Arena, capacity: i64): Writer = {
 pub func write_str(mut ref w: Writer, ref s: str): void = {
     mut dst: [u8] = w.buf[w.pos .. w.pos + s.len]
     mem_copy(mut ref dst, ref s)
-    w.pos = w.pos + s.len
+    w.pos += s.len
 }
 
 pub func write_byte(mut ref w: Writer, b: u8): void = {
     w.buf[w.pos] = b
-    w.pos = w.pos + 1
+    w.pos += 1
 }
 
 pub func write_i64(mut ref w: Writer, n: i64): void = {
@@ -68,7 +68,7 @@ pub func write_i64(mut ref w: Writer, n: i64): void = {
     val len: i64 = 20 - pos
     mut dst: [u8] = w.buf[w.pos .. w.pos + len]
     mem_copy(mut ref dst, ref buf[pos..20])
-    w.pos = w.pos + len
+    w.pos += len
 }
 
 pub func write_i64_padded(mut ref w: Writer, n: i64, width: i64): void = {
@@ -79,13 +79,13 @@ pub func write_i64_padded(mut ref w: Writer, n: i64, width: i64): void = {
     mut pad: i64 = width - len
     while (pad > 0) {
         w.buf[w.pos] = ' '
-        w.pos = w.pos + 1
-        pad = pad - 1
+        w.pos += 1
+        pad -= 1
     }
     // Write the number digits
     mut dst: [u8] = w.buf[w.pos .. w.pos + len]
     mem_copy(mut ref dst, ref buf[pos..20])
-    w.pos = w.pos + len
+    w.pos += len
 }
 
 pub func flush(ref w: Writer, fd: i32): void = {

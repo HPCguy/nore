@@ -51,12 +51,12 @@ func peek(ref src: str, ref st: ParseState): u8 = {
 func advance(ref src: str, mut ref st: ParseState): u8 = {
     if (st.pos >= src.len) { return 0 }
     val c: u8 = src[st.pos]
-    st.pos = st.pos + 1
+    st.pos += 1
     if (c == '\n') {
-        st.line = st.line + 1
+        st.line += 1
         st.col = 1
     } else {
-        st.col = st.col + 1
+        st.col += 1
     }
     c
 }
@@ -101,7 +101,7 @@ func add_child(mut ref nodes: JsonNodes, parent: i64, child: i64): void = {
         nodes.next_sibling[nodes.last_child[parent]] = child
     }
     nodes.last_child[parent] = child
-    nodes.child_count[parent] = nodes.child_count[parent] + 1
+    nodes.child_count[parent] += 1
 }
 
 // Check and consume an exact string (e.g. "null", "true", "false")
@@ -113,7 +113,7 @@ func match_literal(ref src: str, mut ref st: ParseState, ref expected: str): boo
     mut i: i64 = 0
     while (i < expected.len) {
         advance(ref src, mut ref st)
-        i = i + 1
+        i += 1
     }
     true
 }
@@ -142,7 +142,7 @@ func scan_string_body(ref src: str, mut ref st: ParseState): void = {
     }
 }
 
-// --- Main parser (self-recursive, no mutual recursion) ---
+// --- Main parser ---
 
 // Dispatch on first char, parse one JSON value, return node index or -1
 func parse_value(ref src: str, mut ref nodes: JsonNodes, mut ref st: ParseState, parent: i64): i64 = {
@@ -217,7 +217,7 @@ func parse_value(ref src: str, mut ref nodes: JsonNodes, mut ref st: ParseState,
         while (end < src.len && scanning) {
             val ch: u8 = src[end]
             if (string.is_digit(ch) || ch == '-' || ch == '+' || ch == '.' || ch == 'e' || ch == 'E') {
-                end = end + 1
+                end += 1
             } else {
                 scanning = false
             }
@@ -230,7 +230,7 @@ func parse_value(ref src: str, mut ref nodes: JsonNodes, mut ref st: ParseState,
                 mut ai: i64 = 0
                 while (ai < num_str.len) {
                     advance(ref src, mut ref st)
-                    ai = ai + 1
+                    ai += 1
                 }
                 val idx: i64 = add_node(mut ref nodes, JsonKind.Number, parent)
                 nodes.num_val[idx] = num

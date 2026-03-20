@@ -50,7 +50,7 @@ pub func read_file(mut ref mem: Arena, ref path: str): ReadResult = {
         if (n <= 0) {
             done = true
         } else {
-            total = total + n
+            total += n
         }
     }
     fd_close(fd)
@@ -72,7 +72,7 @@ pub func write_file(ref path: str, ref data: [u8]): WriteResult = {
             fd_close(fd)
             return WriteResult.Err(i32(-1))
         }
-        written = written + n
+        written += n
     }
     fd_close(fd)
     WriteResult.Ok(written)
