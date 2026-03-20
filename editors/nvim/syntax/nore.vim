@@ -30,7 +30,7 @@ syn keyword noreConstant TARGET_OS
 syn match noreConstant /\<[A-Z][A-Z0-9_]*\>/
 
 syn match noreOperator /==\|!=\|<=\|>=/
-syn match noreOperator /\v(<<=|>>=|\+=|-=|\*=|\/=|%=|&=|\|=|\^=)/
+syn match noreOperator /<<=\|>>=\|[+\-*/%&|^]=/
 syn match noreOperator /&&/
 syn match noreOperator /||/
 syn match noreOperator /<</
