@@ -11107,13 +11107,47 @@ static void codegen_emit_global_arena_frees(FILE *out, int indent) {
     }
 }
 
-static void codegen_emit_function(FILE *out, Ast *func_decl) {
+static bool codegen_function_is_main(Ast *func_decl) {
+    return func_decl->as.func_decl.name_length == 4 &&
+           memcmp(func_decl->as.func_decl.name_start, "main", 4) == 0;
+}
+
+static void codegen_emit_function_params(FILE *out, Ast *func_decl, bool is_main) {
+    if (is_main && g_has_args) {
+        /* argc/argv already emitted by the signature helper */
+        return;
+    }
+
+    if (func_decl->as.func_decl.param_count == 0) {
+        fprintf(out, "void");
+        return;
+    }
+
+    for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
+        Parameter *param = &func_decl->as.func_decl.params[i];
+        if (i > 0) fprintf(out, ", ");
+        if (type_is_slice(param->type)) {
+            /* Slice: passed by value as fat pointer struct */
+            fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
+                    (int)param->name_length, param->name_start);
+        } else if (param->is_mut_ref) {
+            fprintf(out, "%s *ni_%.*s", codegen_type_to_c(param->type),
+                    (int)param->name_length, param->name_start);
+        } else if (param->is_ref) {
+            fprintf(out, "const %s *ni_%.*s", codegen_type_to_c(param->type),
+                    (int)param->name_length, param->name_start);
+        } else {
+            fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
+                    (int)param->name_length, param->name_start);
+        }
+    }
+}
+
+static void codegen_emit_function_signature(FILE *out, Ast *func_decl) {
     const char *name_start = func_decl->as.func_decl.name_start;
     size_t name_length = func_decl->as.func_decl.name_length;
     Type return_type = func_decl->as.func_decl.return_type;
-
-    /* Special case: main function generates int main(void) */
-    bool is_main = (name_length == 4 && memcmp(name_start, "main", 4) == 0);
+    bool is_main = codegen_function_is_main(func_decl);
 
     size_t func_mod = module_for_file(func_decl->loc.file);
 
@@ -11129,33 +11163,20 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         fprintf(out, "(");
     }
 
-    /* Emit parameters */
-    if (is_main && g_has_args) {
-        /* argc/argv already emitted above */
-    } else if (func_decl->as.func_decl.param_count == 0) {
-        fprintf(out, "void");
-    } else {
-        for (size_t i = 0; i < func_decl->as.func_decl.param_count; i++) {
-            Parameter *param = &func_decl->as.func_decl.params[i];
-            if (i > 0) fprintf(out, ", ");
-            if (type_is_slice(param->type)) {
-                /* Slice: passed by value as fat pointer struct */
-                fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
-                        (int)param->name_length, param->name_start);
-            } else if (param->is_mut_ref) {
-                fprintf(out, "%s *ni_%.*s", codegen_type_to_c(param->type),
-                        (int)param->name_length, param->name_start);
-            } else if (param->is_ref) {
-                fprintf(out, "const %s *ni_%.*s", codegen_type_to_c(param->type),
-                        (int)param->name_length, param->name_start);
-            } else {
-                fprintf(out, "%s ni_%.*s", codegen_type_to_c(param->type),
-                        (int)param->name_length, param->name_start);
-            }
-        }
-    }
+    codegen_emit_function_params(out, func_decl, is_main);
+    fprintf(out, ")");
+}
 
-    fprintf(out, ") {\n");
+static void codegen_emit_function_prototype(FILE *out, Ast *func_decl) {
+    codegen_emit_function_signature(out, func_decl);
+    fprintf(out, ";\n");
+}
+
+static void codegen_emit_function(FILE *out, Ast *func_decl) {
+    bool is_main = codegen_function_is_main(func_decl);
+
+    codegen_emit_function_signature(out, func_decl);
+    fprintf(out, " {\n");
 
     /* Create scope with parameters (global scope as parent for codegen) */
     Scope *scope = scope_create(g_global_codegen_scope);
@@ -11603,6 +11624,20 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
 
     g_codegen_scope = NULL;
     fprintf(out, "\n");
+
+    /* Emit user-function prototypes before any function body so forward calls
+     * and mutual recursion work in the generated C. */
+    bool emitted_prototypes = false;
+    for (size_t i = 0; i < ast->as.program.count; i++) {
+        Ast *node = ast->as.program.statements[i];
+        if (node->kind == AST_FUNC_DECL) {
+            codegen_emit_function_prototype(out, node);
+            emitted_prototypes = true;
+        }
+    }
+    if (emitted_prototypes) {
+        fprintf(out, "\n");
+    }
 
     /* Emit all functions */
     for (size_t i = 0; i < ast->as.program.count; i++) {

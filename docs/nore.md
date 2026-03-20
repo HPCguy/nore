@@ -525,6 +525,8 @@ func name(param1: type1, param2: type2): returnType = {
 
 - Keyword: `func`, followed by name, parameters, return type, `=`, body
 - Return type is required (use `void` for no return value)
+- Functions may call helpers declared later in the same module
+- Mutual recursion is supported
 - The last expression in a block (without trailing statement) becomes the block's value, enabling implicit return:
 
 ```nore

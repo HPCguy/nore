@@ -127,13 +127,13 @@ compiler starts self-compiling and moves toward default status.
 
 ## Gap Classification
 
-### Mandatory before any serious compiler implementation
+### Closed before any serious compiler implementation
 
 1. **User-function mutual recursion**
-   The compiler codebase will be multi-module and recursive in natural places: parser entry points, type formatting, symbol lookup helpers, codegen helpers, diagnostics helpers. The current user-language limitation around forward references and mutual recursion is not acceptable for a compiler codebase.
+   Done. Codegen now emits user-function prototypes before function bodies, so same-module forward calls and mutual recursion work in generated C.
 
 2. **Add tests for the mandatory gap**
-   Step 0 needs real regression tests, not only docs.
+   Done. A dedicated regression test covers forward calls and mutual recursion.
 
 ### Needed before specific milestones, not before day one
 
@@ -152,6 +152,8 @@ compiler starts self-compiling and moves toward default status.
 ---
 
 ## Step 0: Close Mandatory Gaps
+
+**Status:** Complete
 
 ### Gaps to close before starting implementation
 
@@ -344,7 +346,7 @@ Keep tokens as rows in a table, not heap-allocated linked structures.
 ### Gaps to close before starting
 
 - Milestone 4 complete
-- Step 0 mutual recursion remains a hard dependency here
+- Step 0 complete
 
 ### Objective
 
@@ -670,11 +672,9 @@ Turn the self-compiling compiler into the default compiler.
 
 ## Recommendation
 
-Treat **mutual recursion** as the only true language/compiler blocker for starting the implementation.
-
 Treat the **driver** as a late-stage integration task.
 
-Start the compiler implementation only after Step 0 is done, and then stay disciplined:
+Step 0 is done. Start the compiler implementation at Milestone 1, and then stay disciplined:
 
 - subset first
 - tables first

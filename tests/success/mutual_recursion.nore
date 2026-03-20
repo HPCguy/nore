@@ -1,0 +1,35 @@
+// Test forward calls and mutually recursive functions.
+
+func forward_sum(x: i64): i64 = {
+    return later_value(x) + 2
+}
+
+func is_even(n: i64): bool = {
+    if (n == 0) {
+        return true
+    }
+    return is_odd(n - 1)
+}
+
+func later_value(x: i64): i64 = {
+    return x + 5
+}
+
+func is_odd(n: i64): bool = {
+    if (n == 0) {
+        return false
+    }
+    return is_even(n - 1)
+}
+
+func main(): void = {
+    assert forward_sum(10) == 17
+
+    assert is_even(0)
+    assert is_even(10)
+    assert !is_even(7)
+
+    assert !is_odd(0)
+    assert is_odd(7)
+    assert !is_odd(10)
+}

@@ -204,6 +204,8 @@ func name(param1: type1, param2: type2): returnType = {
 
 - Return type required (use `void` for no return)
 - `=` precedes body
+- Same-module forward function calls are allowed
+- Mutual recursion is supported
 - Last expression in block is the block's value (implicit return)
 
 ```nore

@@ -87,7 +87,6 @@ Generics are not a prerequisite for a useful stdlib. They're a cleanup that come
 
 Language limitations observed while building real programs on the stdlib:
 
-- **No mutual recursion**: codegen doesn't emit C forward declarations for user functions. Self-recursion works. Workaround: merge mutually recursive functions into one
 - **Arena reuse for multiple files**: large files could fill the arena. Resetting between files is tricky when argv slices share the arena
 
 ---
