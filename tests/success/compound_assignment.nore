@@ -1,5 +1,10 @@
 value Pair { x: i64, y: i64 }
 
+func index_and_count(mut ref calls: i64, idx: i64): i64 = {
+    calls = calls + 1
+    idx
+}
+
 func main(): void = {
     mut counter: i64 = 10
     counter += 5
@@ -29,8 +34,9 @@ func main(): void = {
     assert arr[1] == 25
     assert arr[2] == 10
 
-    mut idx: i64 = 1
-    arr[idx] += 2
+    mut compound_calls: i64 = 0
+    arr[index_and_count(mut ref compound_calls, 1)] += 2
+    assert compound_calls == 1
     assert arr[1] == 27
 
     mut f: f64 = 1.5

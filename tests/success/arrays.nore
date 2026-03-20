@@ -1,5 +1,10 @@
 // Test fixed-size arrays
 
+func index_and_count(mut ref calls: i64, idx: i64): i64 = {
+    calls = calls + 1
+    idx
+}
+
 func main(): void = {
     // Array declaration and indexing
     val arr: [i64; 3] = [10, 20, 30]
@@ -12,6 +17,19 @@ func main(): void = {
     nums[0] = 99
     assert nums[0] == 99
     assert nums[1] == 2
+
+    mut assign_calls: i64 = 0
+    nums[index_and_count(mut ref assign_calls, 1)] = 77
+    assert assign_calls == 1
+    assert nums[1] == 77
+
+    mut grid: [[i64; 2]; 2] = [[1, 2], [3, 4]]
+    mut outer_calls: i64 = 0
+    mut inner_calls: i64 = 0
+    grid[index_and_count(mut ref outer_calls, 1)][index_and_count(mut ref inner_calls, 0)] = 9
+    assert outer_calls == 1
+    assert inner_calls == 1
+    assert grid[1][0] == 9
 
     // Array with different types
     val bools: [bool; 3] = [true, false, true]
