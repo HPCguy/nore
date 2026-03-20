@@ -1,0 +1,5 @@
+func main(): void = {
+    mut mem: Arena = arena(32)
+    mut data: [u8] = arena_alloc(mut ref mem, 4)
+    data.len = 2
+}

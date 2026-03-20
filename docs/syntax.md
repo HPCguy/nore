@@ -480,7 +480,18 @@ val y: i64 = {
 **Bitwise** (integers): `&` `|` `^` `~` `<<` `>>`
 **Comparison** (numeric, produces bool): `==` `!=` `<` `<=` `>` `>=`
 **Logical** (bool): `&&` `||` `!`
-**Assignment**: `=` (mutable only)
+**Assignment**: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` (mutable only)
+
+**Compound assignment**:
+```nore
+counter += 1
+mask &= 15
+arr[i] <<= 1
+```
+
+- Same type rules as `target = target op value`
+- Works for variables, fields, and index expressions
+- Target must be rooted in a mutable variable
 
 **Precedence** (highest to lowest):
 
@@ -505,7 +516,9 @@ val y: i64 = {
 
 - `val name: type = expr` / `mut name: type = expr`
 - `name = expr` (assignment, mutable only)
+- `name op= expr` (`+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`)
 - `expr.field = expr` / `expr[index] = expr`
+- `expr.field op= expr` / `expr[index] op= expr`
 - `name(args...)` (bare function call)
 - `return expr`
 - `assert expr` (R001, exits with code 2)
@@ -640,7 +653,7 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 
 ### Operators
 
-`+` `-` `*` `/` `%` `&` `|` `^` `~` `<<` `>>` `==` `!=` `<` `<=` `>` `>=` `&&` `||` `!` `=`
+`+` `+=` `-` `-=` `*` `*=` `/` `/=` `%` `%=` `&` `&=` `|` `|=` `^` `^=` `~` `<<` `<<=` `>>` `>>=` `==` `!=` `<` `<=` `>` `>=` `&&` `||` `!` `=`
 
 ### Punctuation
 
@@ -661,7 +674,6 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 
 ## Future Extensions
 
-- Compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`)
 - Multiline strings
 - Additional types (`f32`)
 - While as expressions

@@ -1,0 +1,44 @@
+value Pair { x: i64, y: i64 }
+
+func main(): void = {
+    mut counter: i64 = 10
+    counter += 5
+    counter -= 3
+    counter *= 4
+    counter /= 6
+    counter %= 5
+    assert counter == 3
+
+    mut bits: i64 = 0
+    bits |= 6
+    bits ^= 3
+    bits &= 6
+    bits <<= 2
+    bits >>= 1
+    assert bits == 8
+
+    mut p: Pair = Pair { x: 2, y: 5 }
+    p.x += 7
+    p.y *= 3
+    assert p.x == 9
+    assert p.y == 15
+
+    mut arr: [i64; 3] = [10, 20, 30]
+    arr[1] += 5
+    arr[2] /= 3
+    assert arr[1] == 25
+    assert arr[2] == 10
+
+    mut idx: i64 = 1
+    arr[idx] += 2
+    assert arr[1] == 27
+
+    mut f: f64 = 1.5
+    f *= 2.0
+    f -= 0.5
+    assert f == 2.5
+
+    mut byte: u8 = 10
+    byte += 5
+    assert byte == 15
+}

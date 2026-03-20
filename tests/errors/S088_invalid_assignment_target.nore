@@ -1,0 +1,5 @@
+func f(): i64 = { 1 }
+
+func main(): void = {
+    f() += 1
+}

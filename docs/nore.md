@@ -743,6 +743,17 @@ val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
 
 **Logical** (bool types): `&&`, `||`, `!`
 
+**Assignment** (mutable targets only): `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+
+```nore
+counter += 1
+mask &= 15
+p.life[i] -= 1
+```
+
+Compound assignment follows the same operand rules as `target = target op value`.
+Targets must be variables, or field/index expressions rooted in a mutable variable.
+
 **Precedence** (highest to lowest):
 
 | Level | Operators | Category |
@@ -836,7 +847,9 @@ val y: i64 = {
 
 - `val name: type = expr` / `mut name: type = expr`
 - `name = expr` (assignment, mutable only)
+- `name op= expr` (`+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`)
 - `expr.field = expr` / `expr[index] = expr`
+- `expr.field op= expr` / `expr[index] op= expr`
 - `name(args...)` (bare function call)
 - `return expr`
 - `assert expr` (runtime assertion, error R001)

@@ -202,6 +202,7 @@ typedef enum {
     ERR_S085_NOT_PUBLIC_VALUE      = ERR_GROUP_SEMANTIC + 85,
     ERR_S086_UNKNOWN_NATIVE        = ERR_GROUP_SEMANTIC + 86,
     ERR_S087_MISSING_NATIVE_DECL   = ERR_GROUP_SEMANTIC + 87,
+    ERR_S088_INVALID_ASSIGN_TARGET = ERR_GROUP_SEMANTIC + 88,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -463,16 +464,26 @@ typedef enum {
     TOKEN_CHAR,
 
     TOKEN_PLUS,
+    TOKEN_PLUS_EQUAL,
     TOKEN_MINUS,
+    TOKEN_MINUS_EQUAL,
     TOKEN_STAR,
+    TOKEN_STAR_EQUAL,
     TOKEN_SLASH,
+    TOKEN_SLASH_EQUAL,
     TOKEN_PERCENT,
+    TOKEN_PERCENT_EQUAL,
     TOKEN_AMPERSAND,
+    TOKEN_AMPERSAND_EQUAL,
     TOKEN_PIPE,
+    TOKEN_PIPE_EQUAL,
     TOKEN_CARET,
+    TOKEN_CARET_EQUAL,
     TOKEN_TILDE,
     TOKEN_LESS_LESS,
+    TOKEN_LESS_LESS_EQUAL,
     TOKEN_GREATER_GREATER,
+    TOKEN_GREATER_GREATER_EQUAL,
     TOKEN_EQUALS,
     TOKEN_EQUAL_EQUAL,
     TOKEN_BANG_EQUAL,
@@ -546,16 +557,26 @@ static const char *token_kind_name(TokenKind kind) {
         case TOKEN_STRING:        return "STRING";
         case TOKEN_CHAR:          return "CHAR";
         case TOKEN_PLUS:          return "PLUS";
+        case TOKEN_PLUS_EQUAL:    return "PLUS_EQUAL";
         case TOKEN_MINUS:         return "MINUS";
+        case TOKEN_MINUS_EQUAL:   return "MINUS_EQUAL";
         case TOKEN_STAR:          return "STAR";
+        case TOKEN_STAR_EQUAL:    return "STAR_EQUAL";
         case TOKEN_SLASH:         return "SLASH";
+        case TOKEN_SLASH_EQUAL:   return "SLASH_EQUAL";
         case TOKEN_PERCENT:       return "PERCENT";
+        case TOKEN_PERCENT_EQUAL: return "PERCENT_EQUAL";
         case TOKEN_AMPERSAND:     return "AMPERSAND";
+        case TOKEN_AMPERSAND_EQUAL: return "AMPERSAND_EQUAL";
         case TOKEN_PIPE:          return "PIPE";
+        case TOKEN_PIPE_EQUAL:    return "PIPE_EQUAL";
         case TOKEN_CARET:         return "CARET";
+        case TOKEN_CARET_EQUAL:   return "CARET_EQUAL";
         case TOKEN_TILDE:         return "TILDE";
         case TOKEN_LESS_LESS:     return "LESS_LESS";
+        case TOKEN_LESS_LESS_EQUAL: return "LESS_LESS_EQUAL";
         case TOKEN_GREATER_GREATER: return "GREATER_GREATER";
+        case TOKEN_GREATER_GREATER_EQUAL: return "GREATER_GREATER_EQUAL";
         case TOKEN_EQUALS:        return "EQUALS";
         case TOKEN_EQUAL_EQUAL:   return "EQUAL_EQUAL";
         case TOKEN_BANG_EQUAL:    return "BANG_EQUAL";
@@ -868,11 +889,36 @@ Token lexer_next_token(Lexer *lexer) {
         case '[': return lexer_make_token(lexer, TOKEN_LBRACKET);
         case ']': return lexer_make_token(lexer, TOKEN_RBRACKET);
         case ';': return lexer_make_token(lexer, TOKEN_SEMICOLON);
-        case '+': return lexer_make_token(lexer, TOKEN_PLUS);
-        case '-': return lexer_make_token(lexer, TOKEN_MINUS);
-        case '*': return lexer_make_token(lexer, TOKEN_STAR);
-        case '/': return lexer_make_token(lexer, TOKEN_SLASH);
-        case '%': return lexer_make_token(lexer, TOKEN_PERCENT);
+        case '+':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_PLUS_EQUAL);
+            }
+            return lexer_make_token(lexer, TOKEN_PLUS);
+        case '-':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_MINUS_EQUAL);
+            }
+            return lexer_make_token(lexer, TOKEN_MINUS);
+        case '*':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_STAR_EQUAL);
+            }
+            return lexer_make_token(lexer, TOKEN_STAR);
+        case '/':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_SLASH_EQUAL);
+            }
+            return lexer_make_token(lexer, TOKEN_SLASH);
+        case '%':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_PERCENT_EQUAL);
+            }
+            return lexer_make_token(lexer, TOKEN_PERCENT);
         case '=':
             if (lexer_peek(lexer) == '=') {
                 lexer_advance(lexer);
@@ -890,14 +936,27 @@ Token lexer_next_token(Lexer *lexer) {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_AND_AND);
             }
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_AMPERSAND_EQUAL);
+            }
             return lexer_make_token(lexer, TOKEN_AMPERSAND);
         case '|':
             if (lexer_peek(lexer) == '|') {
                 lexer_advance(lexer);
                 return lexer_make_token(lexer, TOKEN_OR_OR);
             }
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_PIPE_EQUAL);
+            }
             return lexer_make_token(lexer, TOKEN_PIPE);
-        case '^': return lexer_make_token(lexer, TOKEN_CARET);
+        case '^':
+            if (lexer_peek(lexer) == '=') {
+                lexer_advance(lexer);
+                return lexer_make_token(lexer, TOKEN_CARET_EQUAL);
+            }
+            return lexer_make_token(lexer, TOKEN_CARET);
         case '~': return lexer_make_token(lexer, TOKEN_TILDE);
         case '<':
             if (lexer_peek(lexer) == '=') {
@@ -906,6 +965,10 @@ Token lexer_next_token(Lexer *lexer) {
             }
             if (lexer_peek(lexer) == '<') {
                 lexer_advance(lexer);
+                if (lexer_peek(lexer) == '=') {
+                    lexer_advance(lexer);
+                    return lexer_make_token(lexer, TOKEN_LESS_LESS_EQUAL);
+                }
                 return lexer_make_token(lexer, TOKEN_LESS_LESS);
             }
             return lexer_make_token(lexer, TOKEN_LESS);
@@ -916,6 +979,10 @@ Token lexer_next_token(Lexer *lexer) {
             }
             if (lexer_peek(lexer) == '>') {
                 lexer_advance(lexer);
+                if (lexer_peek(lexer) == '=') {
+                    lexer_advance(lexer);
+                    return lexer_make_token(lexer, TOKEN_GREATER_GREATER_EQUAL);
+                }
                 return lexer_make_token(lexer, TOKEN_GREATER_GREATER);
             }
             return lexer_make_token(lexer, TOKEN_GREATER);
@@ -1733,6 +1800,7 @@ typedef enum {
     AST_MUT_DECL,
     AST_RETURN,
     AST_ASSIGNMENT,
+    AST_COMPOUND_ASSIGNMENT,
     AST_ASSERT,
     AST_IF,
     AST_WHILE,
@@ -1873,6 +1941,12 @@ typedef struct Ast {
             struct Ast *target;   /* AST_IDENTIFIER or AST_FIELD_ACCESS */
             struct Ast *value;
         } assignment;
+
+        struct {
+            struct Ast *target;
+            BinaryOp op;
+            struct Ast *value;
+        } compound_assignment;
 
         struct {
             struct Ast *condition;
@@ -2174,6 +2248,20 @@ static Ast *ast_make_assignment(Ast *target, Ast *value, SourceLoc loc) {
     node->loc = loc;
     node->as.assignment.target = target;
     node->as.assignment.value = value;
+    return node;
+}
+
+static Ast *ast_make_compound_assignment(Ast *target, BinaryOp op, Ast *value,
+                                         SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) {
+        panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    }
+    node->kind = AST_COMPOUND_ASSIGNMENT;
+    node->loc = loc;
+    node->as.compound_assignment.target = target;
+    node->as.compound_assignment.op = op;
+    node->as.compound_assignment.value = value;
     return node;
 }
 
@@ -2697,6 +2785,10 @@ static void ast_free(Ast *node) {
             ast_free(node->as.assignment.target);
             ast_free(node->as.assignment.value);
             break;
+        case AST_COMPOUND_ASSIGNMENT:
+            ast_free(node->as.compound_assignment.target);
+            ast_free(node->as.compound_assignment.value);
+            break;
         case AST_ASSERT:
             ast_free(node->as.assert_stmt.condition);
             break;
@@ -3130,6 +3222,66 @@ static BinaryOp parser_token_to_binary_op(TokenKind kind) {
             fprintf(stderr, "Internal error: not a binary operator\n");
             exit(1);
     }
+}
+
+static bool token_is_compound_assignment(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_PLUS_EQUAL:
+        case TOKEN_MINUS_EQUAL:
+        case TOKEN_STAR_EQUAL:
+        case TOKEN_SLASH_EQUAL:
+        case TOKEN_PERCENT_EQUAL:
+        case TOKEN_AMPERSAND_EQUAL:
+        case TOKEN_PIPE_EQUAL:
+        case TOKEN_CARET_EQUAL:
+        case TOKEN_LESS_LESS_EQUAL:
+        case TOKEN_GREATER_GREATER_EQUAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static BinaryOp parser_token_to_compound_op(TokenKind kind) {
+    switch (kind) {
+        case TOKEN_PLUS_EQUAL:           return OP_ADD;
+        case TOKEN_MINUS_EQUAL:          return OP_SUB;
+        case TOKEN_STAR_EQUAL:           return OP_MUL;
+        case TOKEN_SLASH_EQUAL:          return OP_DIV;
+        case TOKEN_PERCENT_EQUAL:        return OP_MOD;
+        case TOKEN_AMPERSAND_EQUAL:      return OP_BITAND;
+        case TOKEN_PIPE_EQUAL:           return OP_BITOR;
+        case TOKEN_CARET_EQUAL:          return OP_BITXOR;
+        case TOKEN_LESS_LESS_EQUAL:      return OP_SHL;
+        case TOKEN_GREATER_GREATER_EQUAL: return OP_SHR;
+        default:
+            fprintf(stderr, "Internal error: not a compound assignment operator\n");
+            exit(1);
+    }
+}
+
+static const char *binary_op_name(BinaryOp op) {
+    switch (op) {
+        case OP_ADD:    return "ADD";
+        case OP_SUB:    return "SUB";
+        case OP_MUL:    return "MUL";
+        case OP_DIV:    return "DIV";
+        case OP_MOD:    return "MOD";
+        case OP_EQ:     return "EQ";
+        case OP_NEQ:    return "NEQ";
+        case OP_LT:     return "LT";
+        case OP_GT:     return "GT";
+        case OP_LE:     return "LE";
+        case OP_GE:     return "GE";
+        case OP_AND:    return "AND";
+        case OP_OR:     return "OR";
+        case OP_BITAND: return "BITAND";
+        case OP_BITOR:  return "BITOR";
+        case OP_BITXOR: return "BITXOR";
+        case OP_SHL:    return "SHL";
+        case OP_SHR:    return "SHR";
+    }
+    return "UNKNOWN";
 }
 
 /* ============================= Expression Parsing ========================= */
@@ -4309,6 +4461,26 @@ static Ast *parser_parse_assignment(Parser *parser) {
     return ast_make_assignment(target, value, loc);
 }
 
+static Ast *parser_finish_assignment(Parser *parser, Ast *target,
+                                     TokenKind assign_kind, SourceLoc loc) {
+    parser_advance(parser);
+
+    Ast *value = parser_parse_expression(parser);
+    if (!value) {
+        ast_free(target);
+        parser_synchronize(parser);
+        return NULL;
+    }
+
+    if (assign_kind == TOKEN_EQUALS) {
+        return ast_make_assignment(target, value, loc);
+    }
+
+    return ast_make_compound_assignment(target,
+                                        parser_token_to_compound_op(assign_kind),
+                                        value, loc);
+}
+
 static Ast *parser_parse_assert(Parser *parser) {
     /* Already consumed TOKEN_ASSERT - capture its location */
     SourceLoc loc = token_loc(&parser->previous);
@@ -4406,14 +4578,13 @@ static Ast *parser_parse_block(Parser *parser) {
                     /* This is the block's value expression */
                     block->as.block.value_expr = expr;
                     break;
-                } else if (parser_match(parser, TOKEN_EQUALS)) {
-                    /* Field assignment: expr = value */
-                    Ast *value = parser_parse_expression(parser);
-                    if (value) {
-                        Ast *assign = ast_make_assignment(expr, value, expr->loc);
+                } else if (parser_check(parser, TOKEN_EQUALS) ||
+                           token_is_compound_assignment(parser->current.kind)) {
+                    Ast *assign = parser_finish_assignment(parser, expr,
+                                                           parser->current.kind,
+                                                           expr->loc);
+                    if (assign) {
                         ast_block_add_statement(block, assign);
-                    } else {
-                        ast_free(expr);
                     }
                 } else if (expr->kind == AST_FUNC_CALL ||
                            expr->kind == AST_ARENA_RESET ||
@@ -5674,28 +5845,7 @@ static void parser_print_ast_step(Ast *node, int indent) {
             break;
 
         case AST_BINARY: {
-            const char *op_name;
-            switch (node->as.binary.op) {
-                case OP_ADD: op_name = "ADD"; break;
-                case OP_SUB: op_name = "SUB"; break;
-                case OP_MUL: op_name = "MUL"; break;
-                case OP_DIV: op_name = "DIV"; break;
-                case OP_MOD: op_name = "MOD"; break;
-                case OP_EQ:  op_name = "EQ"; break;
-                case OP_NEQ: op_name = "NEQ"; break;
-                case OP_LT:  op_name = "LT"; break;
-                case OP_GT:  op_name = "GT"; break;
-                case OP_LE:  op_name = "LE"; break;
-                case OP_GE:  op_name = "GE"; break;
-                case OP_AND:    op_name = "AND"; break;
-                case OP_OR:     op_name = "OR"; break;
-                case OP_BITAND: op_name = "BITAND"; break;
-                case OP_BITOR:  op_name = "BITOR"; break;
-                case OP_BITXOR: op_name = "BITXOR"; break;
-                case OP_SHL:    op_name = "SHL"; break;
-                case OP_SHR:    op_name = "SHR"; break;
-            }
-            printf("BINARY(%s)\n", op_name);
+            printf("BINARY(%s)\n", binary_op_name(node->as.binary.op));
             parser_print_ast_step(node->as.binary.left, indent + 1);
             parser_print_ast_step(node->as.binary.right, indent + 1);
             break;
@@ -5759,6 +5909,17 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("VALUE:\n");
             parser_print_ast_step(node->as.assignment.value, indent + 2);
+            break;
+
+        case AST_COMPOUND_ASSIGNMENT:
+            printf("COMPOUND_ASSIGNMENT(%s)\n",
+                   binary_op_name(node->as.compound_assignment.op));
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("TARGET:\n");
+            parser_print_ast_step(node->as.compound_assignment.target, indent + 2);
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("VALUE:\n");
+            parser_print_ast_step(node->as.compound_assignment.value, indent + 2);
             break;
 
         case AST_ASSERT:
@@ -6728,6 +6889,24 @@ static bool is_addressable(Ast *node) {
     return false;
 }
 
+/* Check if a node can appear on the left-hand side of an assignment.
+ * Valid targets are variables plus field/index chains rooted on a variable.
+ * Slice .len is read-only and not assignable. */
+static bool is_assignable_target(Ast *node) {
+    if (node->kind == AST_IDENTIFIER) return true;
+    if (node->kind == AST_INDEX_ACCESS) {
+        return is_assignable_target(node->as.index_access.object);
+    }
+    if (node->kind == AST_FIELD_ACCESS) {
+        if (node->as.field_access.field_length == 3 &&
+            memcmp(node->as.field_access.field_start, "len", 3) == 0) {
+            return false;
+        }
+        return is_assignable_target(node->as.field_access.object);
+    }
+    return false;
+}
+
 /* Check if a type is a scalar (integer, f64, bool, or comptime) */
 static bool type_is_scalar(Type type) {
     return type_is_numeric(type) || type == TYPE_BOOL;
@@ -6740,6 +6919,126 @@ static Ast *ast_root_target(Ast *node) {
         else node = node->as.index_access.object;
     }
     return node;
+}
+
+static Type typecheck_expression(Ast *node, Scope *scope,
+                                 FunctionTable *func_table);
+
+static Type typecheck_assignment_target(Ast *target, Scope *scope,
+                                        FunctionTable *func_table,
+                                        SourceLoc loc) {
+    Type target_type = typecheck_expression(target, scope, func_table);
+
+    if (!is_assignable_target(target)) {
+        diagnostic(loc.file, ERR_S088_INVALID_ASSIGN_TARGET, loc.line,
+                   loc.column,
+                   "Assignment target must be a variable, field, or index expression");
+        return target_type;
+    }
+
+    Ast *root = ast_root_target(target);
+    if (root->kind == AST_IDENTIFIER) {
+        Variable *v = scope_lookup(scope, root->as.identifier.start,
+                                   root->as.identifier.length);
+        if (v == NULL) {
+            return target_type;
+        }
+        if (!v->is_mutable) {
+            if (target->kind == AST_FIELD_ACCESS) {
+                diagnostic(loc.file, ERR_S030_FIELD_IMMUTABLE, loc.line,
+                           loc.column,
+                           "Cannot assign to field of immutable variable '%.*s'",
+                           (int)root->as.identifier.length,
+                           root->as.identifier.start);
+            } else if (target->kind == AST_INDEX_ACCESS) {
+                diagnostic(loc.file, ERR_S036_INDEX_IMMUTABLE, loc.line,
+                           loc.column,
+                           "Cannot assign to element of immutable variable '%.*s'",
+                           (int)root->as.identifier.length,
+                           root->as.identifier.start);
+            } else {
+                diagnostic(loc.file, ERR_S003_IMMUTABLE_ASSIGNMENT, loc.line,
+                           loc.column,
+                           "Cannot assign to immutable variable '%.*s'",
+                           (int)root->as.identifier.length,
+                           root->as.identifier.start);
+            }
+        }
+    }
+
+    if (target->kind == AST_IDENTIFIER && type_is_non_copyable(target_type)) {
+        diagnostic(loc.file, ERR_S043_STRUCT_COPY, loc.line, loc.column,
+                   "Cannot assign to %s variable (not copyable)",
+                   type_name(target_type));
+    }
+
+    return target_type;
+}
+
+static Type typecheck_compound_assignment(BinaryOp op, Type target_type,
+                                          Type value_type, SourceLoc loc) {
+    Type result = target_type;
+
+    switch (op) {
+        case OP_ADD:
+        case OP_SUB:
+        case OP_MUL:
+        case OP_DIV:
+        case OP_MOD:
+            if (type_is_enum(target_type) || type_is_enum(value_type)) {
+                diagnostic(loc.file, ERR_S067_ENUM_ARITHMETIC, loc.line,
+                           loc.column,
+                           "Arithmetic is not allowed on enum type %s",
+                           type_name(type_is_enum(target_type) ? target_type
+                                                               : value_type));
+                return result;
+            }
+
+            result = resolve_numeric_binary_type(target_type, value_type);
+            if (result == TYPE_VOID) {
+                diagnostic(loc.file, ERR_S006_TYPE_MISMATCH, loc.line,
+                           loc.column,
+                           "Cannot mix %s and %s in arithmetic operation",
+                           type_name(target_type), type_name(value_type));
+                return target_type;
+            }
+
+            if (op == OP_MOD &&
+                (result == TYPE_F64 || result == TYPE_COMPTIME_FLOAT)) {
+                diagnostic(loc.file, ERR_S061_MODULO_ON_FLOAT, loc.line,
+                           loc.column,
+                           "Modulo operator '%%' is not supported on floating-point types");
+                return target_type;
+            }
+            return result;
+
+        case OP_BITAND:
+        case OP_BITOR:
+        case OP_BITXOR:
+        case OP_SHL:
+        case OP_SHR:
+            result = resolve_numeric_binary_type(target_type, value_type);
+            if (result == TYPE_VOID) {
+                diagnostic(loc.file, ERR_S006_TYPE_MISMATCH, loc.line,
+                           loc.column,
+                           "Cannot mix %s and %s in bitwise operation",
+                           type_name(target_type), type_name(value_type));
+                return target_type;
+            }
+
+            if (result == TYPE_F64 || result == TYPE_COMPTIME_FLOAT) {
+                diagnostic(loc.file, ERR_S062_BITWISE_ON_FLOAT, loc.line,
+                           loc.column,
+                           "Bitwise operators are not supported on floating-point types");
+                return target_type;
+            }
+            return result;
+
+        default:
+            panic(ERR_I002_INTERNAL_ERROR, "invalid compound assignment operator");
+    }
+
+    return target_type;
 }
 
 /* Return a human-readable label for ref/mut ref passing style */
@@ -8563,49 +8862,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 
         case AST_ASSIGNMENT: {
             Ast *target = node->as.assignment.target;
-
-            /* Type-check the target expression to get its type */
-            Type target_type = typecheck_expression(target, *scope, func_table);
-
-            /* Walk through field/index chains to find root variable */
-            Ast *root = ast_root_target(target);
-            if (root->kind == AST_IDENTIFIER) {
-                Variable *v = scope_lookup(*scope, root->as.identifier.start,
-                                            root->as.identifier.length);
-                if (v == NULL) {
-                    /* Already reported by typecheck_expression */
-                    break;
-                }
-                if (!v->is_mutable) {
-                    if (target->kind == AST_FIELD_ACCESS) {
-                        diagnostic(node->loc.file, ERR_S030_FIELD_IMMUTABLE, node->loc.line,
-                                   node->loc.column,
-                                   "Cannot assign to field of immutable variable '%.*s'",
-                                   (int)root->as.identifier.length,
-                                   root->as.identifier.start);
-                    } else if (target->kind == AST_INDEX_ACCESS) {
-                        diagnostic(node->loc.file, ERR_S036_INDEX_IMMUTABLE, node->loc.line,
-                                   node->loc.column,
-                                   "Cannot assign to element of immutable variable '%.*s'",
-                                   (int)root->as.identifier.length,
-                                   root->as.identifier.start);
-                    } else {
-                        diagnostic(node->loc.file, ERR_S003_IMMUTABLE_ASSIGNMENT, node->loc.line,
-                                   node->loc.column,
-                                   "Cannot assign to immutable variable '%.*s'",
-                                   (int)root->as.identifier.length,
-                                   root->as.identifier.start);
-                    }
-                }
-            }
-
-            /* Prevent reassignment of non-copyable types */
-            if (target->kind == AST_IDENTIFIER && type_is_non_copyable(target_type)) {
-                diagnostic(node->loc.file, ERR_S043_STRUCT_COPY, node->loc.line,
-                           node->loc.column,
-                           "Cannot assign to %s variable (not copyable)",
-                           type_name(target_type));
-            }
+            Type target_type = typecheck_assignment_target(target, *scope,
+                                                           func_table, node->loc);
 
             Type value_type = typecheck_expression(node->as.assignment.value, *scope, func_table);
             if (!type_can_coerce(value_type, target_type)) {
@@ -8616,6 +8874,27 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
             }
             if (value_type == TYPE_COMPTIME_INT && type_is_integer(target_type)) {
                 typecheck_comptime_range(node->as.assignment.value, target_type, *scope);
+            }
+            break;
+        }
+
+        case AST_COMPOUND_ASSIGNMENT: {
+            Ast *target = node->as.compound_assignment.target;
+            Type target_type = typecheck_assignment_target(target, *scope,
+                                                           func_table, node->loc);
+            Type value_type = typecheck_expression(
+                node->as.compound_assignment.value, *scope, func_table);
+            Type result_type = typecheck_compound_assignment(
+                node->as.compound_assignment.op, target_type, value_type,
+                node->loc);
+
+            if (!type_can_coerce(result_type, target_type)) {
+                diagnostic(node->as.compound_assignment.value->loc.file,
+                           ERR_S006_TYPE_MISMATCH,
+                           node->as.compound_assignment.value->loc.line,
+                           node->as.compound_assignment.value->loc.column,
+                           "Cannot assign %s to %s",
+                           type_name(result_type), type_name(target_type));
             }
             break;
         }
@@ -9459,6 +9738,23 @@ static void codegen_emit_binary_op(FILE *out, BinaryOp op) {
     }
 }
 
+static void codegen_emit_compound_assign_op(FILE *out, BinaryOp op) {
+    switch (op) {
+        case OP_ADD:    fprintf(out, " += "); break;
+        case OP_SUB:    fprintf(out, " -= "); break;
+        case OP_MUL:    fprintf(out, " *= "); break;
+        case OP_DIV:    fprintf(out, " /= "); break;
+        case OP_MOD:    fprintf(out, " %%= "); break;
+        case OP_BITAND: fprintf(out, " &= "); break;
+        case OP_BITOR:  fprintf(out, " |= "); break;
+        case OP_BITXOR: fprintf(out, " ^= "); break;
+        case OP_SHL:    fprintf(out, " <<= "); break;
+        case OP_SHR:    fprintf(out, " >>= "); break;
+        default:
+            panic(ERR_I002_INTERNAL_ERROR, "invalid compound assignment op in codegen");
+    }
+}
+
 /* Emit a condition for if/while. Skips outer parentheses on binary
  * expressions since the caller provides if(...)/while(...), avoiding
  * clang's -Wparentheses-equality warning on patterns like if ((a == b)). */
@@ -10031,6 +10327,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
         case AST_MUT_DECL:
         case AST_RETURN:
         case AST_ASSIGNMENT:
+        case AST_COMPOUND_ASSIGNMENT:
         case AST_ASSERT:
         case AST_WHILE:
         case AST_FOR:
@@ -10451,6 +10748,20 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             codegen_emit_lvalue(out, node->as.assignment.target);
             fprintf(out, " = ");
             codegen_emit_expression(out, node->as.assignment.value);
+            fprintf(out, ";\n");
+            break;
+
+        case AST_COMPOUND_ASSIGNMENT:
+            if (codegen_target_has_index(node->as.compound_assignment.target)) {
+                codegen_emit_target_bounds_checks(out,
+                                                  node->as.compound_assignment.target,
+                                                  indent);
+            }
+            codegen_indent(out, indent);
+            codegen_emit_lvalue(out, node->as.compound_assignment.target);
+            codegen_emit_compound_assign_op(out,
+                                            node->as.compound_assignment.op);
+            codegen_emit_expression(out, node->as.compound_assignment.value);
             fprintf(out, ";\n");
             break;
 
