@@ -1,0 +1,11 @@
+// Error: scalar match arms cannot use enum-style variants
+
+enum Color { Red, Green }
+
+func main(): void = {
+    val x: i64 = 1
+    match (x) {
+        Red = { }
+        _ = { }
+    }
+}

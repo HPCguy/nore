@@ -322,6 +322,13 @@ match (opt) {
     None = { result = 0 }
 }
 
+match (scalar_value) {
+    -1 = { }
+    '0' = { }
+    '1' = { }
+    _ = { }
+}
+
 val x: i64 = match (opt) {
     Some(n) = { n }
     None = { 0 }
@@ -329,11 +336,13 @@ val x: i64 = match (opt) {
 ```
 
 - `match (scrutinee) { arms }` with parentheses
-- Scrutinee may be a plain enum or a tagged enum
+- Scrutinee may be a plain enum, a tagged enum, `bool`, `i64`, `i32`, `u32`, or `u8`
 - Plain enum arms: `VariantName = { body }`
 - Tagged enum arms: `VariantName(binding) = { body }` or `VariantName = { body }`
+- Scalar arms: literal patterns (`-1`, `0`, `'+'`, `true`, `false`) plus bare `_ = { body }`
+- On enum matches, `_` is still a regular variant name if declared
 - `_` wildcard: `Some(_) = { ... }`
-- Exhaustiveness required
+- Exhaustiveness required; integer matches must include `_`, while `bool` may cover `true` and `false` explicitly
 - Match expression arms must produce compatible types (S076)
 - Slice-payload tagged unions are non-copyable (S043, S044, S045)
 - Payload types: scalars, fixed arrays, value types, slices, plain enums. No structs/Arena (S082)

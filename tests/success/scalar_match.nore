@@ -1,0 +1,55 @@
+// Test scalar literal match on integers and bool
+
+func digit_code(c: u8): i64 = {
+    match (c) {
+        '0' = { 0 }
+        '1' = { 1 }
+        _ = { 9 }
+    }
+}
+
+func bool_code(flag: bool): i64 = {
+    match (flag) {
+        true = { 1 }
+        false = { 0 }
+    }
+}
+
+func signed_code(x: i64): i64 = {
+    match (x) {
+        -1 = { 10 }
+        0 = { 20 }
+        _ = { 30 }
+    }
+}
+
+func main(): void = {
+    val zero: u8 = '0'
+    val one: u8 = '1'
+    val other: u8 = '9'
+    val n: i32 = 42
+
+    assert digit_code(zero) == 0
+    assert digit_code(one) == 1
+    assert digit_code(other) == 9
+
+    val code: i64 = match (n) {
+        41 = { 100 }
+        42 = { 200 }
+        _ = { 300 }
+    }
+    assert code == 200
+
+    mut seen: i64 = -1
+    match (true) {
+        true = { seen = 1 }
+        false = { seen = 2 }
+    }
+    assert seen == 1
+
+    assert bool_code(true) == 1
+    assert bool_code(false) == 0
+    assert signed_code(-1) == 10
+    assert signed_code(0) == 20
+    assert signed_code(7) == 30
+}

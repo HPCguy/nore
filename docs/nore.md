@@ -208,8 +208,8 @@ Type annotation is required. Tagged unions can be assigned to mutable variables 
 - Payload types must be value-compatible: scalars, fixed arrays, value types, slices, or plain enums. Structs and Arena are not allowed (S082).
 - Comparison (`==`, `!=`) is not allowed on tagged unions (use `match` instead).
 
-**Match expressions** branch on enums and destructure tagged unions with
-exhaustive pattern matching:
+**Match expressions** branch on enums, destructure tagged unions, and dispatch
+on small scalar values with exhaustive pattern matching:
 
 ```nore
 enum Color { Red, Green, Blue }
@@ -238,17 +238,28 @@ func unwrap_or(opt: Option, default: i64): i64 = {
         None = { default }
     }
 }
+
+func classify_byte(b: u8): i64 = {
+    match (b) {
+        '0' = { 0 }
+        '1' = { 1 }
+        _ = { 9 }
+    }
+}
 ```
 
 Match rules:
 - `match (scrutinee) { arms }` with parentheses around the scrutinee
-- Scrutinee may be a plain enum or a tagged enum
+- Scrutinee may be a plain enum, a tagged enum, `bool`, `i64`, `i32`, `u32`, or `u8`
 - Plain enum arms use `VariantName = { body }`
 - Tagged-enum arms use `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
+- Scalar arms use literal patterns: `-1`, `0`, `'+'`, `true`, `false`
+- Bare `_ = { body }` is the wildcard arm for scalar matches
+- On enum matches, `_` remains a normal variant name if the enum declares one
 - `=` separates pattern from body (consistent with function syntax)
 - Variant names are unqualified (the scrutinee type determines the enum)
 - `_` wildcard for unused bindings: `Some(_) = { ... }`
-- Exhaustiveness required: all variants must be covered
+- Exhaustiveness required: all enum variants must be covered, `bool` must cover both values or use `_`, and integer matches must use `_`
 - Binding variables are scoped to the arm body
 - All arms must produce values of compatible types when used as expression (S076)
 - Plain enum arms cannot bind payloads

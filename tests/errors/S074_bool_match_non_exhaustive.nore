@@ -1,0 +1,8 @@
+// Error: bool match must cover both values or use a wildcard arm
+
+func main(): void = {
+    val flag: bool = true
+    match (flag) {
+        true = { }
+    }
+}

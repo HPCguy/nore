@@ -1,0 +1,8 @@
+// Error: match on unsupported scrutinee type
+
+func main(): void = {
+    val x: f64 = 42.0
+    match (x) {
+        _ = { }
+    }
+}

@@ -49,6 +49,8 @@ syn match noreTypeDecl /[A-Z][A-Za-z0-9_]*/ contained
 syn match noreFuncDecl /[a-z_][A-Za-z0-9_]*/ contained
 syn match noreImportAlias /[a-z_][A-Za-z0-9_]*/ contained
 syn match noreMatchArm /^\s*\zs[A-Z][A-Za-z0-9_]*\ze\(\s*(\|\s*=\)/
+syn match noreMatchArm /^\s*\zs_\ze\s*(/
+syn match noreMatchWildcard /^\s*\zs_\ze\s*=/
 
 syn match noreLineComment "//.*$" contains=noreTodo,@Spell containedin=ALLBUT,noreString,noreChar
 syn region noreBlockComment start="/\*" end="\*/" contains=noreTodo,@Spell containedin=ALLBUT,noreString,noreChar
@@ -91,5 +93,6 @@ hi def link noreTypeDecl Type
 hi def link noreFuncDecl Function
 hi def link noreImportAlias Include
 hi def link noreMatchArm Constant
+hi def link noreMatchWildcard Constant
 
 let b:current_syntax = "nore"

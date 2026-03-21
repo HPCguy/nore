@@ -1841,6 +1841,12 @@ typedef enum {
 } AstKind;
 
 typedef enum {
+    MATCH_PATTERN_ENUM_VARIANT,
+    MATCH_PATTERN_LITERAL,
+    MATCH_PATTERN_WILDCARD,
+} MatchPatternKind;
+
+typedef enum {
     OP_ADD,
     OP_SUB,
     OP_MUL,
@@ -2084,9 +2090,11 @@ typedef struct Ast {
         } match_expr;
 
         struct {
+            MatchPatternKind pattern_kind;
             const char *variant_name;   /* variant name (from source) */
             size_t variant_length;
-            long variant_value;         /* resolved during typecheck */
+            struct Ast *pattern_expr;   /* literal pattern for scalar match */
+            long case_value;            /* resolved during typecheck */
             bool has_binding;           /* true if source used Variant(...) */
             const char *binding_name;   /* NULL for no-data or _ wildcard */
             size_t binding_length;
@@ -2415,21 +2423,14 @@ static Ast *ast_make_match(Ast *scrutinee, Ast **arms, size_t arm_count,
     return node;
 }
 
-static Ast *ast_make_match_arm(const char *variant_name, size_t variant_length,
-                                bool has_binding,
-                                const char *binding_name, size_t binding_length,
-                                Ast *body, SourceLoc loc) {
+/* Build a match arm; all fields zero-initialized, caller sets pattern-specific ones. */
+static Ast *ast_make_match_arm(MatchPatternKind kind, Ast *body, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     node->kind = AST_MATCH_ARM;
     node->loc = loc;
-    node->as.match_arm.variant_name = variant_name;
-    node->as.match_arm.variant_length = variant_length;
-    node->as.match_arm.variant_value = -1;  /* resolved during typecheck */
-    node->as.match_arm.has_binding = has_binding;
-    node->as.match_arm.binding_name = binding_name;
-    node->as.match_arm.binding_length = binding_length;
-    node->as.match_arm.binding_type = TYPE_VOID;  /* resolved during typecheck */
+    memset(&node->as.match_arm, 0, sizeof(node->as.match_arm));
+    node->as.match_arm.pattern_kind = kind;
     node->as.match_arm.body = body;
     return node;
 }
@@ -2918,6 +2919,8 @@ static void ast_free(Ast *node) {
             free(node->as.match_expr.arms);
             break;
         case AST_MATCH_ARM:
+            if (node->as.match_arm.pattern_expr)
+                ast_free(node->as.match_arm.pattern_expr);
             ast_free(node->as.match_arm.body);
             break;
         case AST_NATIVE_DECL:
@@ -4695,6 +4698,47 @@ static bool ast_if_is_value_expr(Ast *node) {
     return true;
 }
 
+/* Parse the limited literal forms allowed in scalar match arms. */
+static Ast *parser_parse_match_literal_pattern(Parser *parser) {
+    if (parser_check(parser, TOKEN_NUMBER) ||
+        parser_check(parser, TOKEN_CHAR) ||
+        parser_check(parser, TOKEN_TRUE) ||
+        parser_check(parser, TOKEN_FALSE)) {
+        return parser_parse_primary(parser);
+    }
+
+    if (parser_match(parser, TOKEN_MINUS)) {
+        SourceLoc loc = token_loc(&parser->previous);
+        if (!parser_match(parser, TOKEN_NUMBER)) {
+            diagnostic(g_source_file, ERR_P052_EXPECTED_VARIANT_MATCH,
+                       parser->current.line, parser->current.column,
+                       "Expected integer literal after '-' in match arm");
+            return NULL;
+        }
+
+        char buffer[32];
+        size_t len = parser->previous.length;
+        if (len >= sizeof(buffer)) {
+            diagnostic(g_source_file, ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+                       "Number literal too large");
+            return NULL;
+        }
+        memcpy(buffer, parser->previous.start, len);
+        buffer[len] = '\0';
+        errno = 0;
+        long value = strtol(buffer, NULL, 10);
+        if (errno == ERANGE) {
+            diagnostic(g_source_file, ERR_P006_NUMBER_TOO_LARGE, loc.line, loc.column,
+                       "Integer literal out of range");
+            return ast_make_number(0, loc);
+        }
+
+        return ast_make_number(-value, loc);
+    }
+
+    return NULL;
+}
+
 static Ast *parser_parse_match(Parser *parser) {
     /* TOKEN_MATCH already consumed */
     SourceLoc loc = token_loc(&parser->previous);
@@ -4728,8 +4772,7 @@ static Ast *parser_parse_match(Parser *parser) {
         return NULL;
     }
 
-    /* Parse arms: Variant(binding) = { body }
-     * Variant names stored as strings; resolved during typecheck. */
+    /* Parse arms: Variant(binding) = { body }, literal = { body }, _ = { body }. */
     size_t arm_capacity = 8;
     size_t arm_count = 0;
     Ast **arms = malloc(arm_capacity * sizeof(Ast *));
@@ -4740,20 +4783,36 @@ static Ast *parser_parse_match(Parser *parser) {
            !too_many_errors()) {
         SourceLoc arm_loc = token_loc(&parser->current);
 
-        if (!parser_match(parser, TOKEN_IDENTIFIER)) {
+        MatchPatternKind pattern_kind;
+        const char *var_start = NULL;
+        size_t var_len = 0;
+        Ast *pattern_expr = NULL;
+
+        if (parser_match(parser, TOKEN_IDENTIFIER)) {
+            pattern_kind = MATCH_PATTERN_ENUM_VARIANT;
+            var_start = parser->previous.start;
+            var_len = parser->previous.length;
+        } else if (parser_check(parser, TOKEN_NUMBER) ||
+                   parser_check(parser, TOKEN_CHAR) ||
+                   parser_check(parser, TOKEN_TRUE) ||
+                   parser_check(parser, TOKEN_FALSE) ||
+                   parser_check(parser, TOKEN_MINUS)) {
+            pattern_kind = MATCH_PATTERN_LITERAL;
+            pattern_expr = parser_parse_match_literal_pattern(parser);
+            if (!pattern_expr) break;
+        } else {
             diagnostic(g_source_file, ERR_P052_EXPECTED_VARIANT_MATCH,
                        parser->current.line, parser->current.column,
-                       "Expected variant name in match arm");
+                       "Expected match pattern in arm");
             break;
         }
-        const char *var_start = parser->previous.start;
-        size_t var_len = parser->previous.length;
 
         /* Optional binding: (name) or (_) */
         bool has_binding = false;
         const char *binding_name = NULL;
         size_t binding_length = 0;
-        if (parser_match(parser, TOKEN_LPAREN)) {
+        if (pattern_kind == MATCH_PATTERN_ENUM_VARIANT &&
+            parser_match(parser, TOKEN_LPAREN)) {
             has_binding = true;
             if (parser_match(parser, TOKEN_IDENTIFIER)) {
                 if (parser->previous.length == 1 && parser->previous.start[0] == '_') {
@@ -4767,6 +4826,7 @@ static Ast *parser_parse_match(Parser *parser) {
                 diagnostic(g_source_file, ERR_P055_EXPECTED_RPAREN_BINDING,
                            parser->current.line, parser->current.column,
                            "Expected ')' after match binding");
+                if (pattern_expr) ast_free(pattern_expr);
                 break;
             }
         }
@@ -4775,6 +4835,7 @@ static Ast *parser_parse_match(Parser *parser) {
             diagnostic(g_source_file, ERR_P053_EXPECTED_EQUALS_MATCH,
                        parser->current.line, parser->current.column,
                        "Expected '=' after match pattern");
+            if (pattern_expr) ast_free(pattern_expr);
             break;
         }
 
@@ -4782,20 +4843,31 @@ static Ast *parser_parse_match(Parser *parser) {
             diagnostic(g_source_file, ERR_P051_EXPECTED_LBRACE_MATCH,
                        parser->current.line, parser->current.column,
                        "Expected '{' for match arm body");
+            if (pattern_expr) ast_free(pattern_expr);
             break;
         }
         Ast *body = parser_parse_block(parser);
-        if (!body) break;
+        if (!body) {
+            if (pattern_expr) ast_free(pattern_expr);
+            break;
+        }
 
         if (arm_count >= arm_capacity) {
             arm_capacity *= 2;
             arms = realloc(arms, arm_capacity * sizeof(Ast *));
             if (!arms) panic(ERR_I001_OUT_OF_MEMORY, "growing match arms");
         }
-        arms[arm_count++] = ast_make_match_arm(var_start, var_len,
-                                                has_binding,
-                                                binding_name, binding_length,
-                                                body, arm_loc);
+        Ast *arm = ast_make_match_arm(pattern_kind, body, arm_loc);
+        if (pattern_kind == MATCH_PATTERN_ENUM_VARIANT) {
+            arm->as.match_arm.variant_name = var_start;
+            arm->as.match_arm.variant_length = var_len;
+            arm->as.match_arm.has_binding = has_binding;
+            arm->as.match_arm.binding_name = binding_name;
+            arm->as.match_arm.binding_length = binding_length;
+        } else if (pattern_kind == MATCH_PATTERN_LITERAL) {
+            arm->as.match_arm.pattern_expr = pattern_expr;
+        }
+        arms[arm_count++] = arm;
     }
 
     if (!parser_match(parser, TOKEN_RBRACE)) {
@@ -6253,9 +6325,21 @@ static void parser_print_ast_step(Ast *node, int indent) {
             break;
 
         case AST_MATCH_ARM:
-            printf("ARM(%.*s)\n",
-                   (int)node->as.match_arm.variant_length,
-                   node->as.match_arm.variant_name);
+            switch (node->as.match_arm.pattern_kind) {
+                case MATCH_PATTERN_ENUM_VARIANT:
+                    printf("ARM_VARIANT(%.*s)\n",
+                           (int)node->as.match_arm.variant_length,
+                           node->as.match_arm.variant_name);
+                    break;
+                case MATCH_PATTERN_LITERAL:
+                    printf("ARM_LITERAL\n");
+                    parser_print_ast_step(node->as.match_arm.pattern_expr,
+                                          indent + 1);
+                    break;
+                case MATCH_PATTERN_WILDCARD:
+                    printf("ARM_WILDCARD\n");
+                    break;
+            }
             parser_print_ast_step(node->as.match_arm.body, indent + 1);
             break;
 
@@ -6610,6 +6694,7 @@ static bool is_comptime_constant(Ast *node, Scope *scope) {
 /* Get integer value from comptime node */
 static long get_comptime_int(Ast *node, Scope *scope) {
     if (node->kind == AST_NUMBER) return node->as.number.value;
+    if (node->kind == AST_BOOLEAN) return node->as.boolean.value ? 1L : 0L;
     if (node->kind == AST_FLOAT) return (long)node->as.float_lit.value;
     if (node->kind == AST_ENUM_VARIANT) return node->as.enum_variant.value;
     if (node->kind == AST_IDENTIFIER && scope != NULL) {
@@ -7098,29 +7183,81 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
 static void typecheck_statement(Ast *node, Scope **scope, Type return_type, FunctionTable *func_table);
 static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
 
-/* Shared match typecheck: validate scrutinee, resolve variants, check exhaustiveness,
- * typecheck arm bodies, and reject bindings on non-data variants. */
-static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
-                                  FunctionTable *func_table) {
-    Type scrut_type = typecheck_expression(
-        node->as.match_expr.scrutinee, scope, func_table);
+/* Match scalar support stays narrow: bool plus concrete integer types only. */
+static bool type_is_match_scalar(Type type) {
+    return type == TYPE_BOOL ||
+           (type_is_integer(type) && type != TYPE_COMPTIME_INT);
+}
 
-    EnumTypeEntry *et = NULL;
-    if (!type_is_enum(scrut_type) ||
-        !(et = enum_table_get(scrut_type))) {
-        diagnostic(node->loc.file, ERR_S073_MATCH_NOT_ENUM,
-                   node->loc.line, node->loc.column,
-                   "Match scrutinee must be an enum type, got %s",
-                   type_name(scrut_type));
-        return TYPE_VOID;
+/* Type-check one match arm body, including any enum payload binding. */
+static Type typecheck_match_arm_body(Ast *arm, Scope *scope, Type return_type,
+                                     FunctionTable *func_table,
+                                     Variable *scrut_var) {
+    Ast *body = arm->as.match_arm.body;
+    Scope *arm_scope = scope_create(scope);
+    if (arm->as.match_arm.binding_name &&
+        arm->as.match_arm.binding_type != TYPE_VOID) {
+        Variable *bv = scope_add(arm_scope,
+                  arm->as.match_arm.binding_name,
+                  arm->as.match_arm.binding_length,
+                  false, arm->as.match_arm.binding_type,
+                  arm->loc);
+        /* Propagate arena tracking from scrutinee to slice binding. */
+        if (bv && type_is_slice(arm->as.match_arm.binding_type) &&
+            scrut_var && scrut_var->arena_source_start) {
+            bv->arena_source_start = scrut_var->arena_source_start;
+            bv->arena_source_length = scrut_var->arena_source_length;
+            bv->arena_is_local = scrut_var->arena_is_local;
+        }
     }
 
+    for (size_t s = 0; s < body->as.block.count; s++) {
+        typecheck_statement(body->as.block.statements[s],
+                            &arm_scope, return_type, func_table);
+    }
+
+    Type arm_type = TYPE_VOID;
+    if (body->as.block.value_expr) {
+        arm_type = typecheck_expression(body->as.block.value_expr,
+                                        arm_scope, func_table);
+    }
+
+    scope_destroy(arm_scope);
+    return arm_type;
+}
+
+/* Keep match arms on a single compatible result type. */
+static void typecheck_match_arm_result(Ast *arm, Type arm_type,
+                                       Type *common_type, bool *first_arm) {
+    if (*first_arm) {
+        *common_type = arm_type;
+        *first_arm = false;
+        return;
+    }
+
+    Type resolved = resolve_branch_types(*common_type, arm_type);
+    if (resolved == TYPE_VOID && *common_type != TYPE_VOID) {
+        diagnostic(arm->loc.file, ERR_S076_MATCH_ARM_TYPE_MISMATCH,
+                   arm->loc.line, arm->loc.column,
+                   "Match arm type %s incompatible with previous arms (%s)",
+                   type_name(arm_type), type_name(*common_type));
+        return;
+    }
+
+    *common_type = resolved;
+}
+
+/* Type-check enum match arms for tagged and plain enums. */
+static Type typecheck_enum_match_arms(Ast *node, Scope *scope, Type return_type,
+                                      FunctionTable *func_table,
+                                      Type scrut_type,
+                                      EnumTypeEntry *et) {
     bool *covered = calloc(et->variant_count, sizeof(bool));
     if (!covered) panic(ERR_I001_OUT_OF_MEMORY, "allocating match coverage");
     Type common_type = TYPE_VOID;
     bool first_arm = true;
 
-    /* Pre-lookup scrutinee variable for arena tracking propagation */
+    /* Pre-lookup scrutinee variable for arena tracking propagation. */
     Variable *scrut_var = NULL;
     Ast *scrut = node->as.match_expr.scrutinee;
     if (scrut->kind == AST_IDENTIFIER) {
@@ -7130,19 +7267,33 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
 
     for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
         Ast *arm = node->as.match_expr.arms[i];
+
+        if (arm->as.match_arm.pattern_kind != MATCH_PATTERN_ENUM_VARIANT) {
+            diagnostic(arm->loc.file, ERR_S006_TYPE_MISMATCH,
+                       arm->loc.line, arm->loc.column,
+                       "Match arms for %s must name enum variants",
+                       type_name(scrut_type));
+            typecheck_match_arm_result(
+                arm,
+                typecheck_match_arm_body(arm, scope, return_type,
+                                         func_table, scrut_var),
+                &common_type, &first_arm);
+            continue;
+        }
+
         const char *vname = arm->as.match_arm.variant_name;
         size_t vlen = arm->as.match_arm.variant_length;
-
         bool found = false;
+
         for (size_t v = 0; v < et->variant_count; v++) {
             if (et->variants[v].name_length == vlen &&
                 memcmp(et->variants[v].name_start, vname, vlen) == 0) {
-                arm->as.match_arm.variant_value = et->variants[v].value;
+                arm->as.match_arm.case_value = et->variants[v].value;
                 arm->as.match_arm.binding_type = et->variants[v].payload_type;
                 if (covered[v]) {
                     diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
                                arm->loc.line, arm->loc.column,
-                               "Duplicate variant '%.*s' in match",
+                               "Duplicate match arm '%.*s'",
                                (int)vlen, vname);
                 }
                 covered[v] = true;
@@ -7150,6 +7301,7 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
                 break;
             }
         }
+
         if (!found) {
             diagnostic(arm->loc.file, ERR_P045_UNKNOWN_ENUM_VARIANT,
                        arm->loc.line, arm->loc.column,
@@ -7166,47 +7318,11 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
                        (int)vlen, vname);
         }
 
-        Ast *body = arm->as.match_arm.body;
-        Scope *arm_scope = scope_create(scope);
-        if (arm->as.match_arm.binding_name &&
-            arm->as.match_arm.binding_type != TYPE_VOID) {
-            Variable *bv = scope_add(arm_scope,
-                      arm->as.match_arm.binding_name,
-                      arm->as.match_arm.binding_length,
-                      false, arm->as.match_arm.binding_type,
-                      arm->loc);
-            /* Propagate arena tracking from scrutinee to slice binding */
-            if (bv && type_is_slice(arm->as.match_arm.binding_type) &&
-                scrut_var && scrut_var->arena_source_start) {
-                bv->arena_source_start = scrut_var->arena_source_start;
-                bv->arena_source_length = scrut_var->arena_source_length;
-                bv->arena_is_local = scrut_var->arena_is_local;
-            }
-        }
-        for (size_t s = 0; s < body->as.block.count; s++) {
-            typecheck_statement(body->as.block.statements[s],
-                                &arm_scope, return_type, func_table);
-        }
-        Type arm_type = TYPE_VOID;
-        if (body->as.block.value_expr) {
-            arm_type = typecheck_expression(body->as.block.value_expr,
-                                             arm_scope, func_table);
-        }
-        if (first_arm) {
-            common_type = arm_type;
-            first_arm = false;
-        } else {
-            Type resolved = resolve_branch_types(common_type, arm_type);
-            if (resolved == TYPE_VOID && common_type != TYPE_VOID) {
-                diagnostic(arm->loc.file, ERR_S076_MATCH_ARM_TYPE_MISMATCH,
-                           arm->loc.line, arm->loc.column,
-                           "Match arm type %s incompatible with previous arms (%s)",
-                           type_name(arm_type), type_name(common_type));
-            } else {
-                common_type = resolved;
-            }
-        }
-        scope_destroy(arm_scope);
+        typecheck_match_arm_result(
+            arm,
+            typecheck_match_arm_body(arm, scope, return_type,
+                                     func_table, scrut_var),
+            &common_type, &first_arm);
     }
 
     for (size_t v = 0; v < et->variant_count; v++) {
@@ -7219,8 +7335,156 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
             break;
         }
     }
+
     free(covered);
     return common_type;
+}
+
+/* Type-check scalar literal match arms and require a catch-all for integers. */
+static Type typecheck_scalar_match_arms(Ast *node, Scope *scope,
+                                        Type return_type,
+                                        FunctionTable *func_table,
+                                        Type scrut_type) {
+    long *literal_values = NULL;
+    if (node->as.match_expr.arm_count > 0) {
+        literal_values = malloc(node->as.match_expr.arm_count * sizeof(long));
+        if (!literal_values) {
+            panic(ERR_I001_OUT_OF_MEMORY, "allocating scalar match values");
+        }
+    }
+
+    size_t literal_count = 0;
+    bool has_wildcard = false;
+    bool has_true = false;
+    bool has_false = false;
+    Type common_type = TYPE_VOID;
+    bool first_arm = true;
+
+    for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+        Ast *arm = node->as.match_expr.arms[i];
+
+        if (arm->as.match_arm.pattern_kind == MATCH_PATTERN_ENUM_VARIANT) {
+            if (arm->as.match_arm.variant_length == 1 &&
+                arm->as.match_arm.variant_name[0] == '_' &&
+                !arm->as.match_arm.has_binding) {
+                arm->as.match_arm.pattern_kind = MATCH_PATTERN_WILDCARD;
+            } else {
+                diagnostic(arm->loc.file, ERR_S006_TYPE_MISMATCH,
+                           arm->loc.line, arm->loc.column,
+                           "Match arms for %s must use literals or '_'",
+                           type_name(scrut_type));
+            }
+        }
+
+        if (arm->as.match_arm.pattern_kind == MATCH_PATTERN_WILDCARD) {
+            if (has_wildcard) {
+                diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
+                           arm->loc.line, arm->loc.column,
+                           "Duplicate match arm '_'");
+            }
+            has_wildcard = true;
+        } else if (arm->as.match_arm.pattern_kind == MATCH_PATTERN_LITERAL) {
+            Ast *pattern_expr = arm->as.match_arm.pattern_expr;
+            Type pattern_type = typecheck_expression(pattern_expr, scope,
+                                                     func_table);
+
+            if (scrut_type == TYPE_BOOL) {
+                if (pattern_type != TYPE_BOOL) {
+                    diagnostic(pattern_expr->loc.file, ERR_S006_TYPE_MISMATCH,
+                               pattern_expr->loc.line, pattern_expr->loc.column,
+                               "Match literal type %s is not compatible with %s",
+                               type_name(pattern_type), type_name(scrut_type));
+                } else {
+                    long value = get_comptime_int(pattern_expr, NULL);
+                    arm->as.match_arm.case_value = value;
+                    if (value != 0) {
+                        if (has_true) {
+                            diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
+                                       arm->loc.line, arm->loc.column,
+                                       "Duplicate match arm 'true'");
+                        }
+                        has_true = true;
+                    } else {
+                        if (has_false) {
+                            diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
+                                       arm->loc.line, arm->loc.column,
+                                       "Duplicate match arm 'false'");
+                        }
+                        has_false = true;
+                    }
+                }
+            } else {
+                if (!type_can_coerce(pattern_type, scrut_type)) {
+                    diagnostic(pattern_expr->loc.file, ERR_S006_TYPE_MISMATCH,
+                               pattern_expr->loc.line, pattern_expr->loc.column,
+                               "Match literal type %s is not compatible with %s",
+                               type_name(pattern_type), type_name(scrut_type));
+                } else {
+                    if (pattern_type == TYPE_COMPTIME_INT) {
+                        typecheck_comptime_range(pattern_expr, scrut_type, scope);
+                    }
+                    long value = get_comptime_int(pattern_expr, NULL);
+                    arm->as.match_arm.case_value = value;
+                    for (size_t j = 0; j < literal_count; j++) {
+                        if (literal_values[j] == value) {
+                            diagnostic(arm->loc.file, ERR_S075_DUPLICATE_MATCH_ARM,
+                                       arm->loc.line, arm->loc.column,
+                                       "Duplicate match arm '%ld'",
+                                       value);
+                            break;
+                        }
+                    }
+                    literal_values[literal_count++] = value;
+                }
+            }
+        }
+
+        typecheck_match_arm_result(
+            arm,
+            typecheck_match_arm_body(arm, scope, return_type,
+                                     func_table, NULL),
+            &common_type, &first_arm);
+    }
+
+    if (scrut_type == TYPE_BOOL) {
+        if (!has_wildcard && (!has_true || !has_false)) {
+            diagnostic(node->loc.file, ERR_S074_NON_EXHAUSTIVE_MATCH,
+                       node->loc.line, node->loc.column,
+                       "Non-exhaustive match: missing pattern '%s'",
+                       has_true ? "false" : "true");
+        }
+    } else if (!has_wildcard) {
+        diagnostic(node->loc.file, ERR_S074_NON_EXHAUSTIVE_MATCH,
+                   node->loc.line, node->loc.column,
+                   "Non-exhaustive match: missing wildcard arm '_'");
+    }
+
+    free(literal_values);
+    return common_type;
+}
+
+/* Dispatch match type-checking by scrutinee category. */
+static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
+                                 FunctionTable *func_table) {
+    Type scrut_type = typecheck_expression(
+        node->as.match_expr.scrutinee, scope, func_table);
+    EnumTypeEntry *et = enum_table_get(scrut_type);
+
+    if (et) {
+        return typecheck_enum_match_arms(node, scope, return_type,
+                                         func_table, scrut_type, et);
+    }
+
+    if (type_is_match_scalar(scrut_type)) {
+        return typecheck_scalar_match_arms(node, scope, return_type,
+                                           func_table, scrut_type);
+    }
+
+    diagnostic(node->loc.file, ERR_S073_MATCH_NOT_ENUM,
+               node->loc.line, node->loc.column,
+               "Match scrutinee must be an enum, bool, or integer type, got %s",
+               type_name(scrut_type));
+    return TYPE_VOID;
 }
 
 /* Check that a native declaration exists for a built-in call */
@@ -10690,14 +10954,12 @@ static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int inde
     return temp_idx;
 }
 
-/* Emit match switch. If assign_temp >= 0, assign arm value_expr to __expr_<assign_temp>.
- * If assign_temp < 0, emit arm body as bare statements. */
-static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
-                                       Scope **scope, int indent) {
+/* Emit enum match lowering; tagged enums switch on .tag, plain enums on value. */
+static void codegen_emit_match_enum_switch(FILE *out, Ast *node, int assign_temp,
+                                           Scope **scope, int indent,
+                                           EnumTypeEntry *et) {
     int mid = codegen_match_counter++;
     Type scrut_type = node->as.match_expr.scrutinee->expr_type;
-    EnumTypeEntry *et = enum_table_get(scrut_type);
-    if (!et) return;
 
     codegen_indent(out, indent);
     fprintf(out, "%s ni_match_%d_ = ",
@@ -10714,7 +10976,10 @@ static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
 
     for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
         Ast *arm = node->as.match_expr.arms[i];
-        long tag = arm->as.match_arm.variant_value;
+        if (arm->as.match_arm.pattern_kind != MATCH_PATTERN_ENUM_VARIANT) {
+            continue;
+        }
+        long tag = arm->as.match_arm.case_value;
 
         codegen_indent(out, indent + 1);
         fprintf(out, "case %ldL: {\n", tag);
@@ -10747,6 +11012,68 @@ static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
 
     codegen_indent(out, indent);
     fprintf(out, "}\n");
+}
+
+/* Emit scalar match lowering as a direct C switch with literal cases. */
+static void codegen_emit_match_scalar_switch(FILE *out, Ast *node,
+                                             int assign_temp, Scope **scope,
+                                             int indent) {
+    int mid = codegen_match_counter++;
+    Type scrut_type = node->as.match_expr.scrutinee->expr_type;
+
+    codegen_indent(out, indent);
+    fprintf(out, "%s ni_match_%d_ = ",
+            codegen_type_to_c(scrut_type), mid);
+    codegen_emit_expression(out, node->as.match_expr.scrutinee);
+    fprintf(out, ";\n");
+
+    codegen_indent(out, indent);
+    fprintf(out, "switch (ni_match_%d_) {\n", mid);
+
+    for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+        Ast *arm = node->as.match_expr.arms[i];
+
+        codegen_indent(out, indent + 1);
+        if (arm->as.match_arm.pattern_kind == MATCH_PATTERN_WILDCARD) {
+            fprintf(out, "default: {\n");
+        } else if (arm->as.match_arm.pattern_kind == MATCH_PATTERN_LITERAL) {
+            fprintf(out, "case %ldL: {\n", arm->as.match_arm.case_value);
+        } else {
+            continue;
+        }
+
+        if (assign_temp >= 0) {
+            codegen_emit_block_body(out, arm->as.match_arm.body, assign_temp,
+                                     scope, indent + 2);
+        } else {
+            codegen_emit_block_statements(out, arm->as.match_arm.body,
+                                           scope, indent + 2, false);
+        }
+
+        codegen_indent(out, indent + 2);
+        fprintf(out, "break;\n");
+        codegen_indent(out, indent + 1);
+        fprintf(out, "}\n");
+    }
+
+    codegen_indent(out, indent);
+    fprintf(out, "}\n");
+}
+
+/* Emit match switch. If assign_temp >= 0, assign arm value_expr to __expr_<assign_temp>.
+ * If assign_temp < 0, emit arm body as bare statements. */
+static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
+                                      Scope **scope, int indent) {
+    Type scrut_type = node->as.match_expr.scrutinee->expr_type;
+    EnumTypeEntry *et = enum_table_get(scrut_type);
+
+    if (et) {
+        codegen_emit_match_enum_switch(out, node, assign_temp, scope,
+                                       indent, et);
+        return;
+    }
+
+    codegen_emit_match_scalar_switch(out, node, assign_temp, scope, indent);
 }
 
 /* Emit a match expression to a temp variable */

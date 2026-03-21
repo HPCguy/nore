@@ -74,7 +74,7 @@ error[D002]: Unknown flag: --invalid
 - **P049**: Expected '(' after 'match'
 - **P050**: Expected ')' after match scrutinee
 - **P051**: Expected '{' for match body
-- **P052**: Expected variant name in match arm
+- **P052**: Expected match pattern in arm
 - **P053**: Expected '=' after match pattern
 - **P054**: Expected '}' to close match
 - **P055**: Expected ')' after match binding
@@ -157,9 +157,9 @@ error[D002]: Unknown flag: --invalid
 - **S070**: Duplicate type name (enum name already used)
 - **S071**: Slice range bound must be integer type
 - **S072**: Cannot sub-slice non-array/slice type
-- **S073**: Match scrutinee is not an enum type
-- **S074**: Non-exhaustive match (missing variants)
-- **S075**: Duplicate variant in match arms
+- **S073**: Match scrutinee is not an enum, `bool`, or supported integer type
+- **S074**: Non-exhaustive match (missing variant, `bool` case, or wildcard arm)
+- **S075**: Duplicate match arm
 - **S076**: Match arm types incompatible (expression form)
 - **S077**: Payload type mismatch in tagged union variant construction
 - **S078**: Unexpected payload/binding for non-data variant

@@ -1,0 +1,9 @@
+// Error: bool match arms must use bool literals
+
+func main(): void = {
+    val flag: bool = true
+    match (flag) {
+        1 = { }
+        _ = { }
+    }
+}

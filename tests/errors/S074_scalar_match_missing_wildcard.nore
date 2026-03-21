@@ -1,0 +1,9 @@
+// Error: integer match requires a wildcard arm
+
+func main(): void = {
+    val x: i64 = 42
+    match (x) {
+        41 = { }
+        42 = { }
+    }
+}

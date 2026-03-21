@@ -1,0 +1,25 @@
+// Test enum variants literally named '_'
+
+enum Flag { _, Ready }
+enum Wrap { _(i64), Done }
+
+func flag_code(flag: Flag): i64 = {
+    match (flag) {
+        _ = { 1 }
+        Ready = { 2 }
+    }
+}
+
+func unwrap(wrap: Wrap): i64 = {
+    match (wrap) {
+        _(n) = { n }
+        Done = { 0 }
+    }
+}
+
+func main(): void = {
+    assert flag_code(Flag._) == 1
+    assert flag_code(Flag.Ready) == 2
+    assert unwrap(Wrap._(7)) == 7
+    assert unwrap(Wrap.Done) == 0
+}

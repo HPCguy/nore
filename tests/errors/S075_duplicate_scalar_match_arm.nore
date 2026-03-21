@@ -1,0 +1,10 @@
+// Error: duplicate scalar match arm after literal coercion
+
+func main(): void = {
+    val x: u8 = 65
+    match (x) {
+        65 = { }
+        'A' = { }
+        _ = { }
+    }
+}
