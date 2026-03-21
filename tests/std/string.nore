@@ -63,6 +63,17 @@ func main(): void = {
     assert string.str_find(ref "aaa", ref "aa") == 0
     assert string.str_find(ref "abcabc", ref "cab") == 2
 
+    // str_find_byte
+    assert string.str_find_byte(ref "hello/world", '/') == 5
+    assert string.str_find_byte(ref "abc", 'x') == -1
+    assert string.str_find_byte(ref "", 'x') == -1
+
+    // str_rfind_byte
+    assert string.str_rfind_byte(ref "a/b/c", '/') == 3
+    assert string.str_rfind_byte(ref ".hidden", '.') == 0
+    assert string.str_rfind_byte(ref "abc", 'x') == -1
+    assert string.str_rfind_byte(ref "", 'x') == -1
+
     // str_contains
     assert string.str_contains(ref "hello world", ref "world")
     assert !string.str_contains(ref "hello", ref "xyz")
@@ -81,10 +92,24 @@ func main(): void = {
     val right_empty: str = string.str_concat(mut ref mem, ref "abc", ref "")
     assert string.str_eq(ref right_empty, ref "abc")
 
+    // str_copy
+    val copied: str = string.str_copy(mut ref mem, ref "copied")
+    assert string.str_eq(ref copied, ref "copied")
+
+    val copied_empty: str = string.str_copy(mut ref mem, ref "")
+    assert copied_empty.len == 0
+
     // chained concat
     val abc: str = string.str_concat(mut ref mem, ref "a", ref "b")
     val abcd: str = string.str_concat(mut ref mem, ref abc, ref "cd")
     assert string.str_eq(ref abcd, ref "abcd")
+
+    // str_concat3
+    val joined: str = string.str_concat3(mut ref mem, ref "a", ref "/", ref "b")
+    assert string.str_eq(ref joined, ref "a/b")
+
+    val joined_empty: str = string.str_concat3(mut ref mem, ref "", ref "", ref "")
+    assert joined_empty.len == 0
 
     // i64_to_str
     val s0: str = string.i64_to_str(mut ref mem, 0)

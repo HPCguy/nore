@@ -1,5 +1,7 @@
 // Bootstrap compiler entry point.
-// Milestone 1 only freezes the committed source tree and module boundaries.
+// Responsibility: wire compiler stages together and own only top-level pipeline flow.
+// Owns: main() and later compile-stage sequencing.
+// Does not own: frontend, sema, codegen, or reusable support helpers.
 
 // Keep the entry point valid while later milestones fill in the pipeline.
 func main(): void = {

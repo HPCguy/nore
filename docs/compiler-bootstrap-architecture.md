@@ -61,6 +61,135 @@ Module responsibilities are intentionally narrow:
 - `codegen/`: C lowering and emission
 - `driver/`: CLI glue only; external Clang invocation stays out of scope until later milestones
 
+### File-Level Responsibilities
+
+The directory split above is not enough on its own. Each committed source file
+should have a narrow ownership boundary so later milestones do not smear logic
+across unrelated helpers.
+
+Current committed file scope:
+
+- `compiler/main.nore`: bootstrap compiler entry point and top-level stage
+  orchestration only. This file should wire modules together, not absorb lexer,
+  parser, sema, or codegen logic.
+
+- `compiler/support/span.nore`: tiny shared value types and half-open range
+  helpers. It owns `Span`, `SourceSpan`, `Range`, and their trivial constructor /
+  end helpers. It should not grow parsing, path, or source-loading policy.
+
+- `compiler/support/byte_buf.nore`: arena-backed growable `[u8]` storage for
+  compiler-owned pooled bytes. It owns capacity growth, append, and clear
+  semantics for byte data. It should not know about paths, diagnostics, source
+  files, or token structure.
+
+- `compiler/support/i64_buf.nore`: arena-backed growable `i64` side-array
+  storage. It exists for flat tables and line-start arrays. It should remain a
+  boring typed buffer, not a generic collection framework.
+
+- `compiler/support/path.nore`: simple path manipulation needed by bootstrap
+  imports plus the bootstrap compiler's import-resolution policy. Generic path
+  operations such as `dirname`, `join`, and extension checks may stay here until
+  a real non-compiler consumer justifies extraction. Compiler-specific rules
+  such as bootstrap `std/` resolution belong here, not in the stdlib.
+
+- `compiler/support/line_map.nore`: byte-offset to line/column translation over
+  precomputed line-start offsets. It owns lookup math and line-start recording,
+  but not file I/O, source storage, or diagnostic text formatting.
+
+- `compiler/support/source.nore`: the `Sources` table plus pooled ownership of
+  paths, display paths, source bytes, and per-source line-start ranges. It owns
+  file-loading ingestion into stable compiler storage. It should not take on
+  import-graph policy, parsing, or diagnostic rendering.
+
+- `compiler/support/diag.nore`: the `Diagnostics` table and late formatting of
+  structured diagnostics from stable compiler-owned data. It owns severity/code/
+  message storage and `file:line:col` rendering. It should not decide when to
+  stop compilation, which phase emits what, or how diagnostics are transported
+  to a CLI.
+
+Planned placeholder file scope:
+
+- `compiler/frontend/token.nore`: token kinds, keyword classification, and the
+  flat token-table layout only.
+
+- `compiler/frontend/lexer.nore`: turn one source buffer into token rows and
+  lexer diagnostics only.
+
+- `compiler/frontend/node.nore`: node kinds and the shared node-table layout
+  only.
+
+- `compiler/frontend/parser.nore`: parse token rows into node rows only.
+
+- `compiler/sema/symbols.nore`: symbol rows and symbol metadata only.
+
+- `compiler/sema/scopes.nore`: lexical scope rows and scope nesting only.
+
+- `compiler/sema/types.nore`: internal type rows and type metadata only.
+
+- `compiler/sema/check.nore`: name resolution, type checking, and bootstrap
+  arena-safety enforcement only.
+
+- `compiler/codegen/c_types.nore`: lower checked Nore types into C-facing type
+  descriptions only.
+
+- `compiler/codegen/c_emit_expr.nore`: C emission for expressions only.
+
+- `compiler/codegen/c_emit_stmt.nore`: C emission for statements and control
+  flow only.
+
+- `compiler/codegen/c_emit_decl.nore`: C emission for declarations, globals,
+  and function prototypes only.
+
+- `compiler/codegen/c_runtime.nore`: runtime helper snippets required by
+  generated C only.
+
+- `compiler/codegen/c_main.nore`: codegen orchestration across checked modules
+  only.
+
+- `compiler/driver/cli.nore`: CLI parsing and stage orchestration at the driver
+  boundary only. It should not absorb frontend or codegen internals.
+
+Rule for future files:
+
+- add a short module header at the top of each new committed compiler source
+  file
+- the header should state responsibility, owned scope, and explicit non-scope
+- document both what the file owns and what it intentionally does not own
+- prefer moving shared primitives downward into `support/` or `std/` instead of
+  letting orchestration files accumulate low-level helpers
+
+### Support Workflow
+
+The support modules are intended to be used in a fixed direction, from generic
+storage upward toward compiler-facing reporting:
+
+1. `compiler/main.nore` owns the top-level pipeline and long-lived arenas.
+2. `compiler/support/path.nore` resolves the root file path and import paths
+   using the bootstrap compiler's current path policy.
+3. `compiler/support/source.nore` loads file contents, assigns `source_id`
+   values, and stores source bytes plus display-path metadata in stable pooled
+   storage.
+4. `compiler/support/line_map.nore` records line starts for each loaded source
+   so later phases can map byte offsets to 1-based line and column positions.
+5. frontend, sema, and codegen phases read stable source text from
+   `compiler/support/source.nore` and refer to text by ids and offsets rather
+   than ad hoc copied strings.
+6. when a phase needs to report a problem, it records a structured row in
+   `compiler/support/diag.nore` using source ids and byte offsets.
+7. formatting happens late: `compiler/support/diag.nore` combines diagnostic
+   rows with `Sources` and line maps to render `file:line:col` output.
+
+The dependency direction should stay simple:
+
+- `span.nore`, `byte_buf.nore`, and `i64_buf.nore` are the low-level storage and
+  value helpers
+- `path.nore` adds bootstrap path policy
+- `source.nore` builds stable source ownership on top of buffers and line maps
+- `diag.nore` sits above source ownership and line mapping for late formatting
+
+Higher layers should depend on this stack. The support stack should not grow
+upward dependencies on frontend, sema, codegen, or CLI orchestration.
+
 ## Bootstrap Coding Subset
 
 Compiler sources in `compiler/` should stay inside this subset until self-compile is working.

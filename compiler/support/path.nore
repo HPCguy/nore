@@ -1,3 +1,73 @@
-// Bootstrap compiler support module placeholder.
-// Responsibility: bootstrap path join, dirname, and extension helpers.
-// Implement in Milestone 2 and Milestone 6.
+// Bootstrap path helpers for compiler imports and file display paths.
+// Responsibility: provide the minimal path operations and import-resolution policy needed now.
+// Owns: dirname/join/extension helpers plus bootstrap std-import resolution rules.
+// Does not own: canonicalization, filesystem queries, or a general stdlib path API.
+
+import string "std/string.nore"
+
+// Detect bootstrap std imports with the same simple prefix rule as stage-0.
+pub func path_is_std_import(ref import_path: [u8]): bool = {
+    string.str_starts_with(ref import_path, ref "std/")
+}
+
+// Return the parent directory using the common "." and "/" fallbacks.
+pub func path_dirname(mut ref mem: Arena, ref path_text: [u8]): str = {
+    val slash: i64 = string.str_rfind_byte(ref path_text, '/')
+    if (slash < 0) {
+        return "."
+    }
+    if (slash == 0) {
+        return "/"
+    }
+
+    string.str_copy(mut ref mem, ref path_text[0..slash])
+}
+
+// Join two path fragments without introducing a duplicate separator.
+pub func path_join(mut ref mem: Arena, ref left: [u8], ref right: [u8]): str = {
+    if (left.len == 0) {
+        return string.str_copy(mut ref mem, ref right)
+    }
+    if (right.len == 0) {
+        return string.str_copy(mut ref mem, ref left)
+    }
+    if (right[0] == '/') {
+        return string.str_copy(mut ref mem, ref right)
+    }
+
+    if (left[left.len - 1] == '/') {
+        return string.str_concat(mut ref mem, ref left, ref right)
+    }
+    string.str_concat3(mut ref mem, ref left, ref "/", ref right)
+}
+
+// Return the extension slice so callers can compare without extra allocation.
+pub func path_extension(ref path_text: [u8]): [u8] = {
+    val slash: i64 = string.str_rfind_byte(ref path_text, '/')
+    val dot: i64 = string.str_rfind_byte(ref path_text, '.')
+    if (dot <= slash || dot == slash + 1) {
+        return path_text[0..0]
+    }
+    path_text[dot..path_text.len]
+}
+
+// Keep extension checks consistent with the shared suffix extraction rule.
+pub func path_has_extension(ref path_text: [u8], ref ext: [u8]): bool = {
+    val found: [u8] = path_extension(ref path_text)
+    string.str_eq(ref found, ref ext)
+}
+
+// Mirror stage-0 import joining while intentionally deferring canonicalization.
+pub func path_resolve_import(
+    mut ref mem: Arena,
+    ref compiler_root: [u8],
+    ref current_file: [u8],
+    ref import_path: [u8]
+): str = {
+    if (path_is_std_import(ref import_path)) {
+        return path_join(mut ref mem, ref compiler_root, ref import_path)
+    }
+
+    val base_dir: str = path_dirname(mut ref mem, ref current_file)
+    path_join(mut ref mem, ref base_dir, ref import_path)
+}

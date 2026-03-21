@@ -622,8 +622,8 @@ val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 **`std/string.nore`** (import as `string`):
 - `string.is_digit(c)`, `string.is_alpha(c)`, `string.is_space(c)` - char classification
 - `string.str_eq(ref a, ref b)`, `string.str_starts_with(...)`, `string.str_ends_with(...)` - comparison
-- `string.str_find(ref s, ref needle)`, `string.str_contains(...)` - searching
-- `string.str_concat(mut ref mem, ref a, ref b)` - concatenation
+- `string.str_find(ref s, ref needle)`, `string.str_find_byte(ref s, needle)`, `string.str_rfind_byte(ref s, needle)`, `string.str_contains(...)` - searching
+- `string.str_copy(mut ref mem, ref s)`, `string.str_concat(mut ref mem, ref a, ref b)`, `string.str_concat3(mut ref mem, ref a, ref b, ref c)` - copy/concatenation
 - `string.fmt_i64(mut ref buf, n)`, `string.i64_to_str(mut ref mem, n)`, `string.str_to_i64(ref s)`, `string.str_to_f64(ref s)`
 - `string.ParseResult` - `Ok(i64)` or `None`
 - `string.ParseFloatResult` - `Ok(f64)` or `None`

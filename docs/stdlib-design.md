@@ -43,6 +43,26 @@ Things that don't belong, at least not yet:
 - Concurrency primitives. The language needs a concurrency story first.
 - Generic collections (hash map, dynamic array). Need generics or code generation.
 
+### Future Extraction Candidates
+
+Some helper code currently lives under `compiler/support/` even though parts of it
+may eventually belong in the stdlib. The rule is: do not move a helper into
+`std/` just because it looks generic in isolation. Move it only after at least
+one non-compiler consumer validates the shape of the API.
+
+Current partial candidates:
+
+- `compiler/support/path.nore`: generic path helpers such as `dirname`, `join`,
+  and extension checks could become `std/path.nore` later. Compiler import policy
+  like bootstrap `std/` resolution should stay compiler-local.
+- `compiler/support/span.nore`: generic `Span` / `Range` value types could become
+  a small shared std module later. Compiler-specific `SourceSpan` should stay local.
+- `compiler/support/byte_buf.nore`: a generic byte buffer may become useful in
+  the stdlib later, but only after the API is shaped by another real consumer.
+
+This keeps the stdlib honest: it should reflect validated shared needs, not act
+as a dumping ground for compiler internals that merely look reusable.
+
 ---
 
 ## Arena-Aware Design

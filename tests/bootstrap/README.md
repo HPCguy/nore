@@ -6,7 +6,8 @@ Current status:
 
 - the stage-0 C compiler remains the default compiler
 - bootstrap source layout is committed under `compiler/`
-- bootstrap-specific tests will land here as each milestone becomes executable
+- support-library smoke tests now cover spans, typed buffers, path helpers, line maps, source loading, and diagnostic formatting
+- bootstrap-specific tests continue to land here as each later milestone becomes executable
 
 Planned subdirectories:
 

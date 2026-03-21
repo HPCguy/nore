@@ -1,4 +1,7 @@
 // Shared value types for spans and compact index ranges.
+// Responsibility: define tiny copied-freely helper values shared across compiler tables.
+// Owns: Span, SourceSpan, Range, and their half-open range helpers.
+// Does not own: source loading, path handling, or any table storage policy.
 
 pub value Span {
     start: i64,

@@ -1,0 +1,4 @@
+func sample(): void = {
+    val x: i64 = 1
+    assert x == 1
+}

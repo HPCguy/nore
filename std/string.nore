@@ -63,6 +63,31 @@ pub func str_ends_with(ref s: str, ref suffix: str): bool = {
 
 // Searching
 
+pub func str_find_byte(ref s: str, needle: u8): i64 = {
+    mut i: i64 = 0
+    while (i < s.len) {
+        if (s[i] == needle) {
+            return i
+        }
+        i += 1
+    }
+    return -1
+}
+
+pub func str_rfind_byte(ref s: str, needle: u8): i64 = {
+    if (s.len == 0) {
+        return -1
+    }
+    mut i: i64 = s.len - 1
+    while (i >= 0) {
+        if (s[i] == needle) {
+            return i
+        }
+        i -= 1
+    }
+    return -1
+}
+
 pub func str_find(ref s: str, ref needle: str): i64 = {
     if (needle.len == 0) {
         return 0
@@ -97,11 +122,35 @@ pub func str_contains(ref s: str, ref needle: str): bool = {
 
 // Concatenation
 
+pub func str_copy(mut ref mem: Arena, ref s: str): str = {
+    if (s.len == 0) {
+        mut raw: [u8] = arena_alloc(mut ref mem, 1)
+        return raw[0..0]
+    }
+
+    mut result: str = arena_alloc(mut ref mem, s.len)
+    mem_copy(mut ref result, ref s)
+    return result
+}
+
 pub func str_concat(mut ref mem: Arena, ref a: str, ref b: str): str = {
     val total: i64 = a.len + b.len
     mut result: str = arena_alloc(mut ref mem, total)
     mem_copy(mut ref result[0..a.len], ref a)
     mem_copy(mut ref result[a.len..total], ref b)
+    return result
+}
+
+pub func str_concat3(mut ref mem: Arena, ref a: str, ref b: str, ref c: str): str = {
+    val total: i64 = a.len + b.len + c.len
+    if (total == 0) {
+        return str_copy(mut ref mem, ref "")
+    }
+
+    mut result: str = arena_alloc(mut ref mem, total)
+    mem_copy(mut ref result[0..a.len], ref a)
+    mem_copy(mut ref result[a.len..a.len + b.len], ref b)
+    mem_copy(mut ref result[a.len + b.len..total], ref c)
     return result
 }
 

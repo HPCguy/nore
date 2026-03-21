@@ -1,4 +1,7 @@
 // Arena-backed growable i64 buffer for compiler tables and side arrays.
+// Responsibility: own simple growable i64 side storage for flat compiler tables.
+// Owns: I64Buf capacity management, push, and clear semantics for integer rows.
+// Does not own: generic collection policy, source semantics, or diagnostics.
 
 pub struct I64Buf {
     data: [i64],

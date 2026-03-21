@@ -1,3 +1,74 @@
-// Bootstrap compiler support module placeholder.
-// Responsibility: byte-offset to line/column mapping.
-// Implement in Milestone 3.
+// Byte-offset to line/column mapping for compiler diagnostics.
+// Responsibility: translate byte offsets into 1-based line and column positions.
+// Owns: line-start recording and lookup over precomputed offset arrays.
+// Does not own: file loading, pooled source ownership, or diagnostic message formatting.
+
+import ibuf "i64_buf.nore"
+import span "span.nore"
+
+pub value LineCol {
+    line: i64,
+    col: i64
+}
+
+// Normalize offsets so callers can map EOF and out-of-range positions safely.
+func clamp_offset(offset: i64, source_len: i64): i64 = {
+    if (offset < 0) {
+        return 0
+    }
+    if (offset > source_len) {
+        return source_len
+    }
+    offset
+}
+
+// Append one source's line starts into the shared offsets buffer.
+pub func line_map_append(
+    mut ref mem: Arena,
+    mut ref line_starts: ibuf.I64Buf,
+    ref text: [u8]
+): span.Range = {
+    val start: i64 = line_starts.count
+    ibuf.i64_buf_push(mut ref mem, mut ref line_starts, 0)
+
+    mut i: i64 = 0
+    while (i < text.len) {
+        if (text[i] == '\n') {
+            ibuf.i64_buf_push(mut ref mem, mut ref line_starts, i + 1)
+        }
+        i += 1
+    }
+
+    span.range(start, line_starts.count - start)
+}
+
+// Convert a byte offset into 1-based line and column numbers.
+pub func line_map_lookup(
+    ref line_starts: ibuf.I64Buf,
+    ref lines: span.Range,
+    source_len: i64,
+    offset: i64
+): LineCol = {
+    if (lines.count <= 0) {
+        return LineCol { line: 1, col: 1 }
+    }
+
+    val clamped: i64 = clamp_offset(offset, source_len)
+    mut line_idx: i64 = 0
+    mut i: i64 = 1
+    while (i < lines.count) {
+        val next_start: i64 = line_starts.data[lines.start + i]
+        if (next_start > clamped) {
+            i = lines.count
+        } else {
+            line_idx = i
+            i += 1
+        }
+    }
+
+    val line_start: i64 = line_starts.data[lines.start + line_idx]
+    LineCol {
+        line: line_idx + 1,
+        col: clamped - line_start + 1
+    }
+}

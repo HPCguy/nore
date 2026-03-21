@@ -236,6 +236,8 @@ This is where we commit to a Nore-shaped compiler, not a C-shaped compiler weari
 
 ## Milestone 2: Build the Compiler Support Library
 
+**Status:** Complete
+
 ### Gaps to close before starting
 
 - Milestone 1 complete
@@ -277,6 +279,8 @@ The current C compiler relies heavily on `malloc`/`realloc`. The Nore compiler n
 ---
 
 ## Milestone 3: Source Manager and Diagnostics
+
+**Status:** Complete
 
 ### Gaps to close before starting
 

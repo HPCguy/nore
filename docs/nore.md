@@ -931,8 +931,8 @@ String processing. Import as `import string "std/string.nore"`.
 
 - Character classification: `string.is_digit`, `string.is_alpha`, `string.is_space`
 - Comparison: `string.str_eq`, `string.str_starts_with`, `string.str_ends_with`
-- Searching: `string.str_find`, `string.str_contains`
-- Concatenation: `string.str_concat(mut ref mem, ref a, ref b)`
+- Searching: `string.str_find`, `string.str_find_byte`, `string.str_rfind_byte`, `string.str_contains`
+- Concatenation/copy: `string.str_copy(mut ref mem, ref s)`, `string.str_concat(mut ref mem, ref a, ref b)`, `string.str_concat3(mut ref mem, ref a, ref b, ref c)`
 - Formatting: `string.fmt_i64`, `string.i64_to_str`, `string.str_to_i64`, `string.str_to_f64`
 - `string.ParseResult` enum: `Ok(i64)` or `None`
 - `string.ParseFloatResult` enum: `Ok(f64)` or `None`

@@ -1,0 +1,29 @@
+import ibuf "../../../compiler/support/i64_buf.nore"
+import lmap "../../../compiler/support/line_map.nore"
+import span "../../../compiler/support/span.nore"
+
+// Verify line-start recording and line/column lookup on a small sample.
+func main(): void = {
+    mut mem: Arena = arena(4096)
+    mut starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 4)
+
+    val lines: span.Range = lmap.line_map_append(mut ref mem, mut ref starts, ref "alpha\nbeta\n")
+    assert lines.start == 0
+    assert lines.count == 3
+    assert starts.count == 3
+    assert starts.data[0] == 0
+    assert starts.data[1] == 6
+    assert starts.data[2] == 11
+
+    val p0: lmap.LineCol = lmap.line_map_lookup(ref starts, ref lines, 11, 0)
+    assert p0.line == 1
+    assert p0.col == 1
+
+    val p1: lmap.LineCol = lmap.line_map_lookup(ref starts, ref lines, 11, 7)
+    assert p1.line == 2
+    assert p1.col == 2
+
+    val p2: lmap.LineCol = lmap.line_map_lookup(ref starts, ref lines, 11, 11)
+    assert p2.line == 3
+    assert p2.col == 1
+}

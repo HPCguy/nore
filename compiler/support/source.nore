@@ -1,3 +1,118 @@
-// Bootstrap compiler support module placeholder.
-// Responsibility: source ownership and module text storage.
-// Implement in Milestone 3.
+// Source tables and pooled text ownership for the bootstrap compiler.
+// Responsibility: own loaded source metadata and stable pooled text/path storage.
+// Owns: Sources rows, file ingestion into compiler-owned buffers, and per-source line ranges.
+// Does not own: import-graph policy, parsing, semantic analysis, or rendering diagnostics.
+
+import file "std/file.nore"
+
+import bbuf "byte_buf.nore"
+import ibuf "i64_buf.nore"
+import lmap "line_map.nore"
+import span "span.nore"
+
+pub table Sources {
+    path: span.Span,
+    display_path: span.Span,
+    text_start: i64,
+    text_len: i64,
+    line_starts: span.Range,
+    importer_source: i64
+}
+
+pub enum SourceLoadResult { Ok(i64), Err(i32) }
+
+// Re-slice pooled bytes by span so source rows stay compact.
+func pool_slice(ref pool: bbuf.ByteBuf, ref part: span.Span): [u8] = {
+    pool.data[part.start..part.start + part.len]
+}
+
+// Append one loaded source and all of its metadata into the shared tables.
+pub func sources_add(
+    mut ref mem: Arena,
+    mut ref sources: Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    ref path_text: [u8],
+    ref display_path: [u8],
+    importer_source: i64,
+    ref text: [u8]
+): i64 = {
+    val path_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref path_pool, ref path_text)
+    val display_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref path_pool, ref display_path)
+    val text_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref text)
+    val lines: span.Range = lmap.line_map_append(mut ref mem, mut ref line_starts, ref text)
+
+    val source_id: i64 = table_len(ref sources)
+    table_insert(mut ref sources, Sources.Row {
+        path: path_span,
+        display_path: display_span,
+        text_start: text_span.start,
+        text_len: text_span.len,
+        line_starts: lines,
+        importer_source: importer_source
+    })
+    source_id
+}
+
+// Load a file through stage-0 stdlib helpers and record owned compiler copies.
+pub func sources_load_file(
+    mut ref mem: Arena,
+    mut ref sources: Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    ref path_text: [u8],
+    ref display_path: [u8],
+    importer_source: i64
+): SourceLoadResult = {
+    val result: file.ReadResult = file.read_file(mut ref mem, ref path_text)
+    match (result) {
+        Ok(text) = {
+            SourceLoadResult.Ok(sources_add(
+                mut ref mem,
+                mut ref sources,
+                mut ref path_pool,
+                mut ref text_pool,
+                mut ref line_starts,
+                ref path_text,
+                ref display_path,
+                importer_source,
+                ref text
+            ))
+        }
+        Err(code) = {
+            SourceLoadResult.Err(code)
+        }
+    }
+}
+
+// Recover the stored canonical path bytes for one source row.
+pub func source_path(ref path_pool: bbuf.ByteBuf, ref sources: Sources, source_id: i64): [u8] = {
+    val part: span.Span = sources.path[source_id]
+    pool_slice(ref path_pool, ref part)
+}
+
+// Recover the display path bytes used in diagnostics and dumps.
+pub func source_display_path(ref path_pool: bbuf.ByteBuf, ref sources: Sources, source_id: i64): [u8] = {
+    val part: span.Span = sources.display_path[source_id]
+    pool_slice(ref path_pool, ref part)
+}
+
+// Recover the full source text slice from the shared source-text pool.
+pub func source_text(ref text_pool: bbuf.ByteBuf, ref sources: Sources, source_id: i64): [u8] = {
+    val start: i64 = sources.text_start[source_id]
+    val len: i64 = sources.text_len[source_id]
+    text_pool.data[start..start + len]
+}
+
+// Translate a source-relative offset using the line starts recorded for that file.
+pub func source_line_col(
+    ref sources: Sources,
+    ref line_starts: ibuf.I64Buf,
+    source_id: i64,
+    offset: i64
+): lmap.LineCol = {
+    val lines: span.Range = sources.line_starts[source_id]
+    lmap.line_map_lookup(ref line_starts, ref lines, sources.text_len[source_id], offset)
+}
