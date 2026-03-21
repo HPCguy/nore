@@ -1,0 +1,3 @@
+// Bootstrap compiler frontend module placeholder.
+// Responsibility: parse a token stream into node rows.
+// Implement in Milestone 5.

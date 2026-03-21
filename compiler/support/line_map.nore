@@ -1,0 +1,3 @@
+// Bootstrap compiler support module placeholder.
+// Responsibility: byte-offset to line/column mapping.
+// Implement in Milestone 3.

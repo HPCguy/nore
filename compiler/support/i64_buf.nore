@@ -1,0 +1,78 @@
+// Arena-backed growable i64 buffer for compiler tables and side arrays.
+
+pub struct I64Buf {
+    data: [i64],
+    count: i64,
+    cap: i64
+}
+
+// A zero-length slice still needs stable backing storage in the current subset.
+func empty_slice(mut ref mem: Arena): [i64] = {
+    mut raw: [i64] = arena_alloc(mut ref mem, 1)
+    raw[0..0]
+}
+
+// Normalize caller-provided capacities before allocation logic branches.
+func initial_capacity(requested: i64): i64 = {
+    if (requested > 0) {
+        return requested
+    }
+    return 0
+}
+
+// Keep buffer construction explicit so later modules can own capacity decisions.
+pub func i64_buf_new(mut ref mem: Arena, requested_cap: i64): I64Buf = {
+    val cap: i64 = initial_capacity(requested_cap)
+    if (cap == 0) {
+        return I64Buf {
+            data: empty_slice(mut ref mem),
+            count: 0,
+            cap: 0
+        }
+    }
+
+    mut data: [i64] = arena_alloc(mut ref mem, cap)
+    I64Buf {
+        data: data,
+        count: 0,
+        cap: cap
+    }
+}
+
+// Grow geometrically because compiler tables append often and never shrink in place.
+pub func i64_buf_reserve(mut ref mem: Arena, mut ref buf: I64Buf, needed_cap: i64): void = {
+    if (needed_cap <= buf.cap) {
+        return
+    }
+
+    mut new_cap: i64 = buf.cap
+    if (new_cap <= 0) {
+        new_cap = 8
+    }
+    while (new_cap < needed_cap) {
+        new_cap = new_cap * 2
+    }
+
+    mut new_data: [i64] = arena_alloc(mut ref mem, new_cap)
+    // mem_copy only accepts [u8] today, so typed integer buffers still copy element-wise.
+    mut i: i64 = 0
+    while (i < buf.count) {
+        new_data[i] = buf.data[i]
+        i += 1
+    }
+
+    buf.data = new_data
+    buf.cap = new_cap
+}
+
+// Funnel appends through reserve so callers never hand-roll growth logic.
+pub func i64_buf_push(mut ref mem: Arena, mut ref buf: I64Buf, item: i64): void = {
+    i64_buf_reserve(mut ref mem, mut ref buf, buf.count + 1)
+    buf.data[buf.count] = item
+    buf.count = buf.count + 1
+}
+
+// Clearing preserves capacity because bootstrap tables are expected to be reused.
+pub func i64_buf_clear(mut ref buf: I64Buf): void = {
+    buf.count = 0
+}

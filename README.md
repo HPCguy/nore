@@ -7,7 +7,7 @@ Nore is a systems programming language that makes data-oriented design the path 
 
 Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
 
-The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
+The stage-0 compiler is currently a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation. The self-hosting compiler source tree now lives under [`compiler/`](compiler/) and is being grown incrementally from the bootstrap plan.
 
 ## A Quick Look
 
@@ -108,14 +108,19 @@ The compiler follows a multi-stage pipeline:
 
 ## Project Status
 
-**Current Phase**: Early development
+**Current Phase**: Early development with bootstrap self-hosting scaffolding in place
 
-The compiler is being developed as a single-file C program (`nore.c`) containing:
+The shipping compiler is still the single-file C program (`nore.c`) containing:
 - Lexer implementation
 - Parser implementation
 - AST data structures
 - C code generator
 - Clang integration layer
+
+Bootstrap status:
+- the committed Nore-written compiler source tree lives in [`compiler/`](compiler/)
+- Milestone 1 is frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md)
+- the detailed milestone plan lives in [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md)
 
 ## Build Requirements
 
@@ -201,6 +206,7 @@ make test-std      # Run stdlib tests only
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
+- Bootstrap compiler tests grow separately under `tests/bootstrap/` and will get a dedicated runner later in the bootstrap plan
 - Test runners: `tests/run_error_tests.sh`, `tests/run_success_tests.sh`, `tests/run_std_tests.sh`
 
 ## Development Roadmap
@@ -212,6 +218,8 @@ make test-std      # Run stdlib tests only
 5. **Phase 5**: Language feature expansion
 6. **Phase 6**: Standard library development
 7. **Phase 7**: Self-hosting (writing the Nore compiler in Nore)
+
+The self-hosting work is currently following [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md), with the bootstrap architecture frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md).
 
 ## Technical Decisions
 

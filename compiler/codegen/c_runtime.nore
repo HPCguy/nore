@@ -1,0 +1,3 @@
+// Bootstrap compiler codegen module placeholder.
+// Responsibility: runtime helpers required by generated C.
+// Implement in Milestone 8.

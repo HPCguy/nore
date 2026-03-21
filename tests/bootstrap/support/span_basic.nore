@@ -1,0 +1,19 @@
+import span "../../../compiler/support/span.nore"
+
+// Smoke-test the shared span helpers before other compiler tables depend on them.
+func main(): void = {
+    val s: span.Span = span.span(3, 7)
+    assert s.start == 3
+    assert s.len == 7
+    assert span.span_end(ref s) == 10
+
+    val src: span.SourceSpan = span.source_span(5, 11, 4)
+    assert src.source_id == 5
+    assert src.start == 11
+    assert src.len == 4
+
+    val r: span.Range = span.range(9, 6)
+    assert r.start == 9
+    assert r.count == 6
+    assert span.range_end(ref r) == 15
+}

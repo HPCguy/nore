@@ -1,0 +1,3 @@
+// Bootstrap compiler codegen module placeholder.
+// Responsibility: emit C for declarations and prototypes.
+// Implement in Milestone 8.

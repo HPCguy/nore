@@ -1,0 +1,46 @@
+// Shared value types for spans and compact index ranges.
+
+pub value Span {
+    start: i64,
+    len: i64
+}
+
+pub value SourceSpan {
+    source_id: i64,
+    start: i64,
+    len: i64
+}
+
+pub value Range {
+    start: i64,
+    count: i64
+}
+
+// Centralize span construction so callers use one obvious representation.
+pub func span(start: i64, len: i64): Span = {
+    Span { start: start, len: len }
+}
+
+// Carry source ownership with byte offsets for later diagnostics and tokens.
+pub func source_span(source_id: i64, start: i64, len: i64): SourceSpan = {
+    SourceSpan {
+        source_id: source_id,
+        start: start,
+        len: len
+    }
+}
+
+// Use the same helper style for compact list/index ranges.
+pub func range(start: i64, count: i64): Range = {
+    Range { start: start, count: count }
+}
+
+// Avoid re-encoding the half-open end convention at every call site.
+pub func span_end(ref s: Span): i64 = {
+    s.start + s.len
+}
+
+// Keep range arithmetic consistent with the shared half-open convention.
+pub func range_end(ref r: Range): i64 = {
+    r.start + r.count
+}

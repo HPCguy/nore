@@ -1,0 +1,32 @@
+import ibuf "../../../compiler/support/i64_buf.nore"
+
+// Verify growth and reuse semantics for the first typed integer buffer.
+func main(): void = {
+    mut mem: Arena = arena(4096)
+
+    mut buf: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 2)
+    assert buf.count == 0
+    assert buf.cap == 2
+
+    ibuf.i64_buf_push(mut ref mem, mut ref buf, 10)
+    ibuf.i64_buf_push(mut ref mem, mut ref buf, 20)
+    ibuf.i64_buf_push(mut ref mem, mut ref buf, 30)
+    ibuf.i64_buf_push(mut ref mem, mut ref buf, 40)
+    ibuf.i64_buf_push(mut ref mem, mut ref buf, 50)
+
+    assert buf.count == 5
+    assert buf.cap >= 5
+    assert buf.data[0] == 10
+    assert buf.data[1] == 20
+    assert buf.data[2] == 30
+    assert buf.data[3] == 40
+    assert buf.data[4] == 50
+
+    ibuf.i64_buf_clear(mut ref buf)
+    assert buf.count == 0
+    assert buf.cap >= 5
+
+    ibuf.i64_buf_push(mut ref mem, mut ref buf, 99)
+    assert buf.count == 1
+    assert buf.data[0] == 99
+}

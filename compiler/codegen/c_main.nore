@@ -1,0 +1,3 @@
+// Bootstrap compiler codegen module placeholder.
+// Responsibility: orchestrate C emission for a checked module graph.
+// Implement in Milestone 8.

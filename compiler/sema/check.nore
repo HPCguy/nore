@@ -1,0 +1,3 @@
+// Bootstrap compiler semantic-analysis module placeholder.
+// Responsibility: name resolution, type checking, and subset arena safety.
+// Implement in Milestone 7.

@@ -1,0 +1,6 @@
+// Bootstrap compiler entry point.
+// Milestone 1 only freezes the committed source tree and module boundaries.
+
+// Keep the entry point valid while later milestones fill in the pipeline.
+func main(): void = {
+}

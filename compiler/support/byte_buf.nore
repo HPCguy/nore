@@ -1,0 +1,96 @@
+// Arena-backed growable byte buffer for pooled strings and source bytes.
+
+// Stage-0 still requires a declaration even though mem_copy is part of the bootstrap subset.
+native func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
+
+import span "span.nore"
+
+pub struct ByteBuf {
+    data: [u8],
+    count: i64,
+    cap: i64
+}
+
+// A zero-length slice still needs stable backing storage in the current subset.
+func empty_slice(mut ref mem: Arena): [u8] = {
+    mut raw: [u8] = arena_alloc(mut ref mem, 1)
+    raw[0..0]
+}
+
+// Normalize caller-provided capacities before allocation logic branches.
+func initial_capacity(requested: i64): i64 = {
+    if (requested > 0) {
+        return requested
+    }
+    return 0
+}
+
+// Keep pooled byte storage construction explicit for compiler-owned text buffers.
+pub func byte_buf_new(mut ref mem: Arena, requested_cap: i64): ByteBuf = {
+    val cap: i64 = initial_capacity(requested_cap)
+    if (cap == 0) {
+        return ByteBuf {
+            data: empty_slice(mut ref mem),
+            count: 0,
+            cap: 0
+        }
+    }
+
+    mut data: [u8] = arena_alloc(mut ref mem, cap)
+    ByteBuf {
+        data: data,
+        count: 0,
+        cap: cap
+    }
+}
+
+// Grow geometrically so pooled text appends stay simple across compiler phases.
+pub func byte_buf_reserve(mut ref mem: Arena, mut ref buf: ByteBuf, needed_cap: i64): void = {
+    if (needed_cap <= buf.cap) {
+        return
+    }
+
+    mut new_cap: i64 = buf.cap
+    if (new_cap <= 0) {
+        new_cap = 8
+    }
+    while (new_cap < needed_cap) {
+        new_cap = new_cap * 2
+    }
+
+    mut new_data: [u8] = arena_alloc(mut ref mem, new_cap)
+    if (buf.count > 0) {
+        mut dst: [u8] = new_data[0..buf.count]
+        val src: [u8] = buf.data[0..buf.count]
+        mem_copy(mut ref dst, ref src)
+    }
+
+    buf.data = new_data
+    buf.cap = new_cap
+}
+
+// Keep single-byte writes available for scanners and emitters.
+pub func byte_buf_push(mut ref mem: Arena, mut ref buf: ByteBuf, item: u8): void = {
+    byte_buf_reserve(mut ref mem, mut ref buf, buf.count + 1)
+    buf.data[buf.count] = item
+    buf.count = buf.count + 1
+}
+
+// Return the written span so later tables can reference pooled bytes by offset.
+pub func byte_buf_append(mut ref mem: Arena, mut ref buf: ByteBuf, ref data: [u8]): span.Span = {
+    val start: i64 = buf.count
+    byte_buf_reserve(mut ref mem, mut ref buf, buf.count + data.len)
+
+    if (data.len > 0) {
+        mut dst: [u8] = buf.data[start..start + data.len]
+        mem_copy(mut ref dst, ref data)
+    }
+
+    buf.count = buf.count + data.len
+    span.span(start, data.len)
+}
+
+// Clearing preserves capacity because scratch-like reuse is expected.
+pub func byte_buf_clear(mut ref buf: ByteBuf): void = {
+    buf.count = 0
+}

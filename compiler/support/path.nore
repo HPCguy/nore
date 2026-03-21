@@ -1,0 +1,3 @@
+// Bootstrap compiler support module placeholder.
+// Responsibility: bootstrap path join, dirname, and extension helpers.
+// Implement in Milestone 2 and Milestone 6.

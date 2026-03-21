@@ -1,0 +1,41 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import span "../../../compiler/support/span.nore"
+
+// Verify pooled byte appends and reuse before sources/token text depend on them.
+func main(): void = {
+    mut mem: Arena = arena(4096)
+
+    mut buf: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1)
+    assert buf.count == 0
+    assert buf.cap == 1
+
+    val hello: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref buf, ref "hello")
+    assert hello.start == 0
+    assert hello.len == 5
+    assert buf.count == 5
+    assert buf.cap >= 5
+    assert buf.data[0] == 'h'
+    assert buf.data[4] == 'o'
+
+    bbuf.byte_buf_push(mut ref mem, mut ref buf, '!')
+    assert buf.count == 6
+    assert buf.data[5] == '!'
+
+    val more: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref buf, ref " ok")
+    assert more.start == 6
+    assert more.len == 3
+    assert buf.count == 9
+    assert buf.data[6] == ' '
+    assert buf.data[7] == 'o'
+    assert buf.data[8] == 'k'
+
+    bbuf.byte_buf_clear(mut ref buf)
+    assert buf.count == 0
+    assert buf.cap >= 9
+
+    val reset: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref buf, ref "z")
+    assert reset.start == 0
+    assert reset.len == 1
+    assert buf.count == 1
+    assert buf.data[0] == 'z'
+}

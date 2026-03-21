@@ -182,6 +182,11 @@ That is the wrong foundation.
 
 ## Milestone 1: Freeze the Bootstrap Scope
 
+**Status:** Complete
+
+Frozen in `docs/compiler-bootstrap-architecture.md` and the committed `compiler/`
+tree.
+
 ### Gaps to close before starting
 
 - Step 0 complete

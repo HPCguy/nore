@@ -1,0 +1,3 @@
+// Bootstrap compiler frontend module placeholder.
+// Responsibility: lex bootstrap-subset source into token rows.
+// Implement in Milestone 4.
