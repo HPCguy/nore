@@ -1,0 +1,10 @@
+// Error: plain enum match arm cannot use wildcard binding syntax
+enum Color { Red, Green }
+
+func main(): void = {
+    val c: Color = Color.Red
+    match (c) {
+        Red(_) = { }
+        Green = { }
+    }
+}

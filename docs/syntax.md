@@ -310,6 +310,13 @@ val y: Option = Option.None
 
 **Match** (statement and expression):
 ```nore
+enum Color { Red, Green, Blue }
+match (Color.Green) {
+    Red = { }
+    Green = { }
+    Blue = { }
+}
+
 match (opt) {
     Some(n) = { result = n }
     None = { result = 0 }
@@ -322,13 +329,16 @@ val x: i64 = match (opt) {
 ```
 
 - `match (scrutinee) { arms }` with parentheses
-- Each arm: `VariantName(binding) = { body }` or `VariantName = { body }`
+- Scrutinee may be a plain enum or a tagged enum
+- Plain enum arms: `VariantName = { body }`
+- Tagged enum arms: `VariantName(binding) = { body }` or `VariantName = { body }`
 - `_` wildcard: `Some(_) = { ... }`
 - Exhaustiveness required
 - Match expression arms must produce compatible types (S076)
 - Slice-payload tagged unions are non-copyable (S043, S044, S045)
 - Payload types: scalars, fixed arrays, value types, slices, plain enums. No structs/Arena (S082)
 - No `==`/`!=` on tagged unions (use `match`)
+- Plain enum arms cannot bind payloads
 
 ---
 

@@ -1,0 +1,10 @@
+// Error: non-exhaustive match on plain enum
+enum Color { Red, Green, Blue }
+
+func main(): void = {
+    val c: Color = Color.Red
+    match (c) {
+        Red = { }
+        Green = { }
+    }
+}

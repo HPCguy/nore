@@ -208,9 +208,18 @@ Type annotation is required. Tagged unions can be assigned to mutable variables 
 - Payload types must be value-compatible: scalars, fixed arrays, value types, slices, or plain enums. Structs and Arena are not allowed (S082).
 - Comparison (`==`, `!=`) is not allowed on tagged unions (use `match` instead).
 
-**Match expressions** destructure tagged unions with exhaustive pattern matching:
+**Match expressions** branch on enums and destructure tagged unions with
+exhaustive pattern matching:
 
 ```nore
+enum Color { Red, Green, Blue }
+
+match (Color.Green) {
+    Red = { result = 1 }
+    Green = { result = 2 }
+    Blue = { result = 3 }
+}
+
 // As statement
 match (opt) {
     Some(n) = { result = n }
@@ -233,13 +242,16 @@ func unwrap_or(opt: Option, default: i64): i64 = {
 
 Match rules:
 - `match (scrutinee) { arms }` with parentheses around the scrutinee
-- Each arm: `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
+- Scrutinee may be a plain enum or a tagged enum
+- Plain enum arms use `VariantName = { body }`
+- Tagged-enum arms use `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
 - `=` separates pattern from body (consistent with function syntax)
 - Variant names are unqualified (the scrutinee type determines the enum)
 - `_` wildcard for unused bindings: `Some(_) = { ... }`
 - Exhaustiveness required: all variants must be covered
 - Binding variables are scoped to the arm body
 - All arms must produce values of compatible types when used as expression (S076)
+- Plain enum arms cannot bind payloads
 
 **Why tagged unions bridge the gap.** Slice-bearing tagged unions fill a role that neither `value` nor `struct` covers well: returning success-or-error results that may carry arena-allocated data. Without them, every function returning dynamic data needs a separate struct type plus an out-parameter for error status. `ReadResult { Ok([u8]), Err(i32) }` expresses this naturally.
 

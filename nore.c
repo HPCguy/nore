@@ -187,7 +187,7 @@ typedef enum {
     ERR_S070_DUPLICATE_TYPE_NAME   = ERR_GROUP_SEMANTIC + 70,
     ERR_S071_SLICE_RANGE_NOT_INT   = ERR_GROUP_SEMANTIC + 71,
     ERR_S072_SLICE_ON_NON_ARRAY    = ERR_GROUP_SEMANTIC + 72,
-    ERR_S073_MATCH_NOT_TAGGED_ENUM = ERR_GROUP_SEMANTIC + 73,
+    ERR_S073_MATCH_NOT_ENUM        = ERR_GROUP_SEMANTIC + 73,
     ERR_S074_NON_EXHAUSTIVE_MATCH  = ERR_GROUP_SEMANTIC + 74,
     ERR_S075_DUPLICATE_MATCH_ARM   = ERR_GROUP_SEMANTIC + 75,
     ERR_S076_MATCH_ARM_TYPE_MISMATCH = ERR_GROUP_SEMANTIC + 76,
@@ -2087,6 +2087,7 @@ typedef struct Ast {
             const char *variant_name;   /* variant name (from source) */
             size_t variant_length;
             long variant_value;         /* resolved during typecheck */
+            bool has_binding;           /* true if source used Variant(...) */
             const char *binding_name;   /* NULL for no-data or _ wildcard */
             size_t binding_length;
             Type binding_type;          /* payload type from enum decl */
@@ -2415,6 +2416,7 @@ static Ast *ast_make_match(Ast *scrutinee, Ast **arms, size_t arm_count,
 }
 
 static Ast *ast_make_match_arm(const char *variant_name, size_t variant_length,
+                                bool has_binding,
                                 const char *binding_name, size_t binding_length,
                                 Ast *body, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
@@ -2424,6 +2426,7 @@ static Ast *ast_make_match_arm(const char *variant_name, size_t variant_length,
     node->as.match_arm.variant_name = variant_name;
     node->as.match_arm.variant_length = variant_length;
     node->as.match_arm.variant_value = -1;  /* resolved during typecheck */
+    node->as.match_arm.has_binding = has_binding;
     node->as.match_arm.binding_name = binding_name;
     node->as.match_arm.binding_length = binding_length;
     node->as.match_arm.binding_type = TYPE_VOID;  /* resolved during typecheck */
@@ -4747,9 +4750,11 @@ static Ast *parser_parse_match(Parser *parser) {
         size_t var_len = parser->previous.length;
 
         /* Optional binding: (name) or (_) */
+        bool has_binding = false;
         const char *binding_name = NULL;
         size_t binding_length = 0;
         if (parser_match(parser, TOKEN_LPAREN)) {
+            has_binding = true;
             if (parser_match(parser, TOKEN_IDENTIFIER)) {
                 if (parser->previous.length == 1 && parser->previous.start[0] == '_') {
                     /* wildcard: no binding */
@@ -4788,6 +4793,7 @@ static Ast *parser_parse_match(Parser *parser) {
             if (!arms) panic(ERR_I001_OUT_OF_MEMORY, "growing match arms");
         }
         arms[arm_count++] = ast_make_match_arm(var_start, var_len,
+                                                has_binding,
                                                 binding_name, binding_length,
                                                 body, arm_loc);
     }
@@ -7093,7 +7099,7 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
 static void typecheck_invalidate_arena_slices(Scope *scope, const char *arena_start, size_t arena_length);
 
 /* Shared match typecheck: validate scrutinee, resolve variants, check exhaustiveness,
- * typecheck arm bodies. If out_type is non-NULL, track and unify arm result types. */
+ * typecheck arm bodies, and reject bindings on non-data variants. */
 static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
                                   FunctionTable *func_table) {
     Type scrut_type = typecheck_expression(
@@ -7101,10 +7107,10 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
 
     EnumTypeEntry *et = NULL;
     if (!type_is_enum(scrut_type) ||
-        !(et = enum_table_get(scrut_type)) || !et->has_data) {
-        diagnostic(node->loc.file, ERR_S073_MATCH_NOT_TAGGED_ENUM,
+        !(et = enum_table_get(scrut_type))) {
+        diagnostic(node->loc.file, ERR_S073_MATCH_NOT_ENUM,
                    node->loc.line, node->loc.column,
-                   "Match scrutinee must be a tagged enum type, got %s",
+                   "Match scrutinee must be an enum type, got %s",
                    type_name(scrut_type));
         return TYPE_VOID;
     }
@@ -7149,6 +7155,15 @@ static Type typecheck_match_arms(Ast *node, Scope *scope, Type return_type,
                        arm->loc.line, arm->loc.column,
                        "Unknown variant '%.*s' in match on %s",
                        (int)vlen, vname, type_name(scrut_type));
+        }
+
+        if (found &&
+            arm->as.match_arm.has_binding &&
+            arm->as.match_arm.binding_type == TYPE_VOID) {
+            diagnostic(arm->loc.file, ERR_S078_UNEXPECTED_PAYLOAD,
+                       arm->loc.line, arm->loc.column,
+                       "Variant '%.*s' in match does not bind a payload",
+                       (int)vlen, vname);
         }
 
         Ast *body = arm->as.match_arm.body;
@@ -10691,7 +10706,11 @@ static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
     fprintf(out, ";\n");
 
     codegen_indent(out, indent);
-    fprintf(out, "switch (ni_match_%d_.tag) {\n", mid);
+    if (et->has_data) {
+        fprintf(out, "switch (ni_match_%d_.tag) {\n", mid);
+    } else {
+        fprintf(out, "switch (ni_match_%d_) {\n", mid);
+    }
 
     for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
         Ast *arm = node->as.match_expr.arms[i];

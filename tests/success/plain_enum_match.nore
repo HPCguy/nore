@@ -1,0 +1,47 @@
+// Test match on plain enums
+
+enum Color { Red, Green, Blue }
+
+func color_code(c: Color): i64 = {
+    match (c) {
+        Red = { 10 }
+        Green = { 20 }
+        Blue = { 30 }
+    }
+}
+
+func is_green(c: Color): bool = {
+    match (c) {
+        Red = { false }
+        Green = { true }
+        Blue = { false }
+    }
+}
+
+func main(): void = {
+    val red: Color = Color.Red
+    val green: Color = Color.Green
+    val blue: Color = Color.Blue
+
+    mut seen: i64 = -1
+    match (green) {
+        Red = { seen = 1 }
+        Green = { seen = 2 }
+        Blue = { seen = 3 }
+    }
+    assert seen == 2
+
+    assert color_code(red) == 10
+    assert color_code(green) == 20
+    assert color_code(blue) == 30
+
+    val code: i64 = match (blue) {
+        Red = { 100 }
+        Green = { 200 }
+        Blue = { 300 }
+    }
+    assert code == 300
+
+    assert !is_green(red)
+    assert is_green(green)
+}

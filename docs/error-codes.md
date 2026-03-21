@@ -157,12 +157,12 @@ error[D002]: Unknown flag: --invalid
 - **S070**: Duplicate type name (enum name already used)
 - **S071**: Slice range bound must be integer type
 - **S072**: Cannot sub-slice non-array/slice type
-- **S073**: Match scrutinee is not a tagged enum type
+- **S073**: Match scrutinee is not an enum type
 - **S074**: Non-exhaustive match (missing variants)
 - **S075**: Duplicate variant in match arms
 - **S076**: Match arm types incompatible (expression form)
 - **S077**: Payload type mismatch in tagged union variant construction
-- **S078**: Unexpected payload for non-data variant
+- **S078**: Unexpected payload/binding for non-data variant
 - **S079**: Missing payload for data variant
 - **S080**: Cannot compare tagged enum (use match instead)
 - **S081**: Cannot cast tagged enum to numeric type

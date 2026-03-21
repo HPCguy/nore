@@ -1,0 +1,10 @@
+// Error: plain enum match arm cannot use empty parentheses
+enum Color { Red, Green }
+
+func main(): void = {
+    val c: Color = Color.Red
+    match (c) {
+        Red() = { }
+        Green = { }
+    }
+}
