@@ -1,0 +1,20 @@
+import span "../../compiler/support/span.nore"
+
+value Pair {
+    left: i64,
+    right: i64
+}
+
+enum MaybeI64 {
+    None,
+    Some(i64)
+}
+
+pub func choose(flag: bool, left: i64, right: i64): i64 = {
+    val pair: Pair = Pair { left: left, right: right }
+    val res: MaybeI64 = if (flag) { MaybeI64.Some(pair.left) } else { MaybeI64.None }
+    match (res) {
+        Some(n) = { n }
+        None = { pair.right }
+    }
+}

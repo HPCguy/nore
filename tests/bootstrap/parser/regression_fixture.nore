@@ -1,0 +1,12 @@
+func compound_and_if(flag: bool, n: i64): i64 = {
+    mut counter: i64 = 0
+    counter += n + 1
+    if (flag) { { counter } } else { { n } }
+}
+
+func tail_match(n: i64): i64 = {
+    match (n) {
+        0 = { { 10 } }
+        1 = { { 20 } }
+    }
+}

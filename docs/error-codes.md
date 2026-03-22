@@ -28,6 +28,11 @@ error[D002]: Unknown flag: --invalid
 - **L004**: Invalid escape sequence
 - **L005**: Empty character literal
 - **L006**: Character literal must contain exactly one character
+- **P001**: Expected expression
+- **P002**: Expected ')'
+- **P003**: Expected identifier
+- **P004**: Expected '='
+- **P005**: Expected statement
 - **P006**: Integer literal out of range (overflow)
 - **P007**: Expected '}' to close block
 - **P008**: Expected '(' after 'if'

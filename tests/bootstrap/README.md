@@ -8,6 +8,7 @@ Current status:
 - bootstrap source layout is committed under `compiler/`
 - support-library smoke tests now cover spans, typed buffers, path helpers, line maps, source loading, and diagnostic formatting
 - lexer bootstrap tests now cover golden dumps, one real compiler module, and lexer diagnostics
+- parser bootstrap tests now cover a stable AST golden dump, targeted parser regressions, and one real compiler support module
 - bootstrap-specific tests continue to land here as each later milestone becomes executable
 
 Planned subdirectories:

@@ -117,12 +117,15 @@ Current committed file scope:
   literal scanning, and token-table append order. It should not absorb parsing,
   node creation, or source-loading policy.
 
-Planned placeholder file scope:
+- `compiler/frontend/node.nore`: node kinds plus the shared flat node-table
+  layout only. It owns child/sibling link policy and parser-facing node
+  metadata slots, but not parse control flow or semantic meaning.
 
-- `compiler/frontend/node.nore`: node kinds and the shared node-table layout
-  only.
+- `compiler/frontend/parser.nore`: parse token rows into node rows only. It owns
+  single-module recursive descent, parser diagnostics, and stable parser debug
+  dumps, but not import-graph loading, semantic checks, or code generation.
 
-- `compiler/frontend/parser.nore`: parse token rows into node rows only.
+Remaining placeholder file scope:
 
 - `compiler/sema/symbols.nore`: symbol rows and symbol metadata only.
 
@@ -311,7 +314,7 @@ Minimum columns:
 - `kind`
 - `source_id`
 - `start`
-- `len`
+- `span_len`
 - `parent`
 - `first_child`
 - `next_sibling`

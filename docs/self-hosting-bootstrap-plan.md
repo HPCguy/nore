@@ -357,6 +357,11 @@ Keep tokens as rows in a table, not heap-allocated linked structures.
 
 ## Milestone 5: Parser for a Single Module
 
+**Status:** Complete
+
+Committed in `compiler/frontend/node.nore`, `compiler/frontend/parser.nore`, and
+`tests/bootstrap/parser/`.
+
 ### Gaps to close before starting
 
 - Milestone 4 complete

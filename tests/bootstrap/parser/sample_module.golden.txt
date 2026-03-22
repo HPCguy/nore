@@ -1,0 +1,55 @@
+=== AST ===
+MODULE
+  IMPORT alias=span path="../../compiler/support/span.nore"
+  VALUE_DECL text=Pair
+    FIELD_DECL text=left
+      BUILTIN_TYPE text=i64
+    FIELD_DECL text=right
+      BUILTIN_TYPE text=i64
+  ENUM_DECL text=MaybeI64
+    VARIANT_DECL text=None
+    VARIANT_DECL text=Some
+      BUILTIN_TYPE text=i64
+  FUNC text=choose pub
+    PARAM text=flag
+      BUILTIN_TYPE text=bool
+    PARAM text=left
+      BUILTIN_TYPE text=i64
+    PARAM text=right
+      BUILTIN_TYPE text=i64
+    BUILTIN_TYPE text=i64
+    BLOCK count=2 value
+      VAR_DECL text=pair typed
+        IDENTIFIER text=Pair
+        CONSTRUCTOR count=2
+          IDENTIFIER text=Pair
+          FIELD_INIT text=left
+            IDENTIFIER text=left
+          FIELD_INIT text=right
+            IDENTIFIER text=right
+      VAR_DECL text=res typed
+        IDENTIFIER text=MaybeI64
+        IF
+          IDENTIFIER text=flag
+          BLOCK count=0 value
+            CALL count=1
+              FIELD_ACCESS op=Some
+                IDENTIFIER text=MaybeI64
+              FIELD_ACCESS op=left
+                IDENTIFIER text=pair
+          BLOCK count=0 value
+            FIELD_ACCESS op=None
+              IDENTIFIER text=MaybeI64
+      MATCH count=2
+        IDENTIFIER text=res
+        MATCH_ARM
+          CALL count=1
+            IDENTIFIER text=Some
+            IDENTIFIER text=n
+          BLOCK count=0 value
+            IDENTIFIER text=n
+        MATCH_ARM
+          IDENTIFIER text=None
+          BLOCK count=0 value
+            FIELD_ACCESS op=right
+              IDENTIFIER text=pair

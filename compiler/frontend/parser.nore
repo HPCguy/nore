@@ -1,3 +1,2591 @@
-// Bootstrap compiler frontend module placeholder.
-// Responsibility: parse a token stream into node rows.
-// Implement in Milestone 5.
+// Bootstrap parser for the single-module compiler subset.
+// Responsibility: turn lexer token rows into flat syntax node rows plus parser diagnostics.
+// Owns: recursive-descent parsing, node creation order, and stable parser dumps.
+// Does not own: source loading, tokenization, semantic meaning, or code generation.
+
+import bbuf "../support/byte_buf.nore"
+import diag "../support/diag.nore"
+import node "node.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import token "token.nore"
+import string "std/string.nore"
+
+val FLAG_MUT: i64 = 1
+val FLAG_PUB: i64 = 2
+val FLAG_REF: i64 = 4
+val FLAG_NATIVE: i64 = 8
+val FLAG_HAS_TYPE: i64 = 16
+val FLAG_HAS_VALUE: i64 = 32
+val FLAG_HAS_START: i64 = 64
+val FLAG_HAS_END: i64 = 128
+
+struct Parser {
+    source_id: i64,
+    token_start: i64,
+    token_end: i64,
+    current: i64,
+    failed: bool
+}
+
+pub value ParseResult {
+    root: i64,
+    nodes: span.Range,
+    diags: span.Range
+}
+
+// Reuse one tiny bit-test helper so node metadata stays readable at call sites.
+func flag_has(flags: i64, bit: i64): bool = {
+    (flags & bit) != 0
+}
+
+// Token spans are stored as start plus len, so most node ranges need this helper.
+func token_end_offset(ref tokens: token.Tokens, token_id: i64): i64 = {
+    tokens.start[token_id] + tokens.len[token_id]
+}
+
+// Clamp parser reads to the EOF token when the cursor has already reached the end.
+func parser_current_token_id(ref parser: Parser): i64 = {
+    if (parser.current < parser.token_end) {
+        return parser.current
+    }
+    parser.token_end - 1
+}
+
+// Many diagnostics want the token we just consumed rather than the current lookahead.
+func parser_previous_token_id(ref parser: Parser): i64 = {
+    if (parser.current <= parser.token_start) {
+        return parser.token_start
+    }
+    parser.current - 1
+}
+
+// Parser loops treat the inclusive EOF token as the stable end marker.
+func parser_at_end(ref parser: Parser, ref tokens: token.Tokens): bool = {
+    if (parser.current >= parser.token_end) {
+        return true
+    }
+    tokens.kind[parser.current] == token.TokenKind.Eof
+}
+
+// Keep lookahead reads local so statement-vs-expression decisions stay simple.
+func parser_peek_kind(ref parser: Parser, ref tokens: token.Tokens, offset: i64): token.TokenKind = {
+    val token_id: i64 = parser.current + offset
+    if (token_id >= parser.token_end) {
+        return token.TokenKind.Eof
+    }
+    tokens.kind[token_id]
+}
+
+// One-token lookahead is enough for the whole bootstrap subset.
+func parser_current_kind(ref parser: Parser, ref tokens: token.Tokens): token.TokenKind = {
+    parser_peek_kind(ref parser, ref tokens, 0)
+}
+
+// Advance in source order and keep EOF stable for repeated reads after the end.
+func parser_advance(mut ref parser: Parser, ref tokens: token.Tokens): i64 = {
+    val token_id: i64 = parser_current_token_id(ref parser)
+    if (!parser_at_end(ref parser, ref tokens)) {
+        parser.current += 1
+    }
+    token_id
+}
+
+// Most parser branches only need a cheap kind check before deciding what to parse next.
+func parser_check(ref parser: Parser, ref tokens: token.Tokens, kind: token.TokenKind): bool = {
+    parser_current_kind(ref parser, ref tokens) == kind
+}
+
+// Fold the common match-and-consume pattern into one helper.
+func parser_match(mut ref parser: Parser, ref tokens: token.Tokens, kind: token.TokenKind): bool = {
+    if (!parser_check(ref parser, ref tokens, kind)) {
+        return false
+    }
+    parser_advance(mut ref parser, ref tokens)
+    true
+}
+
+// Emit parser diagnostics against a specific token and stop the current parse attempt.
+func parser_error_token(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    token_id: i64,
+    ref code: [u8],
+    ref message: [u8]
+): void = {
+    diag.diag_error(
+        mut ref mem,
+        mut ref diags,
+        mut ref diag_pool,
+        ref code,
+        tokens.source_id[token_id],
+        tokens.start[token_id],
+        tokens.len[token_id],
+        ref message
+    )
+    parser.failed = true
+}
+
+// Most failures point at the current lookahead token, so keep that call site short.
+func parser_error_here(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    ref code: [u8],
+    ref message: [u8]
+): void = {
+    parser_error_token(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref diags,
+        mut ref diag_pool,
+        parser_current_token_id(ref parser),
+        ref code,
+        ref message
+    )
+}
+
+// Leaf nodes map directly to one token span and carry one primary token id in data0.
+func parser_make_leaf(
+    mut ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    kind: node.NodeKind,
+    token_id: i64
+): i64 = {
+    node.node_push(
+        mut ref nodes,
+        kind,
+        tokens.source_id[token_id],
+        tokens.start[token_id],
+        tokens.len[token_id],
+        token_id,
+        0,
+        0
+    )
+}
+
+// Some productions need children appended before the closing token is known.
+func parser_open_node(
+    mut ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    kind: node.NodeKind,
+    first_token_id: i64
+): i64 = {
+    node.node_push(
+        mut ref nodes,
+        kind,
+        tokens.source_id[first_token_id],
+        tokens.start[first_token_id],
+        tokens.len[first_token_id],
+        0,
+        0,
+        0
+    )
+}
+
+// Composite expressions that grow from an existing left child inherit that child's span start.
+func parser_open_node_from_node(
+    mut ref nodes: node.Nodes,
+    kind: node.NodeKind,
+    start_node_id: i64
+): i64 = {
+    node.node_push(
+        mut ref nodes,
+        kind,
+        nodes.source_id[start_node_id],
+        nodes.start[start_node_id],
+        nodes.span_len[start_node_id],
+        0,
+        0,
+        0
+    )
+}
+
+// Finalize the span and data payload once a production has consumed its closing token.
+func parser_finish_node(
+    mut ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    node_id: i64,
+    last_token_id: i64,
+    data0: i64,
+    data1: i64,
+    data2: i64
+): i64 = {
+    val span_end: i64 = token_end_offset(ref tokens, last_token_id)
+    nodes.span_len[node_id] = span_end - nodes.start[node_id]
+    nodes.data0[node_id] = data0
+    nodes.data1[node_id] = data1
+    nodes.data2[node_id] = data2
+    node_id
+}
+
+// Child order is semantic for the flat tree, so later helpers need indexed access.
+func node_child_at(ref nodes: node.Nodes, parent_id: i64, wanted_index: i64): i64 = {
+    mut child_id: i64 = nodes.first_child[parent_id]
+    mut index: i64 = 0
+    while (child_id >= 0) {
+        if (index == wanted_index) {
+            return child_id
+        }
+        child_id = nodes.next_sibling[child_id]
+        index += 1
+    }
+    node.invalid_node_id()
+}
+
+// Blocks record their trailing value-expression bit explicitly so if/match checks stay cheap.
+func node_block_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
+    if (node_id < 0 || nodes.kind[node_id] != node.NodeKind.Block) {
+        return false
+    }
+    flag_has(nodes.data1[node_id], FLAG_HAS_VALUE)
+}
+
+// Match-as-expression only works when every arm body ends in a value expression.
+func node_match_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
+    if (node_id < 0 || nodes.kind[node_id] != node.NodeKind.MatchExpr) {
+        return false
+    }
+    if (nodes.data0[node_id] <= 0) {
+        return false
+    }
+
+    mut arm_id: i64 = nodes.first_child[node_id]
+    arm_id = nodes.next_sibling[arm_id]
+    while (arm_id >= 0) {
+        val body_id: i64 = node_child_at(ref nodes, arm_id, 1)
+        if (!node_block_has_value(ref nodes, body_id)) {
+            return false
+        }
+        arm_id = nodes.next_sibling[arm_id]
+    }
+    true
+}
+
+// If-as-expression needs an else branch whose nested tail also produces a value.
+func node_if_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
+    if (node_id < 0 || nodes.kind[node_id] != node.NodeKind.IfStmt) {
+        return false
+    }
+
+    val then_id: i64 = node_child_at(ref nodes, node_id, 1)
+    val else_id: i64 = node_child_at(ref nodes, node_id, 2)
+    if (!node_block_has_value(ref nodes, then_id) || else_id < 0) {
+        return false
+    }
+
+    if (nodes.kind[else_id] == node.NodeKind.Block) {
+        return node_block_has_value(ref nodes, else_id)
+    }
+    if (nodes.kind[else_id] == node.NodeKind.IfStmt) {
+        return node_if_has_value(ref nodes, else_id)
+    }
+    false
+}
+
+// Binary parsing only needs the same precedence table as stage-0.
+func binary_precedence(kind: token.TokenKind): i64 = {
+    if (kind == token.TokenKind.Star || kind == token.TokenKind.Slash || kind == token.TokenKind.Percent) {
+        return 8
+    }
+    if (kind == token.TokenKind.Plus || kind == token.TokenKind.Minus) {
+        return 7
+    }
+    if (kind == token.TokenKind.LessLess || kind == token.TokenKind.GreaterGreater) {
+        return 6
+    }
+    if (kind == token.TokenKind.Ampersand) {
+        return 5
+    }
+    if (kind == token.TokenKind.Caret) {
+        return 4
+    }
+    if (kind == token.TokenKind.Pipe) {
+        return 3
+    }
+    if (kind == token.TokenKind.EqualEqual ||
+        kind == token.TokenKind.BangEqual ||
+        kind == token.TokenKind.Less ||
+        kind == token.TokenKind.Greater ||
+        kind == token.TokenKind.LessEqual ||
+        kind == token.TokenKind.GreaterEqual) {
+        return 2
+    }
+    if (kind == token.TokenKind.AndAnd) {
+        return 1
+    }
+    if (kind == token.TokenKind.OrOr) {
+        return 0
+    }
+    -1
+}
+
+// Compound assignments are parsed after the target expression is already built.
+func is_compound_assignment(kind: token.TokenKind): bool = {
+    kind == token.TokenKind.PlusEqual ||
+    kind == token.TokenKind.MinusEqual ||
+    kind == token.TokenKind.StarEqual ||
+    kind == token.TokenKind.SlashEqual ||
+    kind == token.TokenKind.PercentEqual ||
+    kind == token.TokenKind.AmpersandEqual ||
+    kind == token.TokenKind.PipeEqual ||
+    kind == token.TokenKind.CaretEqual ||
+    kind == token.TokenKind.LessLessEqual ||
+    kind == token.TokenKind.GreaterGreaterEqual
+}
+
+// Cast syntax only exists for the numeric built-in type tokens.
+func is_cast_type_token(kind: token.TokenKind): bool = {
+    kind == token.TokenKind.I64 ||
+    kind == token.TokenKind.I32 ||
+    kind == token.TokenKind.U8 ||
+    kind == token.TokenKind.U32 ||
+    kind == token.TokenKind.F64
+}
+
+// Keep the statement-vs-expression split aligned with the current subset grammar.
+func statement_starts_here(ref parser: Parser, ref tokens: token.Tokens): bool = {
+    val kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+    kind == token.TokenKind.Val ||
+    kind == token.TokenKind.Mut ||
+    kind == token.TokenKind.Return ||
+    kind == token.TokenKind.Assert ||
+    kind == token.TokenKind.While ||
+    kind == token.TokenKind.For ||
+    kind == token.TokenKind.Break ||
+    kind == token.TokenKind.Continue
+}
+
+// Type names reuse identifier and dotted field-access nodes because sema will interpret them later.
+func parse_named_type(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P015", ref "Expected type")
+        return node.invalid_node_id()
+    }
+
+    val first_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    mut result: i64 = parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.Identifier, first_token_id)
+    while (parser_match(mut ref parser, ref tokens, token.TokenKind.Dot)) {
+        if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P003", ref "Expected identifier after '.'")
+            return node.invalid_node_id()
+        }
+
+        val field_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        val access_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.FieldAccess, first_token_id)
+        node.node_append_child(mut ref nodes, access_id, result)
+        result = parser_finish_node(
+            mut ref nodes,
+            ref tokens,
+            access_id,
+            field_token_id,
+            field_token_id,
+            0,
+            0
+        )
+    }
+    result
+}
+
+// Array and slice types are the only non-leaf type productions in the bootstrap subset.
+func parse_type(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    allow_void: bool
+): i64 = {
+    val kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+    if (kind == token.TokenKind.I64 ||
+        kind == token.TokenKind.I32 ||
+        kind == token.TokenKind.U8 ||
+        kind == token.TokenKind.U32 ||
+        kind == token.TokenKind.F64 ||
+        kind == token.TokenKind.Bool ||
+        kind == token.TokenKind.Str ||
+        kind == token.TokenKind.ArenaType) {
+        val token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.BuiltinType, token_id)
+    }
+
+    if (allow_void && kind == token.TokenKind.Void) {
+        val token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.VoidType, token_id)
+    }
+
+    if (kind == token.TokenKind.Identifier) {
+        return parse_named_type(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.LBracket)) {
+        val lbracket_id: i64 = parser_previous_token_id(ref parser)
+        val elem_type: i64 = parse_type(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            false
+        )
+        if (elem_type < 0) {
+            return node.invalid_node_id()
+        }
+
+        if (parser_match(mut ref parser, ref tokens, token.TokenKind.RBracket)) {
+            val slice_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.SliceType, lbracket_id)
+            node.node_append_child(mut ref nodes, slice_id, elem_type)
+            return parser_finish_node(
+                mut ref nodes,
+                ref tokens,
+                slice_id,
+                parser_previous_token_id(ref parser),
+                0,
+                0,
+                0
+            )
+        }
+
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Semicolon)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P032", ref "Expected ';' in array type")
+            return node.invalid_node_id()
+        }
+        if (!parser_check(ref parser, ref tokens, token.TokenKind.Number)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P033", ref "Expected array size")
+            return node.invalid_node_id()
+        }
+
+        val size_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBracket)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P034", ref "Expected ']'")
+            return node.invalid_node_id()
+        }
+
+        val array_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.ArrayType, lbracket_id)
+        node.node_append_child(mut ref nodes, array_id, elem_type)
+        return parser_finish_node(
+            mut ref nodes,
+            ref tokens,
+            array_id,
+            parser_previous_token_id(ref parser),
+            size_token_id,
+            0,
+            0
+        )
+    } else {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P015", ref "Expected type")
+        return node.invalid_node_id()
+    }
+}
+
+// Parameter rows keep the ref/mut calling-convention bits in data1 and the name token in data0.
+func parse_param(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    mut flags: i64 = 0
+    val first_token_id: i64 = parser_current_token_id(ref parser)
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Mut)) {
+        flags |= FLAG_MUT
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Ref)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P036", ref "Expected 'ref' after 'mut' in parameter")
+            return node.invalid_node_id()
+        }
+        flags |= FLAG_REF
+    } else {
+        if (parser_match(mut ref parser, ref tokens, token.TokenKind.Ref)) {
+            flags |= FLAG_REF
+        }
+    }
+
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P003", ref "Expected parameter name")
+        return node.invalid_node_id()
+    }
+
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Colon)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P014", ref "Expected ':' after identifier")
+        return node.invalid_node_id()
+    }
+
+    val type_id: i64 = parse_type(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        false
+    )
+    if (type_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    val param_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.ParamDecl, first_token_id)
+    node.node_append_child(mut ref nodes, param_id, type_id)
+    parser_finish_node(
+        mut ref nodes,
+        ref tokens,
+        param_id,
+        parser_previous_token_id(ref parser),
+        name_token_id,
+        flags,
+        0
+    )
+}
+
+// Value, struct, and table declarations all share the same field-shape parser.
+func parse_field_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P026", ref "Expected field name in declaration")
+        return node.invalid_node_id()
+    }
+
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Colon)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P014", ref "Expected ':' after identifier")
+        return node.invalid_node_id()
+    }
+
+    val type_id: i64 = parse_type(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        false
+    )
+    if (type_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    val field_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.FieldDecl, name_token_id)
+    node.node_append_child(mut ref nodes, field_id, type_id)
+    parser_finish_node(
+        mut ref nodes,
+        ref tokens,
+        field_id,
+        parser_previous_token_id(ref parser),
+        name_token_id,
+        0,
+        0
+    )
+}
+
+// Enum variants are either plain names or names with one payload type.
+func parse_variant_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P044", ref "Expected variant name in enum")
+        return node.invalid_node_id()
+    }
+
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    val variant_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.VariantDecl, name_token_id)
+    mut flags: i64 = 0
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        val type_id: i64 = parse_type(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            false
+        )
+        if (type_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, variant_id, type_id)
+        flags |= FLAG_HAS_TYPE
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P048", ref "Expected ')' after variant payload type")
+            return node.invalid_node_id()
+        }
+    }
+
+    parser_finish_node(
+        mut ref nodes,
+        ref tokens,
+        variant_id,
+        parser_previous_token_id(ref parser),
+        name_token_id,
+        flags,
+        0
+    )
+}
+
+// If expressions share one parser with if statements because their syntax is identical.
+func parse_if(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val if_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P008", ref "Expected '(' after 'if'")
+        return node.invalid_node_id()
+    }
+
+    val condition_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (condition_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P009", ref "Expected ')' after if condition")
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P010", ref "Expected '{' for if/else body")
+        return node.invalid_node_id()
+    }
+
+    val if_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.IfStmt, if_token_id)
+    node.node_append_child(mut ref nodes, if_id, condition_id)
+    val then_block_id: i64 = parse_block(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        parser_previous_token_id(ref parser)
+    )
+    if (then_block_id < 0) {
+        return node.invalid_node_id()
+    }
+    node.node_append_child(mut ref nodes, if_id, then_block_id)
+
+    mut last_token_id: i64 = parser_previous_token_id(ref parser)
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Else)) {
+        if (parser_check(ref parser, ref tokens, token.TokenKind.If)) {
+            val else_if_id: i64 = parse_if(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool
+            )
+            if (else_if_id < 0) {
+                return node.invalid_node_id()
+            }
+            node.node_append_child(mut ref nodes, if_id, else_if_id)
+            last_token_id = parser_previous_token_id(ref parser)
+        } else {
+            if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+                parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P010", ref "Expected '{' for if/else body")
+                return node.invalid_node_id()
+            }
+            val else_block_id: i64 = parse_block(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool,
+                parser_previous_token_id(ref parser)
+            )
+            if (else_block_id < 0) {
+                return node.invalid_node_id()
+            }
+            node.node_append_child(mut ref nodes, if_id, else_block_id)
+            last_token_id = parser_previous_token_id(ref parser)
+        }
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, if_id, last_token_id, 0, 0, 0)
+}
+
+// While loops stay close to the stage-0 syntax and reuse block parsing directly.
+func parse_while(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val while_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P011", ref "Expected '(' after 'while'")
+        return node.invalid_node_id()
+    }
+
+    val condition_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (condition_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P012", ref "Expected ')' after while condition")
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P013", ref "Expected '{' for while body")
+        return node.invalid_node_id()
+    }
+
+    val body_id: i64 = parse_block(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        parser_previous_token_id(ref parser)
+    )
+    if (body_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    val while_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.WhileStmt, while_token_id)
+    node.node_append_child(mut ref nodes, while_id, condition_id)
+    node.node_append_child(mut ref nodes, while_id, body_id)
+    parser_finish_node(mut ref nodes, ref tokens, while_id, parser_previous_token_id(ref parser), 0, 0, 0)
+}
+
+// Range-for loops record the loop-variable token in data0 and keep range bounds as children.
+func parse_for(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val for_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P003", ref "Expected loop variable name")
+        return node.invalid_node_id()
+    }
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.In)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P038", ref "Expected 'in' after loop variable in for-loop")
+        return node.invalid_node_id()
+    }
+
+    val start_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (start_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.DotDot)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P039", ref "Expected '..' in for-loop range")
+        return node.invalid_node_id()
+    }
+
+    val end_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (end_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P040", ref "Expected '{' for for-loop body")
+        return node.invalid_node_id()
+    }
+
+    val body_id: i64 = parse_block(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        parser_previous_token_id(ref parser)
+    )
+    if (body_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    val for_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.ForStmt, for_token_id)
+    node.node_append_child(mut ref nodes, for_id, start_id)
+    node.node_append_child(mut ref nodes, for_id, end_id)
+    node.node_append_child(mut ref nodes, for_id, body_id)
+    parser_finish_node(mut ref nodes, ref tokens, for_id, parser_previous_token_id(ref parser), name_token_id, 0, 0)
+}
+
+// Match arms always use block bodies in the bootstrap subset.
+func parse_match_arm(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val pattern_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (pattern_id < 0) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P052", ref "Expected match pattern in arm")
+        return node.invalid_node_id()
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Equals)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P053", ref "Expected '=' after match pattern")
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P051", ref "Expected '{' for match body")
+        return node.invalid_node_id()
+    }
+
+    val body_id: i64 = parse_block(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        parser_previous_token_id(ref parser)
+    )
+    if (body_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    val arm_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.MatchArm, pattern_id)
+    node.node_append_child(mut ref nodes, arm_id, pattern_id)
+    node.node_append_child(mut ref nodes, arm_id, body_id)
+    parser_finish_node(mut ref nodes, ref tokens, arm_id, parser_previous_token_id(ref parser), 0, 0, 0)
+}
+
+// Match expressions are also statements when their arm blocks do not all yield values.
+func parse_match(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val match_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P049", ref "Expected '(' after 'match'")
+        return node.invalid_node_id()
+    }
+
+    val scrutinee_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (scrutinee_id < 0) {
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P050", ref "Expected ')' after match scrutinee")
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P051", ref "Expected '{' for match body")
+        return node.invalid_node_id()
+    }
+
+    val match_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.MatchExpr, match_token_id)
+    node.node_append_child(mut ref nodes, match_id, scrutinee_id)
+    mut arm_count: i64 = 0
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        val arm_id: i64 = parse_match_arm(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (arm_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, match_id, arm_id)
+        arm_count += 1
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P054", ref "Expected '}' to close match")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, match_id, parser_previous_token_id(ref parser), arm_count, 0, 0)
+}
+
+// Array literals are needed for parser tests and later compiler support code.
+func parse_array_literal(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val lbracket_id: i64 = parser_advance(mut ref parser, ref tokens)
+    val array_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.ArrayLit, lbracket_id)
+    mut count: i64 = 0
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RBracket) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        val elem_id: i64 = parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (elem_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, array_id, elem_id)
+        count += 1
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Comma)) {
+            break
+        }
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBracket)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P035", ref "Expected ']' to close array literal")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, array_id, parser_previous_token_id(ref parser), count, 0, 0)
+}
+
+// Field initializers are shared by value and table row constructors.
+func parse_field_init(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P028", ref "Expected field name in constructor")
+        return node.invalid_node_id()
+    }
+
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Colon)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P029", ref "Expected ':' after field name in constructor")
+        return node.invalid_node_id()
+    }
+
+    val value_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (value_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    val init_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.FieldInit, name_token_id)
+    node.node_append_child(mut ref nodes, init_id, value_id)
+    parser_finish_node(mut ref nodes, ref tokens, init_id, parser_previous_token_id(ref parser), name_token_id, 0, 0)
+}
+
+// Constructor expressions reuse the already-parsed callee/path node as their first child.
+func parse_constructor(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    callee_id: i64
+): i64 = {
+    val ctor_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.ConstructorExpr, callee_id)
+    node.node_append_child(mut ref nodes, ctor_id, callee_id)
+    parser_advance(mut ref parser, ref tokens)
+
+    mut field_count: i64 = 0
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        val init_id: i64 = parse_field_init(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (init_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, ctor_id, init_id)
+        field_count += 1
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Comma)) {
+            break
+        }
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P030", ref "Expected '}' to close constructor")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, ctor_id, parser_previous_token_id(ref parser), field_count, 0, 0)
+}
+
+// Call arguments carry ref/mut-ref wrappers as normal child nodes.
+func parse_argument(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    mut ref_flags: i64 = -1
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Mut)) {
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Ref)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P037", ref "Expected 'ref' after 'mut' in argument")
+            return node.invalid_node_id()
+        }
+        ref_flags = FLAG_MUT
+    } else {
+        if (parser_match(mut ref parser, ref tokens, token.TokenKind.Ref)) {
+            ref_flags = 0
+        }
+    }
+
+    if (ref_flags >= 0) {
+        val ref_token_id: i64 = parser_previous_token_id(ref parser)
+        val value_id: i64 = parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (value_id < 0) {
+            return node.invalid_node_id()
+        }
+
+        val ref_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.RefExpr, ref_token_id)
+        node.node_append_child(mut ref nodes, ref_id, value_id)
+        return parser_finish_node(
+            mut ref nodes,
+            ref tokens,
+            ref_id,
+            parser_previous_token_id(ref parser),
+            ref_flags,
+            0,
+            0
+        )
+    }
+
+    parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+}
+
+// Primary expressions own the productions that do not depend on a left-hand operand.
+func parse_primary(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+
+    if (kind == token.TokenKind.If) {
+        return parse_if(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.Match) {
+        return parse_match(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.LBrace) {
+        val lbrace_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parse_block(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            lbrace_id
+        )
+    }
+    if (kind == token.TokenKind.LBracket) {
+        return parse_array_literal(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.Number) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.NumberLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.Float) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.FloatLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.True || kind == token.TokenKind.False) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.BoolLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.String) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.StringLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.Char) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.CharLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.Identifier) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.Identifier, parser_advance(mut ref parser, ref tokens))
+    }
+    if (is_cast_type_token(kind) && parser_peek_kind(ref parser, ref tokens, 1) == token.TokenKind.LParen) {
+        val type_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        parser_advance(mut ref parser, ref tokens)
+        val operand_id: i64 = parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (operand_id < 0) {
+            return node.invalid_node_id()
+        }
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P002", ref "Expected ')' after expression")
+            return node.invalid_node_id()
+        }
+
+        val cast_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.CastExpr, type_token_id)
+        node.node_append_child(mut ref nodes, cast_id, operand_id)
+        return parser_finish_node(mut ref nodes, ref tokens, cast_id, parser_previous_token_id(ref parser), type_token_id, 0, 0)
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        val inner_id: i64 = parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (inner_id < 0) {
+            return node.invalid_node_id()
+        }
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P002", ref "Expected ')' after expression")
+            return node.invalid_node_id()
+        }
+        return inner_id
+    }
+
+    parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P001", ref "Expected expression")
+    node.invalid_node_id()
+}
+
+// Postfix parsing owns calls, field access, indexing, slicing, and constructors.
+func parse_postfix(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    left_id: i64
+): i64 = {
+    mut result: i64 = left_id
+    while (!(parser.failed)) {
+        if (parser_match(mut ref parser, ref tokens, token.TokenKind.Dot)) {
+            if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+                parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P003", ref "Expected identifier after '.'")
+                return node.invalid_node_id()
+            }
+
+            val field_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+            val access_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.FieldAccess, result)
+            node.node_append_child(mut ref nodes, access_id, result)
+            result = parser_finish_node(
+                mut ref nodes,
+                ref tokens,
+                access_id,
+                field_token_id,
+                field_token_id,
+                0,
+                0
+            )
+        } else {
+            if (parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+                val call_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.CallExpr, result)
+                node.node_append_child(mut ref nodes, call_id, result)
+                mut arg_count: i64 = 0
+                while (!parser_check(ref parser, ref tokens, token.TokenKind.RParen) &&
+                       !parser_at_end(ref parser, ref tokens) &&
+                       !(parser.failed)) {
+                    val arg_id: i64 = parse_argument(
+                        mut ref mem,
+                        mut ref parser,
+                        ref tokens,
+                        mut ref nodes,
+                        mut ref diags,
+                        mut ref diag_pool
+                    )
+                    if (arg_id < 0) {
+                        return node.invalid_node_id()
+                    }
+                    node.node_append_child(mut ref nodes, call_id, arg_id)
+                    arg_count += 1
+                    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Comma)) {
+                        break
+                    }
+                }
+
+                if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+                    parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P002", ref "Expected ')' after expression")
+                    return node.invalid_node_id()
+                }
+                result = parser_finish_node(
+                    mut ref nodes,
+                    ref tokens,
+                    call_id,
+                    parser_previous_token_id(ref parser),
+                    arg_count,
+                    0,
+                    0
+                )
+            } else {
+                if (parser_match(mut ref parser, ref tokens, token.TokenKind.LBracket)) {
+                    val lbracket_id: i64 = parser_previous_token_id(ref parser)
+                    mut start_id: i64 = node.invalid_node_id()
+                    mut end_id: i64 = node.invalid_node_id()
+                    mut flags: i64 = 0
+
+                    if (!parser_check(ref parser, ref tokens, token.TokenKind.DotDot) &&
+                        !parser_check(ref parser, ref tokens, token.TokenKind.RBracket)) {
+                        start_id = parse_expression(
+                            mut ref mem,
+                            mut ref parser,
+                            ref tokens,
+                            mut ref nodes,
+                            mut ref diags,
+                            mut ref diag_pool
+                        )
+                        if (start_id < 0) {
+                            return node.invalid_node_id()
+                        }
+                    }
+
+                    if (parser_match(mut ref parser, ref tokens, token.TokenKind.DotDot)) {
+                        if (start_id >= 0) {
+                            flags |= FLAG_HAS_START
+                        }
+                        if (!parser_check(ref parser, ref tokens, token.TokenKind.RBracket)) {
+                            end_id = parse_expression(
+                                mut ref mem,
+                                mut ref parser,
+                                ref tokens,
+                                mut ref nodes,
+                                mut ref diags,
+                                mut ref diag_pool
+                            )
+                            if (end_id < 0) {
+                                return node.invalid_node_id()
+                            }
+                            flags |= FLAG_HAS_END
+                        }
+                        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBracket)) {
+                            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P047", ref "Expected ']' after slice range")
+                            return node.invalid_node_id()
+                        }
+
+                        val slice_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.SliceExpr, result)
+                        node.node_append_child(mut ref nodes, slice_id, result)
+                        if (start_id >= 0) {
+                            node.node_append_child(mut ref nodes, slice_id, start_id)
+                        }
+                        if (end_id >= 0) {
+                            node.node_append_child(mut ref nodes, slice_id, end_id)
+                        }
+                        result = parser_finish_node(
+                            mut ref nodes,
+                            ref tokens,
+                            slice_id,
+                            parser_previous_token_id(ref parser),
+                            flags,
+                            0,
+                            0
+                        )
+                    } else {
+                        if (start_id < 0) {
+                            parser_error_token(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, lbracket_id, ref "P001", ref "Expected expression")
+                            return node.invalid_node_id()
+                        }
+                        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBracket)) {
+                            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P034", ref "Expected ']'")
+                            return node.invalid_node_id()
+                        }
+
+                        val index_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.IndexExpr, result)
+                        node.node_append_child(mut ref nodes, index_id, result)
+                        node.node_append_child(mut ref nodes, index_id, start_id)
+                        result = parser_finish_node(mut ref nodes, ref tokens, index_id, parser_previous_token_id(ref parser), 0, 0, 0)
+                    }
+                } else {
+                    if (parser_check(ref parser, ref tokens, token.TokenKind.LBrace)) {
+                        result = parse_constructor(
+                            mut ref mem,
+                            mut ref parser,
+                            ref tokens,
+                            mut ref nodes,
+                            mut ref diags,
+                            mut ref diag_pool,
+                            result
+                        )
+                        if (result < 0) {
+                            return node.invalid_node_id()
+                        }
+                    } else {
+                        return result
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+// Prefix parsing is where unary operators and ref wrappers enter the expression grammar.
+func parse_prefix(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+    if (kind == token.TokenKind.Minus ||
+        kind == token.TokenKind.Bang ||
+        kind == token.TokenKind.Tilde) {
+        val op_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        val operand_id: i64 = parse_prefix(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (operand_id < 0) {
+            return node.invalid_node_id()
+        }
+        val unary_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.UnaryExpr, op_token_id)
+        node.node_append_child(mut ref nodes, unary_id, operand_id)
+        return parser_finish_node(mut ref nodes, ref tokens, unary_id, parser_previous_token_id(ref parser), op_token_id, 0, 0)
+    }
+
+    val primary_id: i64 = parse_primary(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (primary_id < 0) {
+        return node.invalid_node_id()
+    }
+    parse_postfix(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        primary_id
+    )
+}
+
+// Precedence-climbing keeps the operator table small and matches the existing stage-0 ordering.
+func parse_expression_prec(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    min_prec: i64
+): i64 = {
+    mut left_id: i64 = parse_prefix(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (left_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    mut keep_parsing: bool = true
+    while (keep_parsing && !(parser.failed)) {
+        val op_kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+        val prec: i64 = binary_precedence(op_kind)
+        if (prec < min_prec) {
+            keep_parsing = false
+        } else {
+            val op_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+            val right_id: i64 = parse_expression_prec(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool,
+                prec + 1
+            )
+            if (right_id < 0) {
+                return node.invalid_node_id()
+            }
+            val binary_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.BinaryExpr, left_id)
+            node.node_append_child(mut ref nodes, binary_id, left_id)
+            node.node_append_child(mut ref nodes, binary_id, right_id)
+            left_id = parser_finish_node(
+                mut ref nodes,
+                ref tokens,
+                binary_id,
+                parser_previous_token_id(ref parser),
+                op_token_id,
+                0,
+                0
+            )
+        }
+    }
+    left_id
+}
+
+// Expressions default to the full precedence table with logical-or at the bottom.
+func parse_expression(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    parse_expression_prec(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        0
+    )
+}
+
+// Variable declarations are shared by local statements and top-level globals.
+func parse_var_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    keyword_token_id: i64,
+    flags: i64
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P003", ref "Expected identifier")
+        return node.invalid_node_id()
+    }
+
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    val decl_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.VarDecl, keyword_token_id)
+    mut full_flags: i64 = flags
+
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Colon)) {
+        val type_id: i64 = parse_type(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            false
+        )
+        if (type_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, decl_id, type_id)
+        full_flags |= FLAG_HAS_TYPE
+    } else {
+        if (flag_has(full_flags, FLAG_MUT)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P014", ref "Expected ':' after identifier")
+            return node.invalid_node_id()
+        }
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Equals)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P004", ref "Expected '='")
+        return node.invalid_node_id()
+    }
+
+    val init_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (init_id < 0) {
+        return node.invalid_node_id()
+    }
+    node.node_append_child(mut ref nodes, decl_id, init_id)
+    parser_finish_node(mut ref nodes, ref tokens, decl_id, parser_previous_token_id(ref parser), name_token_id, full_flags, 0)
+}
+
+// Return statements may omit the expression only when the next token closes the block.
+func parse_return(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val return_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    val return_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.ReturnStmt, return_token_id)
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.RBrace)) {
+        val value_id: i64 = parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (value_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, return_id, value_id)
+    }
+    parser_finish_node(mut ref nodes, ref tokens, return_id, parser_previous_token_id(ref parser), 0, 0, 0)
+}
+
+// Assertions are just one expression child plus their own source span.
+func parse_assert_stmt(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val assert_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    val cond_id: i64 = parse_expression(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (cond_id < 0) {
+        return node.invalid_node_id()
+    }
+    val assert_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.AssertStmt, assert_token_id)
+    node.node_append_child(mut ref nodes, assert_id, cond_id)
+    parser_finish_node(mut ref nodes, ref tokens, assert_id, parser_previous_token_id(ref parser), 0, 0, 0)
+}
+
+// Brace-delimited blocks are the only place where statement-vs-value ambiguity exists.
+func parse_block(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    lbrace_token_id: i64
+): i64 = {
+    val block_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.Block, lbrace_token_id)
+    mut statement_count: i64 = 0
+    mut flags: i64 = 0
+
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        if (parser_check(ref parser, ref tokens, token.TokenKind.If)) {
+            val if_id: i64 = parse_if(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool
+            )
+            if (if_id < 0) {
+                return node.invalid_node_id()
+            }
+            if (parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+                node_if_has_value(ref nodes, if_id)) {
+                node.node_append_child(mut ref nodes, block_id, if_id)
+                flags |= FLAG_HAS_VALUE
+                break
+            }
+            node.node_append_child(mut ref nodes, block_id, if_id)
+            statement_count += 1
+            continue
+        }
+
+        if (parser_check(ref parser, ref tokens, token.TokenKind.Match)) {
+            val match_id: i64 = parse_match(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool
+            )
+            if (match_id < 0) {
+                return node.invalid_node_id()
+            }
+            if (parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+                node_match_has_value(ref nodes, match_id)) {
+                node.node_append_child(mut ref nodes, block_id, match_id)
+                flags |= FLAG_HAS_VALUE
+                break
+            }
+            node.node_append_child(mut ref nodes, block_id, match_id)
+            statement_count += 1
+            continue
+        }
+
+        if (statement_starts_here(ref parser, ref tokens)) {
+            val stmt_id: i64 = parse_statement(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool
+            )
+            if (stmt_id < 0) {
+                return node.invalid_node_id()
+            }
+            node.node_append_child(mut ref nodes, block_id, stmt_id)
+            statement_count += 1
+            continue
+        }
+
+        val expr_id: i64 = parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (expr_id < 0) {
+            return node.invalid_node_id()
+        }
+
+        if (parser_check(ref parser, ref tokens, token.TokenKind.RBrace)) {
+            node.node_append_child(mut ref nodes, block_id, expr_id)
+            flags |= FLAG_HAS_VALUE
+            break
+        }
+
+        val op_kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+        if (op_kind == token.TokenKind.Equals || is_compound_assignment(op_kind)) {
+            val op_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+            val value_id: i64 = parse_expression(
+                mut ref mem,
+                mut ref parser,
+                ref tokens,
+                mut ref nodes,
+                mut ref diags,
+                mut ref diag_pool
+            )
+            if (value_id < 0) {
+                return node.invalid_node_id()
+            }
+
+            val assign_kind: node.NodeKind = if (tokens.kind[op_token_id] == token.TokenKind.Equals) {
+                node.NodeKind.AssignStmt
+            } else {
+                node.NodeKind.CompoundAssignStmt
+            }
+            val assign_id: i64 = parser_open_node_from_node(mut ref nodes, assign_kind, expr_id)
+            node.node_append_child(mut ref nodes, assign_id, expr_id)
+            node.node_append_child(mut ref nodes, assign_id, value_id)
+            node.node_append_child(mut ref nodes, block_id, parser_finish_node(
+                mut ref nodes,
+                ref tokens,
+                assign_id,
+                parser_previous_token_id(ref parser),
+                op_token_id,
+                0,
+                0
+            ))
+            statement_count += 1
+        } else {
+            if (nodes.kind[expr_id] == node.NodeKind.CallExpr) {
+                val stmt_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.ExprStmt, expr_id)
+                node.node_append_child(mut ref nodes, stmt_id, expr_id)
+                node.node_append_child(mut ref nodes, block_id, parser_finish_node(
+                    mut ref nodes,
+                    ref tokens,
+                    stmt_id,
+                    parser_previous_token_id(ref parser),
+                    0,
+                    0,
+                    0
+                ))
+                statement_count += 1
+            } else {
+                parser_error_token(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, parser_previous_token_id(ref parser), ref "P005", ref "Expected statement")
+                return node.invalid_node_id()
+            }
+        }
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P007", ref "Expected '}' to close block")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, block_id, parser_previous_token_id(ref parser), statement_count, flags, 0)
+}
+
+// Statement parsing covers only the productions that are unambiguously statements from their first token.
+func parse_statement(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+    if (kind == token.TokenKind.Val) {
+        val token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parse_var_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            token_id,
+            0
+        )
+    }
+    if (kind == token.TokenKind.Mut) {
+        val token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parse_var_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            token_id,
+            FLAG_MUT
+        )
+    }
+    if (kind == token.TokenKind.Return) {
+        return parse_return(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.Assert) {
+        return parse_assert_stmt(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.While) {
+        return parse_while(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.For) {
+        return parse_for(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
+    if (kind == token.TokenKind.Break) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.BreakStmt, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.Continue) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.ContinueStmt, parser_advance(mut ref parser, ref tokens))
+    }
+    if (kind == token.TokenKind.LBrace) {
+        val lbrace_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parse_block(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            lbrace_id
+        )
+    }
+
+    parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P005", ref "Expected statement")
+    node.invalid_node_id()
+}
+
+// Import declarations stay small: alias token plus string-literal path token.
+func parse_import_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    import_token_id: i64
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P058", ref "Expected module alias after 'import'")
+        return node.invalid_node_id()
+    }
+    val alias_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.String)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P046", ref "Expected import path after module alias")
+        return node.invalid_node_id()
+    }
+    val path_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    val import_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.ImportDecl, import_token_id)
+    parser_finish_node(mut ref nodes, ref tokens, import_id, path_token_id, alias_token_id, path_token_id, 0)
+}
+
+// Function declarations share one parser for normal and native forms.
+func parse_func_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    func_token_id: i64,
+    flags: i64
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P017", ref "Expected function name after 'func'")
+        return node.invalid_node_id()
+    }
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P018", ref "Expected '(' after function name")
+        return node.invalid_node_id()
+    }
+
+    val func_kind: node.NodeKind = if (flag_has(flags, FLAG_NATIVE)) {
+        node.NodeKind.NativeFuncDecl
+    } else {
+        node.NodeKind.FuncDecl
+    }
+    val func_id: i64 = parser_open_node(mut ref nodes, ref tokens, func_kind, func_token_id)
+    mut param_count: i64 = 0
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RParen) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        val param_id: i64 = parse_param(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (param_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, func_id, param_id)
+        param_count += 1
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Comma)) {
+            break
+        }
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P019", ref "Expected ')' after parameters")
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Colon)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P020", ref "Expected ':' before return type")
+        return node.invalid_node_id()
+    }
+
+    val return_type_id: i64 = parse_type(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        true
+    )
+    if (return_type_id < 0) {
+        return node.invalid_node_id()
+    }
+    node.node_append_child(mut ref nodes, func_id, return_type_id)
+
+    mut full_flags: i64 = flags
+    if (flag_has(flags, FLAG_NATIVE)) {
+        if (parser_match(mut ref parser, ref tokens, token.TokenKind.Equals)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P060", ref "Native function must not have a body")
+            return node.invalid_node_id()
+        }
+        return parser_finish_node(
+            mut ref nodes,
+            ref tokens,
+            func_id,
+            parser_previous_token_id(ref parser),
+            name_token_id,
+            full_flags,
+            param_count
+        )
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Equals)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P022", ref "Expected '=' before function body")
+        return node.invalid_node_id()
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P023", ref "Expected '{' for function body")
+        return node.invalid_node_id()
+    }
+
+    val body_id: i64 = parse_block(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        parser_previous_token_id(ref parser)
+    )
+    if (body_id < 0) {
+        return node.invalid_node_id()
+    }
+    node.node_append_child(mut ref nodes, func_id, body_id)
+    full_flags |= FLAG_HAS_VALUE
+    parser_finish_node(mut ref nodes, ref tokens, func_id, parser_previous_token_id(ref parser), name_token_id, full_flags, param_count)
+}
+
+// Value, struct, and table declarations all boil down to a named list of typed fields.
+func parse_shape_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    decl_token_id: i64,
+    decl_kind: node.NodeKind,
+    flags: i64,
+    ref name_message: [u8]
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P024", ref name_message)
+        return node.invalid_node_id()
+    }
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P025", ref "Expected '{' after declaration name")
+        return node.invalid_node_id()
+    }
+
+    val decl_id: i64 = parser_open_node(mut ref nodes, ref tokens, decl_kind, decl_token_id)
+    mut field_count: i64 = 0
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        val field_id: i64 = parse_field_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (field_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, decl_id, field_id)
+        field_count += 1
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Comma)) {
+            break
+        }
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P027", ref "Expected '}' to close declaration")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, decl_id, parser_previous_token_id(ref parser), name_token_id, flags, field_count)
+}
+
+// Enum declarations are the only top-level type form with payload-bearing children.
+func parse_enum_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    enum_token_id: i64,
+    flags: i64
+): i64 = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P041", ref "Expected enum type name after 'enum'")
+        return node.invalid_node_id()
+    }
+    val name_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P042", ref "Expected '{' after enum name")
+        return node.invalid_node_id()
+    }
+
+    val enum_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.EnumDecl, enum_token_id)
+    mut variant_count: i64 = 0
+    while (!parser_check(ref parser, ref tokens, token.TokenKind.RBrace) &&
+           !parser_at_end(ref parser, ref tokens) &&
+           !(parser.failed)) {
+        val variant_id: i64 = parse_variant_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (variant_id < 0) {
+            return node.invalid_node_id()
+        }
+        node.node_append_child(mut ref nodes, enum_id, variant_id)
+        variant_count += 1
+        if (!parser_match(mut ref parser, ref tokens, token.TokenKind.Comma)) {
+            break
+        }
+    }
+
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RBrace)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P043", ref "Expected '}' to close enum")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, enum_id, parser_previous_token_id(ref parser), name_token_id, flags, variant_count)
+}
+
+// Top-level declarations own the pub/native prefixes before dispatching to a concrete parser.
+func parse_top_level_decl(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    mut flags: i64 = 0
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Pub)) {
+        flags |= FLAG_PUB
+    }
+
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Native)) {
+        flags |= FLAG_NATIVE
+        if (!parser_check(ref parser, ref tokens, token.TokenKind.Func)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P059", ref "'native' must be followed by 'func'")
+            return node.invalid_node_id()
+        }
+        val func_token_id: i64 = parser_advance(mut ref parser, ref tokens)
+        return parse_func_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            func_token_id,
+            flags
+        )
+    }
+
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Import)) {
+        if (flag_has(flags, FLAG_PUB)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P057", ref "'pub' cannot be used on imports")
+            return node.invalid_node_id()
+        }
+        return parse_import_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser)
+        )
+    }
+
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Func)) {
+        return parse_func_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            flags
+        )
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Val)) {
+        return parse_var_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            flags
+        )
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Mut)) {
+        return parse_var_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            flags | FLAG_MUT
+        )
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Value)) {
+        return parse_shape_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            node.NodeKind.ValueDecl,
+            flags,
+            ref "Expected value type name after 'value'"
+        )
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Struct)) {
+        return parse_shape_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            node.NodeKind.StructDecl,
+            flags,
+            ref "Expected struct type name after 'struct'"
+        )
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Table)) {
+        return parse_shape_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            node.NodeKind.TableDecl,
+            flags,
+            ref "Expected table type name after 'table'"
+        )
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Enum)) {
+        return parse_enum_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            parser_previous_token_id(ref parser),
+            flags
+        )
+    }
+
+    if (flag_has(flags, FLAG_PUB)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P056", ref "'pub' must be followed by a declaration")
+    } else {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P016", ref "Expected declaration at top level")
+    }
+    node.invalid_node_id()
+}
+
+// Parse one module worth of tokens into the shared flat node table.
+pub func parse_tokens(
+    mut ref mem: Arena,
+    ref token_range: span.Range,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): ParseResult = {
+    val node_start: i64 = table_len(ref nodes)
+    val diag_start: i64 = table_len(ref diags)
+
+    val first_token_id: i64 = token_range.start
+    val source_id: i64 = tokens.source_id[first_token_id]
+    mut parser: Parser = Parser {
+        source_id: source_id,
+        token_start: token_range.start,
+        token_end: token_range.start + token_range.count,
+        current: token_range.start,
+        failed: false
+    }
+
+    val module_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.Module, first_token_id)
+    mut decl_count: i64 = 0
+    while (!parser_at_end(ref parser, ref tokens) && !(parser.failed)) {
+        val decl_id: i64 = parse_top_level_decl(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (decl_id < 0) {
+            break
+        }
+        node.node_append_child(mut ref nodes, module_id, decl_id)
+        decl_count += 1
+    }
+
+    parser_finish_node(
+        mut ref nodes,
+        ref tokens,
+        module_id,
+        parser_current_token_id(ref parser),
+        decl_count,
+        0,
+        0
+    )
+
+    ParseResult {
+        root: module_id,
+        nodes: span.range(node_start, table_len(ref nodes) - node_start),
+        diags: span.range(diag_start, table_len(ref diags) - diag_start)
+    }
+}
+
+// Dump formatting uses one byte append path so parser tests stay deterministic.
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref text: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref text)
+}
+
+// Integer text is needed for child counts and statement counts in parser dumps.
+func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
+    val text: str = string.i64_to_str(mut ref mem, n)
+    append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// Keep indentation local to the dump code so the recursive printer stays compact.
+func append_indent(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, depth: i64): void = {
+    mut i: i64 = 0
+    while (i < depth) {
+        append_bytes(mut ref mem, mut ref out, ref "  ")
+        i += 1
+    }
+}
+
+// Many node kinds print the token text they store in data0 or data1.
+func append_token_text(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    token_id: i64
+): void = {
+    val text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, token_id)
+    append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// Keep the node-specific line formatting centralized so the recursion stays easy to scan.
+func dump_node_line(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    depth: i64
+): void = {
+    append_indent(mut ref mem, mut ref out, depth)
+    append_bytes(mut ref mem, mut ref out, ref node.node_kind_name(nodes.kind[node_id]))
+
+    val kind: node.NodeKind = nodes.kind[node_id]
+    if (kind == node.NodeKind.ImportDecl) {
+        append_bytes(mut ref mem, mut ref out, ref " alias=")
+        append_token_text(mut ref mem, mut ref out, ref tokens, ref sources, ref text_pool, nodes.data0[node_id])
+        append_bytes(mut ref mem, mut ref out, ref " path=")
+        append_token_text(mut ref mem, mut ref out, ref tokens, ref sources, ref text_pool, nodes.data1[node_id])
+    } else {
+        if (kind == node.NodeKind.FuncDecl ||
+            kind == node.NodeKind.NativeFuncDecl ||
+            kind == node.NodeKind.ParamDecl ||
+            kind == node.NodeKind.ValueDecl ||
+            kind == node.NodeKind.StructDecl ||
+            kind == node.NodeKind.TableDecl ||
+            kind == node.NodeKind.EnumDecl ||
+            kind == node.NodeKind.FieldDecl ||
+            kind == node.NodeKind.VariantDecl ||
+            kind == node.NodeKind.VarDecl ||
+            kind == node.NodeKind.FieldInit ||
+            kind == node.NodeKind.Identifier ||
+            kind == node.NodeKind.NumberLit ||
+            kind == node.NodeKind.FloatLit ||
+            kind == node.NodeKind.BoolLit ||
+            kind == node.NodeKind.StringLit ||
+            kind == node.NodeKind.CharLit ||
+            kind == node.NodeKind.BuiltinType ||
+            kind == node.NodeKind.VoidType ||
+            kind == node.NodeKind.CastExpr) {
+            if (nodes.data0[node_id] > 0 || kind == node.NodeKind.VoidType) {
+                append_bytes(mut ref mem, mut ref out, ref " text=")
+                append_token_text(mut ref mem, mut ref out, ref tokens, ref sources, ref text_pool, nodes.data0[node_id])
+            }
+        }
+    }
+
+    if (kind == node.NodeKind.FieldAccess ||
+        kind == node.NodeKind.BinaryExpr ||
+        kind == node.NodeKind.UnaryExpr ||
+        kind == node.NodeKind.AssignStmt ||
+        kind == node.NodeKind.CompoundAssignStmt) {
+        append_bytes(mut ref mem, mut ref out, ref " op=")
+        append_token_text(mut ref mem, mut ref out, ref tokens, ref sources, ref text_pool, nodes.data0[node_id])
+    }
+
+    if (kind == node.NodeKind.Block ||
+        kind == node.NodeKind.CallExpr ||
+        kind == node.NodeKind.ArrayLit ||
+        kind == node.NodeKind.ConstructorExpr ||
+        kind == node.NodeKind.MatchExpr) {
+        append_bytes(mut ref mem, mut ref out, ref " count=")
+        append_i64(mut ref mem, mut ref out, nodes.data0[node_id])
+    }
+
+    if (kind == node.NodeKind.Block && flag_has(nodes.data1[node_id], FLAG_HAS_VALUE)) {
+        append_bytes(mut ref mem, mut ref out, ref " value")
+    }
+    if (kind == node.NodeKind.ParamDecl || kind == node.NodeKind.VarDecl) {
+        if (flag_has(nodes.data1[node_id], FLAG_MUT)) {
+            append_bytes(mut ref mem, mut ref out, ref " mut")
+        }
+        if (flag_has(nodes.data1[node_id], FLAG_REF)) {
+            append_bytes(mut ref mem, mut ref out, ref " ref")
+        }
+        if (flag_has(nodes.data1[node_id], FLAG_PUB)) {
+            append_bytes(mut ref mem, mut ref out, ref " pub")
+        }
+        if (flag_has(nodes.data1[node_id], FLAG_HAS_TYPE)) {
+            append_bytes(mut ref mem, mut ref out, ref " typed")
+        }
+    }
+    if ((kind == node.NodeKind.FuncDecl ||
+         kind == node.NodeKind.NativeFuncDecl ||
+         kind == node.NodeKind.ValueDecl ||
+         kind == node.NodeKind.StructDecl ||
+         kind == node.NodeKind.TableDecl ||
+         kind == node.NodeKind.EnumDecl) &&
+        flag_has(nodes.data1[node_id], FLAG_PUB)) {
+        append_bytes(mut ref mem, mut ref out, ref " pub")
+    }
+    if (kind == node.NodeKind.RefExpr && flag_has(nodes.data0[node_id], FLAG_MUT)) {
+        append_bytes(mut ref mem, mut ref out, ref " mut")
+    }
+    if (kind == node.NodeKind.SliceExpr) {
+        if (flag_has(nodes.data0[node_id], FLAG_HAS_START)) {
+            append_bytes(mut ref mem, mut ref out, ref " start")
+        }
+        if (flag_has(nodes.data0[node_id], FLAG_HAS_END)) {
+            append_bytes(mut ref mem, mut ref out, ref " end")
+        }
+    }
+    append_bytes(mut ref mem, mut ref out, ref "\n")
+}
+
+// Recursive dumps follow the child/sibling links directly so test output matches stored order.
+func dump_node_tree(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    depth: i64
+): void = {
+    dump_node_line(mut ref mem, mut ref out, ref nodes, ref tokens, ref sources, ref text_pool, node_id, depth)
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        dump_node_tree(mut ref mem, mut ref out, ref nodes, ref tokens, ref sources, ref text_pool, child_id, depth + 1)
+        child_id = nodes.next_sibling[child_id]
+    }
+}
+
+// Render the flat syntax tree into a stable text format for golden tests.
+pub func parse_dump(
+    mut ref mem: Arena,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    root_id: i64
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 4096)
+    append_bytes(mut ref mem, mut ref out, ref "=== AST ===\n")
+    if (root_id >= 0) {
+        dump_node_tree(mut ref mem, mut ref out, ref nodes, ref tokens, ref sources, ref text_pool, root_id, 0)
+    }
+    out.data[0..out.count]
+}

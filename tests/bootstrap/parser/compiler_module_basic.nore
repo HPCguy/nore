@@ -1,0 +1,70 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import lexer "../../../compiler/frontend/lexer.nore"
+import node "../../../compiler/frontend/node.nore"
+import parser "../../../compiler/frontend/parser.nore"
+import source "../../../compiler/support/source.nore"
+import token "../../../compiler/frontend/token.nore"
+import string "std/string.nore"
+
+// Prove the bootstrap parser can handle one real compiler support module end to end.
+func main(): void = {
+    mut mem: Arena = arena(524288)
+    mut sources: source.Sources = table_alloc(mut ref mem, 4)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 4096)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 256)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 16)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
+
+    val loaded: source.SourceLoadResult = source.sources_load_file(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        ref "compiler/support/source.nore",
+        ref "compiler/support/source.nore",
+        -1
+    )
+
+    val source_id: i64 = match (loaded) {
+        Ok(id) = { id }
+        Err(code) = { -1 }
+    }
+    assert source_id == 0
+
+    val text: [u8] = source.source_text(ref text_pool, ref sources, source_id)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, token.token_capacity_for_source_len(text.len))
+
+    val lexed: lexer.LexResult = lexer.lex_source(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        source_id,
+        mut ref tokens,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert lexed.diags.count == 0
+
+    mut nodes: node.Nodes = table_alloc(mut ref mem, node.node_capacity_for_token_count(lexed.tokens.count))
+    val parsed: parser.ParseResult = parser.parse_tokens(
+        mut ref mem,
+        ref lexed.tokens,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert parsed.root >= 0
+    assert parsed.diags.count == 0
+    assert parsed.nodes.count > 32
+
+    val dump: [u8] = parser.parse_dump(mut ref mem, ref nodes, ref tokens, ref sources, ref text_pool, parsed.root)
+    assert string.str_contains(ref dump, ref "TABLE_DECL text=Sources")
+    assert string.str_contains(ref dump, ref "ENUM_DECL text=SourceLoadResult")
+    assert string.str_contains(ref dump, ref "FUNC text=sources_load_file")
+}

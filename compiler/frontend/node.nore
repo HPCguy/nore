@@ -1,3 +1,182 @@
-// Bootstrap compiler frontend module placeholder.
-// Responsibility: syntax node kinds and node-table layout.
-// Implement in Milestone 5.
+// Bootstrap syntax node kinds and flat node storage.
+// Responsibility: define the shared node-table contract for parser, sema, and dumps.
+// Owns: NodeKind, Nodes rows, and child/sibling link helpers.
+// Does not own: token scanning, parser policy, semantic meaning, or code generation.
+
+pub enum NodeKind {
+    Module,
+    ImportDecl,
+    FuncDecl,
+    NativeFuncDecl,
+    ParamDecl,
+    ValueDecl,
+    StructDecl,
+    TableDecl,
+    EnumDecl,
+    FieldDecl,
+    VariantDecl,
+
+    BuiltinType,
+    VoidType,
+    ArrayType,
+    SliceType,
+
+    Block,
+    VarDecl,
+    ReturnStmt,
+    AssertStmt,
+    IfStmt,
+    WhileStmt,
+    ForStmt,
+    BreakStmt,
+    ContinueStmt,
+    AssignStmt,
+    CompoundAssignStmt,
+    ExprStmt,
+    MatchExpr,
+    MatchArm,
+
+    Identifier,
+    NumberLit,
+    FloatLit,
+    BoolLit,
+    StringLit,
+    CharLit,
+    UnaryExpr,
+    RefExpr,
+    BinaryExpr,
+    CastExpr,
+    CallExpr,
+    FieldAccess,
+    IndexExpr,
+    SliceExpr,
+    ArrayLit,
+    ConstructorExpr,
+    FieldInit
+}
+
+pub table Nodes {
+    kind: NodeKind,
+    source_id: i64,
+    start: i64,
+    span_len: i64,
+    parent: i64,
+    first_child: i64,
+    last_child: i64,
+    next_sibling: i64,
+    type_id: i64,
+    symbol_id: i64,
+    data0: i64,
+    data1: i64,
+    data2: i64
+}
+
+// Keep the shared invalid-node sentinel explicit across frontend and sema work.
+pub func invalid_node_id(): i64 = {
+    -1
+}
+
+// Parser tests need a conservative fixed-capacity estimate because tables do not grow.
+pub func node_capacity_for_token_count(token_count: i64): i64 = {
+    if (token_count <= 0) {
+        return 8
+    }
+    token_count * 4 + 8
+}
+
+// Centralize node creation so every parser call site initializes the link columns the same way.
+pub func node_push(
+    mut ref nodes: Nodes,
+    kind: NodeKind,
+    source_id: i64,
+    start: i64,
+    span_len: i64,
+    data0: i64,
+    data1: i64,
+    data2: i64
+): i64 = {
+    val node_id: i64 = table_len(ref nodes)
+    table_insert(mut ref nodes, Nodes.Row {
+        kind: kind,
+        source_id: source_id,
+        start: start,
+        span_len: span_len,
+        parent: invalid_node_id(),
+        first_child: invalid_node_id(),
+        last_child: invalid_node_id(),
+        next_sibling: invalid_node_id(),
+        type_id: invalid_node_id(),
+        symbol_id: invalid_node_id(),
+        data0: data0,
+        data1: data1,
+        data2: data2
+    })
+    node_id
+}
+
+// Child links stay append-only so dumps and later semantic passes see source order.
+pub func node_append_child(mut ref nodes: Nodes, parent_id: i64, child_id: i64): void = {
+    if (parent_id < 0 || child_id < 0) {
+        return
+    }
+
+    nodes.parent[child_id] = parent_id
+    if (nodes.first_child[parent_id] < 0) {
+        nodes.first_child[parent_id] = child_id
+    } else {
+        nodes.next_sibling[nodes.last_child[parent_id]] = child_id
+    }
+    nodes.last_child[parent_id] = child_id
+}
+
+// Keep debug output stable by using one spelling table for every node kind.
+pub func node_kind_name(kind: NodeKind): str = {
+    match (kind) {
+        Module = { "MODULE" }
+        ImportDecl = { "IMPORT" }
+        FuncDecl = { "FUNC" }
+        NativeFuncDecl = { "NATIVE_FUNC" }
+        ParamDecl = { "PARAM" }
+        ValueDecl = { "VALUE_DECL" }
+        StructDecl = { "STRUCT_DECL" }
+        TableDecl = { "TABLE_DECL" }
+        EnumDecl = { "ENUM_DECL" }
+        FieldDecl = { "FIELD_DECL" }
+        VariantDecl = { "VARIANT_DECL" }
+        BuiltinType = { "BUILTIN_TYPE" }
+        VoidType = { "VOID_TYPE" }
+        ArrayType = { "ARRAY_TYPE" }
+        SliceType = { "SLICE_TYPE" }
+        Block = { "BLOCK" }
+        VarDecl = { "VAR_DECL" }
+        ReturnStmt = { "RETURN" }
+        AssertStmt = { "ASSERT" }
+        IfStmt = { "IF" }
+        WhileStmt = { "WHILE" }
+        ForStmt = { "FOR" }
+        BreakStmt = { "BREAK" }
+        ContinueStmt = { "CONTINUE" }
+        AssignStmt = { "ASSIGN" }
+        CompoundAssignStmt = { "COMPOUND_ASSIGN" }
+        ExprStmt = { "EXPR_STMT" }
+        MatchExpr = { "MATCH" }
+        MatchArm = { "MATCH_ARM" }
+        Identifier = { "IDENTIFIER" }
+        NumberLit = { "NUMBER" }
+        FloatLit = { "FLOAT" }
+        BoolLit = { "BOOL" }
+        StringLit = { "STRING" }
+        CharLit = { "CHAR" }
+        UnaryExpr = { "UNARY" }
+        RefExpr = { "REF" }
+        BinaryExpr = { "BINARY" }
+        CastExpr = { "CAST" }
+        CallExpr = { "CALL" }
+        FieldAccess = { "FIELD_ACCESS" }
+        IndexExpr = { "INDEX" }
+        SliceExpr = { "SLICE" }
+        ArrayLit = { "ARRAY" }
+        ConstructorExpr = { "CONSTRUCTOR" }
+        FieldInit = { "FIELD_INIT" }
+    }
+}
