@@ -1,0 +1,4 @@
+import missing "missing.nore"
+
+func main(): void = {
+}

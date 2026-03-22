@@ -1,0 +1,637 @@
+// Bootstrap multi-module frontend loading.
+// Responsibility: load one import graph into shared source/token/node/module tables.
+// Owns: module rows, import-edge rows, path resolution, and lex/parse orchestration across modules.
+// Does not own: semantic analysis, code generation, CLI behavior, or filesystem policy beyond support/path.nore.
+
+import bbuf "../support/byte_buf.nore"
+import diag "../support/diag.nore"
+import ibuf "../support/i64_buf.nore"
+import lexer "lexer.nore"
+import node "node.nore"
+import parser "parser.nore"
+import path "../support/path.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import token "token.nore"
+import string "std/string.nore"
+
+pub table Modules {
+    source_id: i64,
+    root_node: i64,
+    token_start: i64,
+    token_count: i64,
+    first_import: i64,
+    last_import: i64,
+    import_count: i64
+}
+
+pub table ModuleImports {
+    from_module: i64,
+    to_module: i64,
+    import_node: i64,
+    next_import: i64
+}
+
+pub value LoadResult {
+    root_module: i64,
+    modules: span.Range,
+    imports: span.Range,
+    tokens: span.Range,
+    nodes: span.Range,
+    diags: span.Range
+}
+
+// Keep the shared missing-row sentinel explicit across module and import tables.
+func invalid_id(): i64 = {
+    -1
+}
+
+// Module lookup stays linear until real graph sizes justify better indexing.
+pub func module_find_by_source(ref modules: Modules, source_id: i64): i64 = {
+    mut module_id: i64 = 0
+    while (module_id < table_len(ref modules)) {
+        if (modules.source_id[module_id] == source_id) {
+            return module_id
+        }
+        module_id += 1
+    }
+    invalid_id()
+}
+
+// Source lookup also stays linear because bootstrap graphs are still small.
+func source_find_by_path(
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref wanted_path: [u8]
+): i64 = {
+    mut source_id: i64 = 0
+    while (source_id < table_len(ref sources)) {
+        val loaded_path: [u8] = source.source_path(ref path_pool, ref sources, source_id)
+        if (string.str_eq(ref loaded_path, ref wanted_path)) {
+            return source_id
+        }
+        source_id += 1
+    }
+    invalid_id()
+}
+
+// Centralize module-row creation so the import-link columns always start clean.
+func modules_push(
+    mut ref modules: Modules,
+    source_id: i64,
+    root_node: i64,
+    token_start: i64,
+    token_count: i64
+): i64 = {
+    val module_id: i64 = table_len(ref modules)
+    table_insert(mut ref modules, Modules.Row {
+        source_id: source_id,
+        root_node: root_node,
+        token_start: token_start,
+        token_count: token_count,
+        first_import: invalid_id(),
+        last_import: invalid_id(),
+        import_count: 0
+    })
+    module_id
+}
+
+// Import edges keep source order so later sema passes can preserve declaration order.
+func module_imports_push(
+    mut ref modules: Modules,
+    mut ref imports: ModuleImports,
+    from_module: i64,
+    to_module: i64,
+    import_node: i64
+): i64 = {
+    val import_id: i64 = table_len(ref imports)
+    table_insert(mut ref imports, ModuleImports.Row {
+        from_module: from_module,
+        to_module: to_module,
+        import_node: import_node,
+        next_import: invalid_id()
+    })
+
+    if (modules.first_import[from_module] < 0) {
+        modules.first_import[from_module] = import_id
+    } else {
+        imports.next_import[modules.last_import[from_module]] = import_id
+    }
+    modules.last_import[from_module] = import_id
+    modules.import_count[from_module] += 1
+    import_id
+}
+
+// Retries must see whether one import declaration already has a recorded edge.
+func module_import_find_by_node(
+    ref modules: Modules,
+    ref imports: ModuleImports,
+    from_module: i64,
+    import_node: i64
+): i64 = {
+    mut import_id: i64 = modules.first_import[from_module]
+    while (import_id >= 0) {
+        if (imports.import_node[import_id] == import_node) {
+            return import_id
+        }
+        import_id = imports.next_import[import_id]
+    }
+    invalid_id()
+}
+
+// Reuse previously loaded source rows before touching the filesystem again.
+func ensure_source_loaded(
+    mut ref mem: Arena,
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    ref path_text: [u8],
+    ref display_path: [u8],
+    importer_source: i64,
+    import_start: i64,
+    import_len: i64,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val existing_source: i64 = source_find_by_path(ref sources, ref path_pool, ref path_text)
+    if (existing_source >= 0) {
+        return existing_source
+    }
+
+    val loaded: source.SourceLoadResult = source.sources_load_file(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        ref path_text,
+        ref display_path,
+        importer_source
+    )
+    match (loaded) {
+        Ok(source_id) = { source_id }
+        Err(code) = {
+            if (importer_source >= 0) {
+                diag.diag_error(
+                    mut ref mem,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    ref "D007",
+                    importer_source,
+                    import_start,
+                    import_len,
+                    ref "Cannot find imported file"
+                )
+            } else {
+                diag.diag_error_path(
+                    mut ref mem,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    ref "D005",
+                    ref display_path,
+                    ref "Could not open file"
+                )
+            }
+            invalid_id()
+        }
+    }
+}
+
+// One module parse stays self-contained so graph loading can stop cleanly on errors.
+func parse_module_once(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    source_id: i64,
+    mut ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    mut ref modules: Modules
+): i64 = {
+    val existing_module: i64 = module_find_by_source(ref modules, source_id)
+    if (existing_module >= 0) {
+        return existing_module
+    }
+
+    val diag_start: i64 = table_len(ref diags)
+    val lexed: lexer.LexResult = lexer.lex_source(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        source_id,
+        mut ref tokens,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (table_len(ref diags) != diag_start) {
+        return invalid_id()
+    }
+
+    val parsed: parser.ParseResult = parser.parse_tokens(
+        mut ref mem,
+        ref lexed.tokens,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (table_len(ref diags) != diag_start) {
+        return invalid_id()
+    }
+
+    modules_push(
+        mut ref modules,
+        source_id,
+        parsed.root,
+        lexed.tokens.start,
+        lexed.tokens.count
+    )
+}
+
+// Import nodes already store alias and path token ids, so keep that decoding here.
+func import_path_text(
+    ref nodes: node.Nodes,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    import_node: i64
+): [u8] = {
+    token.token_payload_text(ref sources, ref text_pool, ref tokens, nodes.data1[import_node])
+}
+
+// Import resolution uses the current source path plus the bootstrap std rule.
+func resolve_import_path(
+    mut ref mem: Arena,
+    ref modules: Modules,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    module_id: i64,
+    ref compiler_root: [u8],
+    import_node: i64
+): str = {
+    val current_path: [u8] = source.source_path(ref path_pool, ref sources, modules.source_id[module_id])
+    val raw_path: [u8] = import_path_text(ref nodes, ref sources, ref text_pool, ref tokens, import_node)
+    path.path_resolve_import(mut ref mem, ref compiler_root, ref current_path, ref raw_path)
+}
+
+// Load or reuse one imported target module before the graph walk adds the edge.
+func load_import_target(
+    mut ref mem: Arena,
+    ref compiler_root: [u8],
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    mut ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref modules: Modules,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    from_module: i64,
+    import_node: i64
+): i64 = {
+    val importer_source: i64 = modules.source_id[from_module]
+    val path_token_id: i64 = nodes.data1[import_node]
+    val resolved_path: str = resolve_import_path(
+        mut ref mem,
+        ref modules,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        from_module,
+        ref compiler_root,
+        import_node
+    )
+    val source_id: i64 = ensure_source_loaded(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        ref resolved_path,
+        ref resolved_path,
+        importer_source,
+        tokens.start[path_token_id],
+        tokens.len[path_token_id],
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (source_id < 0) {
+        return invalid_id()
+    }
+
+    parse_module_once(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        source_id,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        mut ref modules
+    )
+}
+
+// Graph retries only need a tiny linear queue because bootstrap module sets stay small.
+func queue_contains(ref queued: ibuf.I64Buf, module_id: i64): bool = {
+    mut i: i64 = 0
+    while (i < queued.count) {
+        if (queued.data[i] == module_id) {
+            return true
+        }
+        i += 1
+    }
+    false
+}
+
+// Keep queue deduplication local so retry walks stay cycle-safe and edge-stable.
+func queue_push_unique(mut ref mem: Arena, mut ref queued: ibuf.I64Buf, module_id: i64): void = {
+    if (module_id < 0 || queue_contains(ref queued, module_id)) {
+        return
+    }
+    ibuf.i64_buf_push(mut ref mem, mut ref queued, module_id)
+}
+
+// Only import declarations participate in the graph walk during milestone 6.
+func load_module_imports(
+    mut ref mem: Arena,
+    ref compiler_root: [u8],
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    mut ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref modules: Modules,
+    mut ref imports: ModuleImports,
+    mut ref queued: ibuf.I64Buf,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    module_id: i64
+): bool = {
+    mut child_id: i64 = nodes.first_child[modules.root_node[module_id]]
+    while (child_id >= 0) {
+        if (nodes.kind[child_id] == node.NodeKind.ImportDecl) {
+            mut target_module: i64 = invalid_id()
+            val existing_import: i64 = module_import_find_by_node(ref modules, ref imports, module_id, child_id)
+            if (existing_import >= 0) {
+                target_module = imports.to_module[existing_import]
+            } else {
+                target_module = load_import_target(
+                    mut ref mem,
+                    ref compiler_root,
+                    mut ref sources,
+                    mut ref path_pool,
+                    mut ref text_pool,
+                    mut ref line_starts,
+                    mut ref tokens,
+                    mut ref nodes,
+                    mut ref modules,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    module_id,
+                    child_id
+                )
+                if (target_module < 0) {
+                    return false
+                }
+                module_imports_push(mut ref modules, mut ref imports, module_id, target_module, child_id)
+            }
+            queue_push_unique(mut ref mem, mut ref queued, target_module)
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    true
+}
+
+// Expose import-alias text directly so tests and later sema work stay simple.
+pub func module_import_alias_text(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref imports: ModuleImports,
+    import_id: i64
+): [u8] = {
+    val import_node: i64 = imports.import_node[import_id]
+    token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[import_node])
+}
+
+// Expose raw import-path text without quotes so tests can compare resolved edges.
+pub func module_import_path_text(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref imports: ModuleImports,
+    import_id: i64
+): [u8] = {
+    val import_node: i64 = imports.import_node[import_id]
+    token.token_payload_text(ref sources, ref text_pool, ref tokens, nodes.data1[import_node])
+}
+
+// Render graph dumps through one byte-append path for deterministic tests.
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref text: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref text)
+}
+
+// Integer formatting stays local to the dump helper.
+func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
+    val text: str = string.i64_to_str(mut ref mem, n)
+    append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// Dump one import edge with both raw and resolved module paths.
+func append_import_dump(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref modules: Modules,
+    ref imports: ModuleImports,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf,
+    import_id: i64
+): void = {
+    val alias: [u8] = module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, import_id)
+    val import_path: [u8] = module_import_path_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, import_id)
+    val target_path: [u8] = source.source_path(ref path_pool, ref sources, modules.source_id[imports.to_module[import_id]])
+
+    append_bytes(mut ref mem, mut ref out, ref "  IMPORT alias=")
+    append_bytes(mut ref mem, mut ref out, ref alias)
+    append_bytes(mut ref mem, mut ref out, ref " path=")
+    append_bytes(mut ref mem, mut ref out, ref import_path)
+    append_bytes(mut ref mem, mut ref out, ref " target=")
+    append_bytes(mut ref mem, mut ref out, ref target_path)
+    append_bytes(mut ref mem, mut ref out, ref "\n")
+}
+
+// Dump one module row and its import edges in stable load order.
+func append_module_dump(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref modules: Modules,
+    ref imports: ModuleImports,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf,
+    module_id: i64
+): void = {
+    val module_path: [u8] = source.source_path(ref path_pool, ref sources, modules.source_id[module_id])
+    append_bytes(mut ref mem, mut ref out, ref "MODULE path=")
+    append_bytes(mut ref mem, mut ref out, ref module_path)
+    append_bytes(mut ref mem, mut ref out, ref " imports=")
+    append_i64(mut ref mem, mut ref out, modules.import_count[module_id])
+    append_bytes(mut ref mem, mut ref out, ref "\n")
+
+    mut import_id: i64 = modules.first_import[module_id]
+    while (import_id >= 0) {
+        append_import_dump(
+            mut ref mem,
+            mut ref out,
+            ref modules,
+            ref imports,
+            ref nodes,
+            ref tokens,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            import_id
+        )
+        import_id = imports.next_import[import_id]
+    }
+}
+
+// Expose a stable graph dump for bootstrap import tests and manual inspection.
+pub func module_graph_dump(
+    mut ref mem: Arena,
+    ref modules: Modules,
+    ref imports: ModuleImports,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    append_bytes(mut ref mem, mut ref out, ref "=== MODULES ===\n")
+
+    mut module_id: i64 = 0
+    while (module_id < table_len(ref modules)) {
+        append_module_dump(
+            mut ref mem,
+            mut ref out,
+            ref modules,
+            ref imports,
+            ref nodes,
+            ref tokens,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            module_id
+        )
+        module_id += 1
+    }
+    out.data[0..out.count]
+}
+
+// Load one root module and then walk newly discovered imports breadth-first by load order.
+pub func load_graph(
+    mut ref mem: Arena,
+    ref compiler_root: [u8],
+    ref root_path: [u8],
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    mut ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref modules: Modules,
+    mut ref imports: ModuleImports,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): LoadResult = {
+    val module_start: i64 = table_len(ref modules)
+    val import_start: i64 = table_len(ref imports)
+    val token_start: i64 = table_len(ref tokens)
+    val node_start: i64 = table_len(ref nodes)
+    val diag_start: i64 = table_len(ref diags)
+
+    val root_source: i64 = ensure_source_loaded(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        ref root_path,
+        ref root_path,
+        invalid_id(),
+        0,
+        0,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    mut root_module: i64 = invalid_id()
+    if (root_source >= 0) {
+        root_module = parse_module_once(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            root_source,
+            mut ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            mut ref modules
+        )
+    }
+
+    if (root_module >= 0) {
+        mut queued: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 16)
+        queue_push_unique(mut ref mem, mut ref queued, root_module)
+
+        mut queue_index: i64 = 0
+        while (queue_index < queued.count && table_len(ref diags) == diag_start) {
+            if (!load_module_imports(
+                    mut ref mem,
+                    ref compiler_root,
+                    mut ref sources,
+                    mut ref path_pool,
+                    mut ref text_pool,
+                    mut ref line_starts,
+                    mut ref tokens,
+                    mut ref nodes,
+                    mut ref modules,
+                    mut ref imports,
+                    mut ref queued,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    queued.data[queue_index]
+                )) {
+                break
+            }
+            queue_index += 1
+        }
+    }
+
+    LoadResult {
+        root_module: root_module,
+        modules: span.range(module_start, table_len(ref modules) - module_start),
+        imports: span.range(import_start, table_len(ref imports) - import_start),
+        tokens: span.range(token_start, table_len(ref tokens) - token_start),
+        nodes: span.range(node_start, table_len(ref nodes) - node_start),
+        diags: span.range(diag_start, table_len(ref diags) - diag_start)
+    }
+}

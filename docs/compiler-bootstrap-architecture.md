@@ -125,6 +125,11 @@ Current committed file scope:
   single-module recursive descent, parser diagnostics, and stable parser debug
   dumps, but not import-graph loading, semantic checks, or code generation.
 
+- `compiler/frontend/loader.nore`: load one root module into a parsed import
+  graph only. It owns module rows, import-edge rows, path resolution on top of
+  `compiler/support/path.nore`, and multi-module lex/parse orchestration, but
+  not name resolution, visibility checks, or code generation.
+
 Remaining placeholder file scope:
 
 - `compiler/sema/symbols.nore`: symbol rows and symbol metadata only.

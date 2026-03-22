@@ -1,0 +1,5 @@
+import shared "shared.nore"
+
+pub func left_value(): i64 = {
+    shared.shared_value()
+}

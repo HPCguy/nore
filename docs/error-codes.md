@@ -22,6 +22,13 @@ error[D002]: Unknown flag: --invalid
 
 ## All Error Codes
 
+- **D001**: No input file specified / usage error
+- **D002**: Unknown flag
+- **D003**: Multiple input files specified
+- **D004**: Missing output path after `-o`
+- **D005**: Could not open or read input file
+- **D006**: Clang compilation failed
+- **D007**: Cannot find imported file
 - **L001**: Invalid character
 - **L002**: Unterminated block comment
 - **L003**: Unterminated string literal
@@ -88,7 +95,6 @@ error[D002]: Unknown flag: --invalid
 - **P058**: Expected module alias after 'import'
 - **P059**: 'native' must be followed by 'func'
 - **P060**: Native function must not have a body
-- **D007**: Cannot find imported file
 
 - **S001**: Duplicate variable declaration
 - **S002**: Undeclared variable

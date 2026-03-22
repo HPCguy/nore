@@ -16,9 +16,15 @@ pub table Diagnostics {
     severity: DiagSeverity,
     code: span.Span,
     source_id: i64,
+    display_path: span.Span,
     start: i64,
     len: i64,
     message: span.Span
+}
+
+// Driver-style diagnostics without a source row still need a distinct sentinel path span.
+func invalid_span(): span.Span = {
+    span.span(-1, 0)
 }
 
 // Re-slice pooled diagnostic strings by span so rows stay compact.
@@ -68,6 +74,7 @@ pub func diag_push(
         severity: severity,
         code: code_span,
         source_id: source_id,
+        display_path: invalid_span(),
         start: start,
         len: len,
         message: message_span
@@ -99,9 +106,44 @@ pub func diag_error(
     )
 }
 
+// Driver/file diagnostics can carry a display path even when no source row exists yet.
+pub func diag_error_path(
+    mut ref mem: Arena,
+    mut ref diags: Diagnostics,
+    mut ref text_pool: bbuf.ByteBuf,
+    ref code: [u8],
+    ref display_path: [u8],
+    ref message: [u8]
+): i64 = {
+    val code_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref code)
+    val path_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref display_path)
+    val message_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref message)
+
+    val diag_id: i64 = table_len(ref diags)
+    table_insert(mut ref diags, Diagnostics.Row {
+        severity: DiagSeverity.Error,
+        code: code_span,
+        source_id: -1,
+        display_path: path_span,
+        start: 0,
+        len: 0,
+        message: message_span
+    })
+    diag_id
+}
+
 // Recover a diagnostic code slice from the shared text pool.
 pub func diag_code(ref text_pool: bbuf.ByteBuf, ref diags: Diagnostics, diag_id: i64): [u8] = {
     val part: span.Span = diags.code[diag_id]
+    pool_slice(ref text_pool, ref part)
+}
+
+// Recover an explicit display path for diagnostics that do not have a source row.
+pub func diag_display_path(ref text_pool: bbuf.ByteBuf, ref diags: Diagnostics, diag_id: i64): [u8] = {
+    val part: span.Span = diags.display_path[diag_id]
+    if (part.start < 0) {
+        return text_pool.data[0..0]
+    }
     pool_slice(ref text_pool, ref part)
 }
 
@@ -123,8 +165,10 @@ pub func diag_format(
 ): [u8] = {
     val code: [u8] = diag_code(ref diag_pool, ref diags, diag_id)
     val message: [u8] = diag_message(ref diag_pool, ref diags, diag_id)
+    val explicit_path: [u8] = diag_display_path(ref diag_pool, ref diags, diag_id)
     val severity: str = severity_text(diags.severity[diag_id])
     val has_source: bool = diags.source_id[diag_id] >= 0
+    val has_explicit_path: bool = explicit_path.len > 0
 
     mut line: i64 = 0
     mut col: i64 = 0
@@ -143,6 +187,10 @@ pub func diag_format(
     mut path_len: i64 = 9
     if (has_source) {
         path_len = source.source_display_path(ref path_pool, ref sources, diags.source_id[diag_id]).len
+    } else {
+        if (has_explicit_path) {
+            path_len = explicit_path.len
+        }
     }
 
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(
@@ -153,7 +201,11 @@ pub func diag_format(
         val display_path: [u8] = source.source_display_path(ref path_pool, ref sources, diags.source_id[diag_id])
         append_bytes(mut ref mem, mut ref out, ref display_path)
     } else {
-        append_bytes(mut ref mem, mut ref out, ref "<unknown>")
+        if (has_explicit_path) {
+            append_bytes(mut ref mem, mut ref out, ref explicit_path)
+        } else {
+            append_bytes(mut ref mem, mut ref out, ref "<unknown>")
+        }
     }
     append_bytes(mut ref mem, mut ref out, ref ":")
     append_i64(mut ref mem, mut ref out, line)

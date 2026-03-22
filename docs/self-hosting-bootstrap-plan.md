@@ -398,6 +398,10 @@ Parse one source file into a table-based syntax tree.
 
 ## Milestone 6: Multi-Module Frontend Loading
 
+**Status:** Complete
+
+Committed in `compiler/frontend/loader.nore` and `tests/bootstrap/imports/`.
+
 ### Gaps to close before starting
 
 - Milestone 5 complete

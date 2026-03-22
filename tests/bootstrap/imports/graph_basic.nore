@@ -1,0 +1,129 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import source "../../../compiler/support/source.nore"
+import token "../../../compiler/frontend/token.nore"
+import string "std/string.nore"
+
+// Walk one module's import list by index so graph assertions stay readable.
+func module_import_at(
+    ref modules: loader.Modules,
+    ref imports: loader.ModuleImports,
+    module_id: i64,
+    wanted_index: i64
+): i64 = {
+    mut import_id: i64 = modules.first_import[module_id]
+    mut index: i64 = 0
+    while (import_id >= 0) {
+        if (index == wanted_index) {
+            return import_id
+        }
+        import_id = imports.next_import[import_id]
+        index += 1
+    }
+    -1
+}
+
+// Recover one loaded module path from the shared source table for direct assertions.
+func module_path(
+    ref modules: loader.Modules,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    module_id: i64
+): [u8] = {
+    source.source_path(ref path_pool, ref sources, modules.source_id[module_id])
+}
+
+// Verify local imports, diamond deduplication, and std-path resolution in one graph.
+func main(): void = {
+    mut mem: Arena = arena(4194304)
+    mut sources: source.Sources = table_alloc(mut ref mem, 16)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 2048)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 32768)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 2048)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 2048)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 8192)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 16)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 16)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 16)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/bootstrap/imports/repo",
+        ref "tests/bootstrap/imports/repo/app/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert loaded.root_module == 0
+    assert loaded.diags.count == 0
+    assert loaded.modules.count == 5
+    assert loaded.imports.count == 5
+    assert modules.import_count[loaded.root_module] == 3
+
+    val left_import: i64 = module_import_at(ref modules, ref imports, loaded.root_module, 0)
+    val right_import: i64 = module_import_at(ref modules, ref imports, loaded.root_module, 1)
+    val std_import: i64 = module_import_at(ref modules, ref imports, loaded.root_module, 2)
+    assert left_import >= 0
+    assert right_import >= 0
+    assert std_import >= 0
+
+    assert string.str_eq(
+        ref loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, left_import),
+        ref "left"
+    )
+    assert string.str_eq(
+        ref loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, right_import),
+        ref "right"
+    )
+    assert string.str_eq(
+        ref loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, std_import),
+        ref "support"
+    )
+    assert string.str_eq(
+        ref loader.module_import_path_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, std_import),
+        ref "std/support.nore"
+    )
+
+    val left_module: i64 = imports.to_module[left_import]
+    val right_module: i64 = imports.to_module[right_import]
+    val std_module: i64 = imports.to_module[std_import]
+    assert string.str_eq(ref module_path(ref modules, ref sources, ref path_pool, left_module), ref "tests/bootstrap/imports/repo/app/left.nore")
+    assert string.str_eq(ref module_path(ref modules, ref sources, ref path_pool, right_module), ref "tests/bootstrap/imports/repo/app/right.nore")
+    assert string.str_eq(ref module_path(ref modules, ref sources, ref path_pool, std_module), ref "tests/bootstrap/imports/repo/std/support.nore")
+
+    val left_shared_import: i64 = module_import_at(ref modules, ref imports, left_module, 0)
+    val right_shared_import: i64 = module_import_at(ref modules, ref imports, right_module, 0)
+    assert left_shared_import >= 0
+    assert right_shared_import >= 0
+    assert imports.to_module[left_shared_import] == imports.to_module[right_shared_import]
+    assert string.str_eq(
+        ref module_path(ref modules, ref sources, ref path_pool, imports.to_module[left_shared_import]),
+        ref "tests/bootstrap/imports/repo/app/shared.nore"
+    )
+
+    val dump: [u8] = loader.module_graph_dump(
+        mut ref mem,
+        ref modules,
+        ref imports,
+        ref nodes,
+        ref tokens,
+        ref sources,
+        ref path_pool,
+        ref text_pool
+    )
+    assert string.str_contains(ref dump, ref "MODULE path=tests/bootstrap/imports/repo/app/root.nore imports=3")
+    assert string.str_contains(ref dump, ref "IMPORT alias=support path=std/support.nore target=tests/bootstrap/imports/repo/std/support.nore")
+    assert string.str_contains(ref dump, ref "MODULE path=tests/bootstrap/imports/repo/app/shared.nore imports=0")
+}

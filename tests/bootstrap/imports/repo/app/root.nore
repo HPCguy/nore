@@ -1,0 +1,8 @@
+import left "left.nore"
+import right "right.nore"
+import support "std/support.nore"
+
+pub func main(): void = {
+    assert left.left_value() == right.right_value()
+    assert support.support_value() == 7
+}
