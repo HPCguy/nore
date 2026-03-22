@@ -319,6 +319,11 @@ Build the shared infrastructure that every stage will use.
 
 ## Milestone 4: Lexer for the Bootstrap Subset
 
+**Status:** Complete
+
+Committed in `compiler/frontend/token.nore`, `compiler/frontend/lexer.nore`, and
+`tests/bootstrap/lexer/`.
+
 ### Gaps to close before starting
 
 - Milestone 3 complete

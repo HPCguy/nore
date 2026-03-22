@@ -1,0 +1,14 @@
+import span "../../compiler/support/span.nore"
+
+/* Fixture source for bootstrap lexer golden coverage. */
+pub value Pair { left: i64, right: i64 }
+
+val NAME: str = "pair"
+val MARK: u8 = '!'
+val SCALE: f64 = 3.5
+
+func range_sum(mut ref total: i64): void = {
+    for i in 0..2 {
+        total += i
+    }
+}

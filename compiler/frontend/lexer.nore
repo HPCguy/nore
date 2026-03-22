@@ -1,3 +1,815 @@
-// Bootstrap compiler frontend module placeholder.
-// Responsibility: lex bootstrap-subset source into token rows.
-// Implement in Milestone 4.
+// Bootstrap lexer for the compiler subset.
+// Responsibility: scan one loaded source into flat token rows and lexer diagnostics.
+// Owns: lexer state, keyword recognition, literal scanning, and debug token dumps.
+// Does not own: source loading, parser/node creation, or semantic diagnostics.
+
+import bbuf "../support/byte_buf.nore"
+import diag "../support/diag.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import token "token.nore"
+import string "std/string.nore"
+
+struct Lexer {
+    source_id: i64,
+    text: [u8],
+    start: i64,
+    current: i64
+}
+
+pub value LexResult {
+    tokens: span.Range,
+    diags: span.Range
+}
+
+// EOF handling stays explicit because source slices are not NUL terminated.
+func lexer_at_end(ref lexer: Lexer): bool = {
+    lexer.current >= lexer.text.len
+}
+
+// Return 0 at EOF so scanner branches can share one sentinel.
+func lexer_peek(ref lexer: Lexer): u8 = {
+    if (lexer_at_end(ref lexer)) {
+        return 0
+    }
+    lexer.text[lexer.current]
+}
+
+// Keep two-character token handling local to the scanner.
+func lexer_peek_next(ref lexer: Lexer): u8 = {
+    if (lexer.current + 1 >= lexer.text.len) {
+        return 0
+    }
+    lexer.text[lexer.current + 1]
+}
+
+// Advance one byte when possible and leave EOF stable otherwise.
+func lexer_advance(mut ref lexer: Lexer): u8 = {
+    val c: u8 = lexer_peek(ref lexer)
+    if (!lexer_at_end(ref lexer)) {
+        lexer.current += 1
+    }
+    c
+}
+
+// Consume one expected byte for compound operators like += or ==.
+func lexer_match(mut ref lexer: Lexer, expected: u8): bool = {
+    if (lexer_peek(ref lexer) != expected) {
+        return false
+    }
+    lexer.current += 1
+    true
+}
+
+// Funnel structured lexer errors through one helper.
+func lexer_error(
+    mut ref mem: Arena,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    ref lexer: Lexer,
+    ref code: [u8],
+    start: i64,
+    len: i64,
+    ref message: [u8]
+): void = {
+    diag.diag_error(
+        mut ref mem,
+        mut ref diags,
+        mut ref diag_pool,
+        ref code,
+        lexer.source_id,
+        start,
+        len,
+        ref message
+    )
+}
+
+// Most punctuation tokens do not need a secondary payload span.
+func push_simple_token(mut ref tokens: token.Tokens, ref lexer: Lexer, kind: token.TokenKind): void = {
+    token.tokens_push(
+        mut ref tokens,
+        kind,
+        lexer.source_id,
+        lexer.start,
+        lexer.current - lexer.start,
+        -1,
+        0
+    )
+}
+
+// Literals and identifiers keep payload spans for later parser/sema work.
+func push_payload_token(
+    mut ref tokens: token.Tokens,
+    ref lexer: Lexer,
+    kind: token.TokenKind,
+    payload_start: i64,
+    payload_len: i64
+): void = {
+    token.tokens_push(
+        mut ref tokens,
+        kind,
+        lexer.source_id,
+        lexer.start,
+        lexer.current - lexer.start,
+        payload_start,
+        payload_len
+    )
+}
+
+// Identifier characters follow the same ASCII-only rule as stage-0.
+func is_ident_start(c: u8): bool = {
+    string.is_alpha(c) || c == '_'
+}
+
+// Identifier tails allow digits after the first character.
+func is_ident_continue(c: u8): bool = {
+    is_ident_start(c) || string.is_digit(c)
+}
+
+// Keep keyword spelling centralized so later parser code can rely on the same set.
+func keyword_kind(ref word: [u8]): token.TokenKind = {
+    if (word.len == 2) {
+        if (string.str_eq(ref word, ref "if")) {
+            return token.TokenKind.If
+        }
+        if (string.str_eq(ref word, ref "in")) {
+            return token.TokenKind.In
+        }
+        if (string.str_eq(ref word, ref "u8")) {
+            return token.TokenKind.U8
+        }
+        return token.TokenKind.Identifier
+    }
+
+    if (word.len == 3) {
+        if (string.str_eq(ref word, ref "val")) {
+            return token.TokenKind.Val
+        }
+        if (string.str_eq(ref word, ref "mut")) {
+            return token.TokenKind.Mut
+        }
+        if (string.str_eq(ref word, ref "ref")) {
+            return token.TokenKind.Ref
+        }
+        if (string.str_eq(ref word, ref "for")) {
+            return token.TokenKind.For
+        }
+        if (string.str_eq(ref word, ref "i64")) {
+            return token.TokenKind.I64
+        }
+        if (string.str_eq(ref word, ref "i32")) {
+            return token.TokenKind.I32
+        }
+        if (string.str_eq(ref word, ref "u32")) {
+            return token.TokenKind.U32
+        }
+        if (string.str_eq(ref word, ref "f64")) {
+            return token.TokenKind.F64
+        }
+        if (string.str_eq(ref word, ref "str")) {
+            return token.TokenKind.Str
+        }
+        if (string.str_eq(ref word, ref "pub")) {
+            return token.TokenKind.Pub
+        }
+        return token.TokenKind.Identifier
+    }
+
+    if (word.len == 4) {
+        if (string.str_eq(ref word, ref "func")) {
+            return token.TokenKind.Func
+        }
+        if (string.str_eq(ref word, ref "void")) {
+            return token.TokenKind.Void
+        }
+        if (string.str_eq(ref word, ref "else")) {
+            return token.TokenKind.Else
+        }
+        if (string.str_eq(ref word, ref "bool")) {
+            return token.TokenKind.Bool
+        }
+        if (string.str_eq(ref word, ref "true")) {
+            return token.TokenKind.True
+        }
+        if (string.str_eq(ref word, ref "enum")) {
+            return token.TokenKind.Enum
+        }
+        return token.TokenKind.Identifier
+    }
+
+    if (word.len == 5) {
+        if (string.str_eq(ref word, ref "while")) {
+            return token.TokenKind.While
+        }
+        if (string.str_eq(ref word, ref "match")) {
+            return token.TokenKind.Match
+        }
+        if (string.str_eq(ref word, ref "break")) {
+            return token.TokenKind.Break
+        }
+        if (string.str_eq(ref word, ref "false")) {
+            return token.TokenKind.False
+        }
+        if (string.str_eq(ref word, ref "value")) {
+            return token.TokenKind.Value
+        }
+        if (string.str_eq(ref word, ref "table")) {
+            return token.TokenKind.Table
+        }
+        if (string.str_eq(ref word, ref "Arena")) {
+            return token.TokenKind.ArenaType
+        }
+        return token.TokenKind.Identifier
+    }
+
+    if (word.len == 6) {
+        if (string.str_eq(ref word, ref "return")) {
+            return token.TokenKind.Return
+        }
+        if (string.str_eq(ref word, ref "assert")) {
+            return token.TokenKind.Assert
+        }
+        if (string.str_eq(ref word, ref "struct")) {
+            return token.TokenKind.Struct
+        }
+        if (string.str_eq(ref word, ref "import")) {
+            return token.TokenKind.Import
+        }
+        if (string.str_eq(ref word, ref "native")) {
+            return token.TokenKind.Native
+        }
+        return token.TokenKind.Identifier
+    }
+
+    if (word.len == 8 && string.str_eq(ref word, ref "continue")) {
+        return token.TokenKind.Continue
+    }
+
+    token.TokenKind.Identifier
+}
+
+// Escape validation mirrors the stage-0 string and char literal rules.
+func is_valid_escape(esc: u8, quote: u8): bool = {
+    esc == 'n' || esc == 't' || esc == 'r' || esc == '\\' || esc == quote || esc == '0'
+}
+
+// Skip spaces and comments so the main scanner only sees significant tokens.
+func skip_whitespace_and_comments(
+    mut ref mem: Arena,
+    mut ref lexer: Lexer,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): void = {
+    mut done: bool = false
+    while (!done) {
+        val c: u8 = lexer_peek(ref lexer)
+        if (string.is_space(c)) {
+            lexer_advance(mut ref lexer)
+        } else {
+            if (c == '/' && lexer_peek_next(ref lexer) == '/') {
+                while (lexer_peek(ref lexer) != '\n' && lexer_peek(ref lexer) != 0) {
+                    lexer_advance(mut ref lexer)
+                }
+            } else {
+                if (c == '/' && lexer_peek_next(ref lexer) == '*') {
+                    val comment_start: i64 = lexer.current
+                    lexer_advance(mut ref lexer)
+                    lexer_advance(mut ref lexer)
+                    mut closed: bool = false
+                    while (!closed) {
+                        if (lexer_at_end(ref lexer)) {
+                            lexer_error(
+                                mut ref mem,
+                                mut ref diags,
+                                mut ref diag_pool,
+                                ref lexer,
+                                ref "L002",
+                                comment_start,
+                                2,
+                                ref "Unterminated block comment"
+                            )
+                            closed = true
+                        } else {
+                            if (lexer_peek(ref lexer) == '*' && lexer_peek_next(ref lexer) == '/') {
+                                lexer_advance(mut ref lexer)
+                                lexer_advance(mut ref lexer)
+                                closed = true
+                            } else {
+                                lexer_advance(mut ref lexer)
+                            }
+                        }
+                    }
+                } else {
+                    done = true
+                }
+            }
+        }
+    }
+}
+
+// Numbers stay unparsed here; later phases consume the recorded payload slice.
+func scan_number(mut ref tokens: token.Tokens, mut ref lexer: Lexer): void = {
+    while (string.is_digit(lexer_peek(ref lexer))) {
+        lexer_advance(mut ref lexer)
+    }
+
+    mut kind: token.TokenKind = token.TokenKind.Number
+    if (lexer_peek(ref lexer) == '.' && string.is_digit(lexer_peek_next(ref lexer))) {
+        lexer_advance(mut ref lexer)
+        while (string.is_digit(lexer_peek(ref lexer))) {
+            lexer_advance(mut ref lexer)
+        }
+        kind = token.TokenKind.Float
+    }
+
+    push_payload_token(
+        mut ref tokens,
+        ref lexer,
+        kind,
+        lexer.start,
+        lexer.current - lexer.start
+    )
+}
+
+// Keywords and user identifiers share one scan path and diverge only at classification.
+func scan_identifier(mut ref tokens: token.Tokens, mut ref lexer: Lexer): void = {
+    while (is_ident_continue(lexer_peek(ref lexer))) {
+        lexer_advance(mut ref lexer)
+    }
+
+    val word: [u8] = lexer.text[lexer.start..lexer.current]
+    val kind: token.TokenKind = keyword_kind(ref word)
+    if (kind == token.TokenKind.Identifier) {
+        push_payload_token(
+            mut ref tokens,
+            ref lexer,
+            kind,
+            lexer.start,
+            lexer.current - lexer.start
+        )
+    } else {
+        push_simple_token(mut ref tokens, ref lexer, kind)
+    }
+}
+
+// String literals keep their raw inner payload span and report lexer-only escape issues.
+func scan_string(
+    mut ref mem: Arena,
+    mut ref tokens: token.Tokens,
+    mut ref lexer: Lexer,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): void = {
+    lexer_advance(mut ref lexer)
+
+    mut done: bool = false
+    while (!done) {
+        val c: u8 = lexer_peek(ref lexer)
+        if (c == '"') {
+            lexer_advance(mut ref lexer)
+            val payload_start: i64 = lexer.start + 1
+            val payload_len: i64 = lexer.current - payload_start - 1
+            push_payload_token(
+                mut ref tokens,
+                ref lexer,
+                token.TokenKind.String,
+                payload_start,
+                payload_len
+            )
+            done = true
+        } else {
+            if (c == 0 || c == '\n') {
+                lexer_error(
+                    mut ref mem,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    ref lexer,
+                    ref "L003",
+                    lexer.start,
+                    lexer.current - lexer.start,
+                    ref "Unterminated string literal"
+                )
+                push_payload_token(
+                    mut ref tokens,
+                    ref lexer,
+                    token.TokenKind.String,
+                    lexer.start + 1,
+                    lexer.current - lexer.start - 1
+                )
+                done = true
+            } else {
+                if (c == '\\') {
+                    lexer_advance(mut ref lexer)
+                    val esc: u8 = lexer_peek(ref lexer)
+                    if (!is_valid_escape(esc, '"')) {
+                        lexer_error(
+                            mut ref mem,
+                            mut ref diags,
+                            mut ref diag_pool,
+                            ref lexer,
+                            ref "L004",
+                            lexer.current,
+                            1,
+                            ref "Invalid escape sequence"
+                        )
+                    }
+                }
+                if (!lexer_at_end(ref lexer)) {
+                    lexer_advance(mut ref lexer)
+                }
+            }
+        }
+    }
+}
+
+// Character literals mirror stage-0 error cases so later parser work inherits the same shape.
+func scan_char(
+    mut ref mem: Arena,
+    mut ref tokens: token.Tokens,
+    mut ref lexer: Lexer,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): void = {
+    lexer_advance(mut ref lexer)
+
+    val c: u8 = lexer_peek(ref lexer)
+    if (c == '\'') {
+        lexer_error(
+            mut ref mem,
+            mut ref diags,
+            mut ref diag_pool,
+            ref lexer,
+            ref "L005",
+            lexer.start,
+            2,
+            ref "Empty character literal"
+        )
+        lexer_advance(mut ref lexer)
+        push_payload_token(mut ref tokens, ref lexer, token.TokenKind.Char, lexer.start + 1, 0)
+        return
+    }
+
+    if (c == 0 || c == '\n') {
+        lexer_error(
+            mut ref mem,
+            mut ref diags,
+            mut ref diag_pool,
+            ref lexer,
+            ref "L003",
+            lexer.start,
+            lexer.current - lexer.start,
+            ref "Unterminated character literal"
+        )
+        push_payload_token(mut ref tokens, ref lexer, token.TokenKind.Char, lexer.start + 1, 0)
+        return
+    }
+
+    if (c == '\\') {
+        lexer_advance(mut ref lexer)
+        val esc: u8 = lexer_peek(ref lexer)
+        if (!is_valid_escape(esc, '\'')) {
+            lexer_error(
+                mut ref mem,
+                mut ref diags,
+                mut ref diag_pool,
+                ref lexer,
+                ref "L004",
+                lexer.current,
+                1,
+                ref "Invalid escape sequence"
+            )
+        }
+    }
+
+    if (!lexer_at_end(ref lexer)) {
+        lexer_advance(mut ref lexer)
+    }
+
+    val close: u8 = lexer_peek(ref lexer)
+    if (close != '\'') {
+        if (close == 0 || close == '\n') {
+            lexer_error(
+                mut ref mem,
+                mut ref diags,
+                mut ref diag_pool,
+                ref lexer,
+                ref "L003",
+                lexer.start,
+                lexer.current - lexer.start,
+                ref "Unterminated character literal"
+            )
+            push_payload_token(
+                mut ref tokens,
+                ref lexer,
+                token.TokenKind.Char,
+                lexer.start + 1,
+                lexer.current - lexer.start - 1
+            )
+            return
+        }
+
+        while (lexer_peek(ref lexer) != '\'' && lexer_peek(ref lexer) != 0 && lexer_peek(ref lexer) != '\n') {
+            lexer_advance(mut ref lexer)
+        }
+
+        lexer_error(
+            mut ref mem,
+            mut ref diags,
+            mut ref diag_pool,
+            ref lexer,
+            ref "L006",
+            lexer.start,
+            lexer.current - lexer.start,
+            ref "Character literal must contain exactly one character"
+        )
+        mut payload_len: i64 = lexer.current - lexer.start - 1
+        if (lexer_peek(ref lexer) == '\'') {
+            lexer_advance(mut ref lexer)
+            payload_len = lexer.current - lexer.start - 2
+        }
+        push_payload_token(
+            mut ref tokens,
+            ref lexer,
+            token.TokenKind.Char,
+            lexer.start + 1,
+            payload_len
+        )
+        return
+    }
+
+    lexer_advance(mut ref lexer)
+    push_payload_token(
+        mut ref tokens,
+        ref lexer,
+        token.TokenKind.Char,
+        lexer.start + 1,
+        lexer.current - lexer.start - 2
+    )
+}
+
+// Simple single-byte punctuation only needs one shared scan path.
+func scan_single_token(mut ref tokens: token.Tokens, mut ref lexer: Lexer, kind: token.TokenKind): void = {
+    lexer_advance(mut ref lexer)
+    push_simple_token(mut ref tokens, ref lexer, kind)
+}
+
+// Shared helper for tokens like + and += or . and ..
+func scan_follow_or_single(
+    mut ref tokens: token.Tokens,
+    mut ref lexer: Lexer,
+    follow: u8,
+    follow_kind: token.TokenKind,
+    single_kind: token.TokenKind
+): void = {
+    lexer_advance(mut ref lexer)
+    if (lexer_match(mut ref lexer, follow)) {
+        push_simple_token(mut ref tokens, ref lexer, follow_kind)
+    } else {
+        push_simple_token(mut ref tokens, ref lexer, single_kind)
+    }
+}
+
+// Ampersand has a three-way branch: &&, &=, or &.
+func scan_ampersand(mut ref tokens: token.Tokens, mut ref lexer: Lexer): void = {
+    lexer_advance(mut ref lexer)
+    if (lexer_match(mut ref lexer, '&')) {
+        push_simple_token(mut ref tokens, ref lexer, token.TokenKind.AndAnd)
+    } else {
+        if (lexer_match(mut ref lexer, '=')) {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.AmpersandEqual)
+        } else {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.Ampersand)
+        }
+    }
+}
+
+// Pipe has a three-way branch: ||, |=, or |.
+func scan_pipe(mut ref tokens: token.Tokens, mut ref lexer: Lexer): void = {
+    lexer_advance(mut ref lexer)
+    if (lexer_match(mut ref lexer, '|')) {
+        push_simple_token(mut ref tokens, ref lexer, token.TokenKind.OrOr)
+    } else {
+        if (lexer_match(mut ref lexer, '=')) {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.PipeEqual)
+        } else {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.Pipe)
+        }
+    }
+}
+
+// Less-than owns <=, <<, and <<= after consuming the first byte.
+func scan_less(mut ref tokens: token.Tokens, mut ref lexer: Lexer): void = {
+    lexer_advance(mut ref lexer)
+    if (lexer_match(mut ref lexer, '=')) {
+        push_simple_token(mut ref tokens, ref lexer, token.TokenKind.LessEqual)
+    } else {
+        if (lexer_match(mut ref lexer, '<')) {
+            if (lexer_match(mut ref lexer, '=')) {
+                push_simple_token(mut ref tokens, ref lexer, token.TokenKind.LessLessEqual)
+            } else {
+                push_simple_token(mut ref tokens, ref lexer, token.TokenKind.LessLess)
+            }
+        } else {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.Less)
+        }
+    }
+}
+
+// Greater-than owns >=, >>, and >>= after consuming the first byte.
+func scan_greater(mut ref tokens: token.Tokens, mut ref lexer: Lexer): void = {
+    lexer_advance(mut ref lexer)
+    if (lexer_match(mut ref lexer, '=')) {
+        push_simple_token(mut ref tokens, ref lexer, token.TokenKind.GreaterEqual)
+    } else {
+        if (lexer_match(mut ref lexer, '>')) {
+            if (lexer_match(mut ref lexer, '=')) {
+                push_simple_token(mut ref tokens, ref lexer, token.TokenKind.GreaterGreaterEqual)
+            } else {
+                push_simple_token(mut ref tokens, ref lexer, token.TokenKind.GreaterGreater)
+            }
+        } else {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.Greater)
+        }
+    }
+}
+
+// Keep invalid-byte reporting identical while letting the main dispatch stay flat.
+func scan_invalid_char(
+    mut ref mem: Arena,
+    mut ref tokens: token.Tokens,
+    mut ref lexer: Lexer,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): void = {
+    lexer_advance(mut ref lexer)
+    lexer_error(
+        mut ref mem,
+        mut ref diags,
+        mut ref diag_pool,
+        ref lexer,
+        ref "L001",
+        lexer.start,
+        1,
+        ref "Invalid character"
+    )
+    push_simple_token(mut ref tokens, ref lexer, token.TokenKind.Error)
+}
+
+// Stage-0-style debug dumps print raw token text for literal and identifier kinds only.
+func dump_has_token_text(kind: token.TokenKind): bool = {
+    kind == token.TokenKind.Number ||
+        kind == token.TokenKind.Float ||
+        kind == token.TokenKind.Identifier ||
+        kind == token.TokenKind.String ||
+        kind == token.TokenKind.Char
+}
+
+// Keep dump formatting readable without depending on std/io.
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref text: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref text)
+}
+
+// The stage-0 token dump uses a fixed 20-column token kind field.
+func append_spaces(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, count: i64): void = {
+    mut i: i64 = 0
+    while (i < count) {
+        bbuf.byte_buf_push(mut ref mem, mut ref out, ' ')
+        i += 1
+    }
+}
+
+// Render one token row in the same simple line-oriented style as --lexer today.
+func append_dump_line(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    token_id: i64
+): void = {
+    val kind: token.TokenKind = tokens.kind[token_id]
+    val kind_text: str = token.token_kind_name(kind)
+    append_bytes(mut ref mem, mut ref out, ref kind_text)
+    if (kind_text.len < 20) {
+        append_spaces(mut ref mem, mut ref out, 20 - kind_text.len)
+    }
+
+    if (dump_has_token_text(kind)) {
+        val text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, token_id)
+        append_bytes(mut ref mem, mut ref out, ref " '")
+        append_bytes(mut ref mem, mut ref out, ref text)
+        append_bytes(mut ref mem, mut ref out, ref "'")
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "\n")
+}
+
+// Lex one loaded source into flat token rows and collect lexer diagnostics.
+pub func lex_source(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    source_id: i64,
+    mut ref tokens: token.Tokens,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): LexResult = {
+    val token_start: i64 = table_len(ref tokens)
+    val diag_start: i64 = table_len(ref diags)
+    val text: [u8] = source.source_text(ref text_pool, ref sources, source_id)
+
+    mut lexer: Lexer = Lexer {
+        source_id: source_id,
+        text: text,
+        start: 0,
+        current: 0
+    }
+
+    mut done: bool = false
+    while (!done) {
+        skip_whitespace_and_comments(mut ref mem, mut ref lexer, mut ref diags, mut ref diag_pool)
+        lexer.start = lexer.current
+
+        val c: u8 = lexer_peek(ref lexer)
+        if (c == 0) {
+            push_simple_token(mut ref tokens, ref lexer, token.TokenKind.Eof)
+            done = true
+        } else {
+            if (string.is_digit(c)) {
+                scan_number(mut ref tokens, mut ref lexer)
+            } else {
+                if (is_ident_start(c)) {
+                    scan_identifier(mut ref tokens, mut ref lexer)
+                } else {
+                    match (c) {
+                        '"' = {
+                            scan_string(mut ref mem, mut ref tokens, mut ref lexer, mut ref diags, mut ref diag_pool)
+                        }
+                        '\'' = {
+                            scan_char(mut ref mem, mut ref tokens, mut ref lexer, mut ref diags, mut ref diag_pool)
+                        }
+                        '(' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.LParen) }
+                        ')' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.RParen) }
+                        '{' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.LBrace) }
+                        '}' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.RBrace) }
+                        ':' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.Colon) }
+                        ',' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.Comma) }
+                        '.' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '.', token.TokenKind.DotDot, token.TokenKind.Dot) }
+                        '[' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.LBracket) }
+                        ']' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.RBracket) }
+                        ';' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.Semicolon) }
+                        '+' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.PlusEqual, token.TokenKind.Plus) }
+                        '-' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.MinusEqual, token.TokenKind.Minus) }
+                        '*' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.StarEqual, token.TokenKind.Star) }
+                        '/' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.SlashEqual, token.TokenKind.Slash) }
+                        '%' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.PercentEqual, token.TokenKind.Percent) }
+                        '=' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.EqualEqual, token.TokenKind.Equals) }
+                        '!' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.BangEqual, token.TokenKind.Bang) }
+                        '&' = { scan_ampersand(mut ref tokens, mut ref lexer) }
+                        '|' = { scan_pipe(mut ref tokens, mut ref lexer) }
+                        '^' = { scan_follow_or_single(mut ref tokens, mut ref lexer, '=', token.TokenKind.CaretEqual, token.TokenKind.Caret) }
+                        '~' = { scan_single_token(mut ref tokens, mut ref lexer, token.TokenKind.Tilde) }
+                        '<' = { scan_less(mut ref tokens, mut ref lexer) }
+                        '>' = { scan_greater(mut ref tokens, mut ref lexer) }
+                        _ = {
+                            scan_invalid_char(mut ref mem, mut ref tokens, mut ref lexer, mut ref diags, mut ref diag_pool)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    LexResult {
+        tokens: span.range(token_start, table_len(ref tokens) - token_start),
+        diags: span.range(diag_start, table_len(ref diags) - diag_start)
+    }
+}
+
+// Render a stable token dump for bootstrap golden tests and manual inspection.
+pub func lex_dump(
+    mut ref mem: Arena,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref token_range: span.Range
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, token_range.count * 32 + 16)
+    append_bytes(mut ref mem, mut ref out, ref "=== TOKENS ===\n")
+
+    mut i: i64 = 0
+    while (i < token_range.count) {
+        append_dump_line(
+            mut ref mem,
+            mut ref out,
+            ref tokens,
+            ref sources,
+            ref text_pool,
+            token_range.start + i
+        )
+        i += 1
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "\n")
+    out.data[0..out.count]
+}

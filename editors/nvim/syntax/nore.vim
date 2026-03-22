@@ -39,7 +39,7 @@ syn match noreOperator /\.\./
 syn match noreOperator /[=+\-*\/%&|^~!<>]/
 syn match noreDelimiter /[(){}\[\],:.;]/
 
-syn match noreTypeName /\<[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*\>/
+syn match noreTypeName /\v<([A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*|[A-Z][0-9][A-Za-z0-9_]*)>/
 syn match noreQualifiedType /\<[A-Z][A-Za-z0-9_]*\ze\./
 syn match noreConstructor /\.[A-Z][A-Za-z0-9_]*\>/hs=s+1
 syn match noreField /\.[a-z_][A-Za-z0-9_]*\>/hs=s+1

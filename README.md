@@ -120,6 +120,7 @@ The shipping compiler is still the single-file C program (`nore.c`) containing:
 Bootstrap status:
 - the committed Nore-written compiler source tree lives in [`compiler/`](compiler/)
 - Milestone 1 is frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md)
+- Milestones 2, 3, and 4 now provide committed support, diagnostics, token, and lexer modules
 - the detailed milestone plan lives in [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md)
 
 ## Build Requirements

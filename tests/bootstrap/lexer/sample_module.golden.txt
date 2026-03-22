@@ -1,0 +1,61 @@
+=== TOKENS ===
+IMPORT              
+IDENTIFIER           'span'
+STRING               '"../../compiler/support/span.nore"'
+PUB                 
+VALUE               
+IDENTIFIER           'Pair'
+LBRACE              
+IDENTIFIER           'left'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'right'
+COLON               
+I64                 
+RBRACE              
+VAL                 
+IDENTIFIER           'NAME'
+COLON               
+STR                 
+EQUALS              
+STRING               '"pair"'
+VAL                 
+IDENTIFIER           'MARK'
+COLON               
+U8                  
+EQUALS              
+CHAR                 ''!''
+VAL                 
+IDENTIFIER           'SCALE'
+COLON               
+F64                 
+EQUALS              
+FLOAT                '3.5'
+FUNC                
+IDENTIFIER           'range_sum'
+LPAREN              
+MUT                 
+REF                 
+IDENTIFIER           'total'
+COLON               
+I64                 
+RPAREN              
+COLON               
+VOID                
+EQUALS              
+LBRACE              
+FOR                 
+IDENTIFIER           'i'
+IN                  
+NUMBER               '0'
+DOTDOT              
+NUMBER               '2'
+LBRACE              
+IDENTIFIER           'total'
+PLUS_EQUAL          
+IDENTIFIER           'i'
+RBRACE              
+RBRACE              
+EOF                 
+

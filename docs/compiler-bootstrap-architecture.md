@@ -107,13 +107,17 @@ Current committed file scope:
   stop compilation, which phase emits what, or how diagnostics are transported
   to a CLI.
 
+- `compiler/frontend/token.nore`: token kinds, token-row layout, token naming,
+  and token/source slice helpers only. It owns the flat token table contract and
+  token payload/text access, but not scanning state, diagnostics, or parser
+  logic.
+
+- `compiler/frontend/lexer.nore`: source-to-token scanning plus lexer-only
+  diagnostics and debug dumps only. It owns keyword recognition, comment and
+  literal scanning, and token-table append order. It should not absorb parsing,
+  node creation, or source-loading policy.
+
 Planned placeholder file scope:
-
-- `compiler/frontend/token.nore`: token kinds, keyword classification, and the
-  flat token-table layout only.
-
-- `compiler/frontend/lexer.nore`: turn one source buffer into token rows and
-  lexer diagnostics only.
 
 - `compiler/frontend/node.nore`: node kinds and the shared node-table layout
   only.
@@ -286,15 +290,15 @@ Minimum columns:
 - `source_id`
 - `start`
 - `len`
-- `data0`
-- `data1`
+- `payload_start`
+- `payload_len`
 
-`data0` and `data1` are generic payload slots. They cover cases like:
+`payload_start` and `payload_len` cover the bootstrap lexer needs directly. They
+carry cases like:
 
-- interned identifier span
-- parsed integer payload
-- string literal payload span
-- keyword-specific extra data where useful
+- identifier text spans
+- numeric literal text spans
+- string and char literal inner payload spans
 
 There is no token object graph and no linked list.
 

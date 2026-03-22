@@ -1,0 +1,177 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import lexer "../../../compiler/frontend/lexer.nore"
+import source "../../../compiler/support/source.nore"
+import token "../../../compiler/frontend/token.nore"
+import string "std/string.nore"
+
+// Lex one inline source fixture and append any diagnostics into the shared tables.
+func lex_inline(
+    mut ref mem: Arena,
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    ref path_text: [u8],
+    ref text: [u8]
+): lexer.LexResult = {
+    val source_id: i64 = source.sources_add(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        ref path_text,
+        ref path_text,
+        -1,
+        ref text
+    )
+
+    mut tokens: token.Tokens = table_alloc(mut ref mem, token.token_capacity_for_source_len(text.len))
+    lexer.lex_source(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        source_id,
+        mut ref tokens,
+        mut ref diags,
+        mut ref diag_pool
+    )
+}
+
+// Verify the lexer reports the committed L001-L006 bootstrap diagnostic surface.
+func main(): void = {
+    mut mem: Arena = arena(131072)
+    mut sources: source.Sources = table_alloc(mut ref mem, 16)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 64)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 16)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+
+    lex_inline(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref diags,
+        mut ref diag_pool,
+        ref "invalid_char.nore",
+        ref "@"
+    )
+    lex_inline(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref diags,
+        mut ref diag_pool,
+        ref "unterminated_comment.nore",
+        ref "/*"
+    )
+    lex_inline(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref diags,
+        mut ref diag_pool,
+        ref "unterminated_string.nore",
+        ref "\""
+    )
+    lex_inline(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref diags,
+        mut ref diag_pool,
+        ref "invalid_escape.nore",
+        ref "\"\\q\""
+    )
+    lex_inline(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref diags,
+        mut ref diag_pool,
+        ref "empty_char.nore",
+        ref "''"
+    )
+    lex_inline(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref diags,
+        mut ref diag_pool,
+        ref "char_too_long.nore",
+        ref "'ab'"
+    )
+
+    assert table_len(ref diags) == 6
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 0), ref "L001")
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 1), ref "L002")
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 2), ref "L003")
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 3), ref "L004")
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 4), ref "L005")
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 5), ref "L006")
+
+    val rendered: [u8] = diag.diag_format(
+        mut ref mem,
+        ref diags,
+        ref diag_pool,
+        ref sources,
+        ref path_pool,
+        ref line_starts,
+        1
+    )
+    assert string.str_eq(
+        ref rendered,
+        ref "unterminated_comment.nore:1:1: error[L002]: Unterminated block comment"
+    )
+
+    val payload_source_id: i64 = source.sources_add(
+        mut ref mem,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        ref "char_too_long_unterminated.nore",
+        ref "char_too_long_unterminated.nore",
+        -1,
+        ref "'ab"
+    )
+    mut payload_tokens: token.Tokens = table_alloc(mut ref mem, token.token_capacity_for_source_len(3))
+    mut payload_diags: diag.Diagnostics = table_alloc(mut ref mem, 4)
+    mut payload_diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 64)
+
+    val payload_result: lexer.LexResult = lexer.lex_source(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        payload_source_id,
+        mut ref payload_tokens,
+        mut ref payload_diags,
+        mut ref payload_diag_pool
+    )
+
+    assert payload_result.tokens.count == 2
+    assert payload_result.diags.count == 1
+    assert payload_tokens.kind[payload_result.tokens.start] == token.TokenKind.Char
+    assert string.str_eq(ref diag.diag_code(ref payload_diag_pool, ref payload_diags, 0), ref "L006")
+    assert string.str_eq(
+        ref token.token_payload_text(ref sources, ref text_pool, ref payload_tokens, payload_result.tokens.start),
+        ref "ab"
+    )
+}

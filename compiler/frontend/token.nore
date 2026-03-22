@@ -1,3 +1,250 @@
-// Bootstrap compiler frontend module placeholder.
-// Responsibility: token kinds and token-table layout.
-// Implement in Milestone 4.
+// Bootstrap token kinds and flat token storage.
+// Responsibility: define token kinds, token rows, and token/source slice helpers.
+// Owns: TokenKind, Tokens rows, token naming, and payload/text access helpers.
+// Does not own: scanning state, lexer diagnostics, or parser/node policy.
+
+import bbuf "../support/byte_buf.nore"
+import source "../support/source.nore"
+
+pub enum TokenKind {
+    Number,
+    Float,
+    Identifier,
+
+    Func,
+    Val,
+    Mut,
+    Return,
+    Assert,
+    If,
+    Else,
+    While,
+    For,
+    Match,
+    In,
+    Break,
+    Continue,
+    Void,
+    I64,
+    I32,
+    U8,
+    U32,
+    F64,
+    Bool,
+    True,
+    False,
+    Value,
+    Struct,
+    Table,
+    Enum,
+    Import,
+    Pub,
+    Native,
+    Ref,
+    ArenaType,
+    Str,
+    String,
+    Char,
+
+    Plus,
+    PlusEqual,
+    Minus,
+    MinusEqual,
+    Star,
+    StarEqual,
+    Slash,
+    SlashEqual,
+    Percent,
+    PercentEqual,
+    Ampersand,
+    AmpersandEqual,
+    Pipe,
+    PipeEqual,
+    Caret,
+    CaretEqual,
+    Tilde,
+    LessLess,
+    LessLessEqual,
+    GreaterGreater,
+    GreaterGreaterEqual,
+    Equals,
+    EqualEqual,
+    BangEqual,
+    Less,
+    Greater,
+    LessEqual,
+    GreaterEqual,
+    AndAnd,
+    OrOr,
+    Bang,
+
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    Colon,
+    Comma,
+    Dot,
+    LBracket,
+    RBracket,
+    Semicolon,
+    DotDot,
+
+    Eof,
+    Error
+}
+
+pub table Tokens {
+    kind: TokenKind,
+    source_id: i64,
+    start: i64,
+    len: i64,
+    payload_start: i64,
+    payload_len: i64
+}
+
+// Token tables need a simple worst-case bound because table capacity is fixed.
+pub func token_capacity_for_source_len(source_len: i64): i64 = {
+    if (source_len < 0) {
+        return 1
+    }
+    source_len + 1
+}
+
+// Append one token row into the shared flat token table.
+pub func tokens_push(
+    mut ref tokens: Tokens,
+    kind: TokenKind,
+    source_id: i64,
+    start: i64,
+    len: i64,
+    payload_start: i64,
+    payload_len: i64
+): i64 = {
+    val token_id: i64 = table_len(ref tokens)
+    table_insert(mut ref tokens, Tokens.Row {
+        kind: kind,
+        source_id: source_id,
+        start: start,
+        len: len,
+        payload_start: payload_start,
+        payload_len: payload_len
+    })
+    token_id
+}
+
+// Centralize token naming so dumps and later parser traces stay aligned.
+pub func token_kind_name(kind: TokenKind): str = {
+    match (kind) {
+        Number = { "NUMBER" }
+        Float = { "FLOAT" }
+        Identifier = { "IDENTIFIER" }
+        Func = { "FUNC" }
+        Val = { "VAL" }
+        Mut = { "MUT" }
+        Return = { "RETURN" }
+        Assert = { "ASSERT" }
+        If = { "IF" }
+        Else = { "ELSE" }
+        While = { "WHILE" }
+        For = { "FOR" }
+        Match = { "MATCH" }
+        In = { "IN" }
+        Break = { "BREAK" }
+        Continue = { "CONTINUE" }
+        Void = { "VOID" }
+        I64 = { "I64" }
+        I32 = { "I32" }
+        U8 = { "U8" }
+        U32 = { "U32" }
+        F64 = { "F64" }
+        Bool = { "BOOL" }
+        True = { "TRUE" }
+        False = { "FALSE" }
+        Value = { "VALUE" }
+        Struct = { "STRUCT" }
+        Table = { "TABLE" }
+        Enum = { "ENUM" }
+        Import = { "IMPORT" }
+        Pub = { "PUB" }
+        Native = { "NATIVE" }
+        Ref = { "REF" }
+        ArenaType = { "ARENA" }
+        Str = { "STR" }
+        String = { "STRING" }
+        Char = { "CHAR" }
+        Plus = { "PLUS" }
+        PlusEqual = { "PLUS_EQUAL" }
+        Minus = { "MINUS" }
+        MinusEqual = { "MINUS_EQUAL" }
+        Star = { "STAR" }
+        StarEqual = { "STAR_EQUAL" }
+        Slash = { "SLASH" }
+        SlashEqual = { "SLASH_EQUAL" }
+        Percent = { "PERCENT" }
+        PercentEqual = { "PERCENT_EQUAL" }
+        Ampersand = { "AMPERSAND" }
+        AmpersandEqual = { "AMPERSAND_EQUAL" }
+        Pipe = { "PIPE" }
+        PipeEqual = { "PIPE_EQUAL" }
+        Caret = { "CARET" }
+        CaretEqual = { "CARET_EQUAL" }
+        Tilde = { "TILDE" }
+        LessLess = { "LESS_LESS" }
+        LessLessEqual = { "LESS_LESS_EQUAL" }
+        GreaterGreater = { "GREATER_GREATER" }
+        GreaterGreaterEqual = { "GREATER_GREATER_EQUAL" }
+        Equals = { "EQUALS" }
+        EqualEqual = { "EQUAL_EQUAL" }
+        BangEqual = { "BANG_EQUAL" }
+        Less = { "LESS" }
+        Greater = { "GREATER" }
+        LessEqual = { "LESS_EQUAL" }
+        GreaterEqual = { "GREATER_EQUAL" }
+        AndAnd = { "AND_AND" }
+        OrOr = { "OR_OR" }
+        Bang = { "BANG" }
+        LParen = { "LPAREN" }
+        RParen = { "RPAREN" }
+        LBrace = { "LBRACE" }
+        RBrace = { "RBRACE" }
+        Colon = { "COLON" }
+        Comma = { "COMMA" }
+        Dot = { "DOT" }
+        LBracket = { "LBRACKET" }
+        RBracket = { "RBRACKET" }
+        Semicolon = { "SEMICOLON" }
+        DotDot = { "DOTDOT" }
+        Eof = { "EOF" }
+        Error = { "ERROR" }
+    }
+}
+
+// Re-slice one token directly from its owning source buffer.
+pub func token_text(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: Tokens,
+    token_id: i64
+): [u8] = {
+    val text: [u8] = source.source_text(ref text_pool, ref sources, tokens.source_id[token_id])
+    val start: i64 = tokens.start[token_id]
+    val len: i64 = tokens.len[token_id]
+    text[start..start + len]
+}
+
+// Re-slice the token payload when the lexer recorded one.
+pub func token_payload_text(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: Tokens,
+    token_id: i64
+): [u8] = {
+    val text: [u8] = source.source_text(ref text_pool, ref sources, tokens.source_id[token_id])
+    val start: i64 = tokens.payload_start[token_id]
+    val len: i64 = tokens.payload_len[token_id]
+    if (start < 0) {
+        return text[0..0]
+    }
+    text[start..start + len]
+}

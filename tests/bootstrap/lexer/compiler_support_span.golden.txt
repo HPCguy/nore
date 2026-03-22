@@ -1,0 +1,174 @@
+=== TOKENS ===
+PUB                 
+VALUE               
+IDENTIFIER           'Span'
+LBRACE              
+IDENTIFIER           'start'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'len'
+COLON               
+I64                 
+RBRACE              
+PUB                 
+VALUE               
+IDENTIFIER           'SourceSpan'
+LBRACE              
+IDENTIFIER           'source_id'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'start'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'len'
+COLON               
+I64                 
+RBRACE              
+PUB                 
+VALUE               
+IDENTIFIER           'Range'
+LBRACE              
+IDENTIFIER           'start'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'count'
+COLON               
+I64                 
+RBRACE              
+PUB                 
+FUNC                
+IDENTIFIER           'span'
+LPAREN              
+IDENTIFIER           'start'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'len'
+COLON               
+I64                 
+RPAREN              
+COLON               
+IDENTIFIER           'Span'
+EQUALS              
+LBRACE              
+IDENTIFIER           'Span'
+LBRACE              
+IDENTIFIER           'start'
+COLON               
+IDENTIFIER           'start'
+COMMA               
+IDENTIFIER           'len'
+COLON               
+IDENTIFIER           'len'
+RBRACE              
+RBRACE              
+PUB                 
+FUNC                
+IDENTIFIER           'source_span'
+LPAREN              
+IDENTIFIER           'source_id'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'start'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'len'
+COLON               
+I64                 
+RPAREN              
+COLON               
+IDENTIFIER           'SourceSpan'
+EQUALS              
+LBRACE              
+IDENTIFIER           'SourceSpan'
+LBRACE              
+IDENTIFIER           'source_id'
+COLON               
+IDENTIFIER           'source_id'
+COMMA               
+IDENTIFIER           'start'
+COLON               
+IDENTIFIER           'start'
+COMMA               
+IDENTIFIER           'len'
+COLON               
+IDENTIFIER           'len'
+RBRACE              
+RBRACE              
+PUB                 
+FUNC                
+IDENTIFIER           'range'
+LPAREN              
+IDENTIFIER           'start'
+COLON               
+I64                 
+COMMA               
+IDENTIFIER           'count'
+COLON               
+I64                 
+RPAREN              
+COLON               
+IDENTIFIER           'Range'
+EQUALS              
+LBRACE              
+IDENTIFIER           'Range'
+LBRACE              
+IDENTIFIER           'start'
+COLON               
+IDENTIFIER           'start'
+COMMA               
+IDENTIFIER           'count'
+COLON               
+IDENTIFIER           'count'
+RBRACE              
+RBRACE              
+PUB                 
+FUNC                
+IDENTIFIER           'span_end'
+LPAREN              
+REF                 
+IDENTIFIER           's'
+COLON               
+IDENTIFIER           'Span'
+RPAREN              
+COLON               
+I64                 
+EQUALS              
+LBRACE              
+IDENTIFIER           's'
+DOT                 
+IDENTIFIER           'start'
+PLUS                
+IDENTIFIER           's'
+DOT                 
+IDENTIFIER           'len'
+RBRACE              
+PUB                 
+FUNC                
+IDENTIFIER           'range_end'
+LPAREN              
+REF                 
+IDENTIFIER           'r'
+COLON               
+IDENTIFIER           'Range'
+RPAREN              
+COLON               
+I64                 
+EQUALS              
+LBRACE              
+IDENTIFIER           'r'
+DOT                 
+IDENTIFIER           'start'
+PLUS                
+IDENTIFIER           'r'
+DOT                 
+IDENTIFIER           'count'
+RBRACE              
+EOF                 
+
