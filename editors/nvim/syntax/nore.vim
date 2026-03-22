@@ -44,6 +44,10 @@ syn match noreQualifiedType /\<[A-Z][A-Za-z0-9_]*\ze\./
 syn match noreConstructor /\.[A-Z][A-Za-z0-9_]*\>/hs=s+1
 syn match noreField /\.[a-z_][A-Za-z0-9_]*\>/hs=s+1
 syn match noreSpecialField /\.len\>/hs=s+1
+" Imported module aliases should keep their import-style color at qualified use sites.
+syn match noreModuleAlias /\<[a-z_][A-Za-z0-9_]*\ze\.\s*[A-Z][A-Za-z0-9_]*\>/
+syn match noreModuleAlias /\<[a-z_][A-Za-z0-9_]*\ze\.\s*[A-Z][A-Z0-9_]*\>/
+syn match noreModuleAlias /\<[a-z_][A-Za-z0-9_]*\ze\.\s*[a-z_][A-Za-z0-9_]*\s*(/
 
 syn match noreTypeDecl /[A-Z][A-Za-z0-9_]*/ contained
 syn match noreFuncDecl /[a-z_][A-Za-z0-9_]*/ contained
@@ -88,6 +92,7 @@ hi def link noreQualifiedType Type
 hi def link noreConstructor Type
 hi def link noreField Identifier
 hi def link noreSpecialField Special
+hi def link noreModuleAlias Include
 
 hi def link noreTypeDecl Type
 hi def link noreFuncDecl Function
