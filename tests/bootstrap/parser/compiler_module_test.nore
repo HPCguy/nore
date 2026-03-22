@@ -10,10 +10,10 @@ import string "std/string.nore"
 
 // Prove the bootstrap parser can handle one real compiler support module end to end.
 func main(): void = {
-    mut mem: Arena = arena(524288)
+    mut mem: Arena = arena(1048576)
     mut sources: source.Sources = table_alloc(mut ref mem, 4)
     mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 4096)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 8192)
     mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 256)
     mut diags: diag.Diagnostics = table_alloc(mut ref mem, 16)
     mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)

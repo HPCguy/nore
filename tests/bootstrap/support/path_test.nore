@@ -38,7 +38,7 @@ func main(): void = {
     val local_import: str = path.path_resolve_import(
         mut ref mem,
         ref "/repo",
-        ref "tests/bootstrap/support/diag_basic.nore",
+        ref "tests/bootstrap/support/diag_test.nore",
         ref "source_sample.nore"
     )
     assert string.str_eq(ref local_import, ref "tests/bootstrap/support/source_sample.nore")

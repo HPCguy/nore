@@ -22,4 +22,9 @@ Planned subdirectories:
 - `codegen/`
 - `selfhost/`
 
-These tests are intentionally not wired into `make test` yet. A dedicated bootstrap runner belongs to the later end-to-end milestones.
+Naming convention:
+
+- runnable bootstrap test entrypoints end with `_test.nore`
+- fixtures, golden inputs, and imported support modules do not use the `_test.nore` suffix
+
+These tests are intentionally not wired into `make test` yet. Run them with `tests/run_bootstrap_tests.sh`.

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Bootstrap test runner for Nore compiler
 # Tests that bootstrap compiler modules compile, run, and exit successfully
-# Only runs *_basic.nore files (skips fixtures and sample modules)
+# Only runs *_test.nore files (skips fixtures and sample modules)
 
 PASS=0
 FAIL=0
@@ -19,7 +19,7 @@ for dir in support lexer parser imports sema codegen selfhost; do
     [ -d "$test_dir" ] || continue
 
     found=0
-    for f in "$test_dir"/*_basic.nore; do
+    for f in "$test_dir"/*_test.nore; do
         [ -f "$f" ] || continue
         found=1
 
