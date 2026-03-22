@@ -115,20 +115,19 @@ pub func diag_error_path(
     ref display_path: [u8],
     ref message: [u8]
 ): i64 = {
-    val code_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref code)
     val path_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref display_path)
-    val message_span: span.Span = bbuf.byte_buf_append(mut ref mem, mut ref text_pool, ref message)
-
-    val diag_id: i64 = table_len(ref diags)
-    table_insert(mut ref diags, Diagnostics.Row {
-        severity: DiagSeverity.Error,
-        code: code_span,
-        source_id: -1,
-        display_path: path_span,
-        start: 0,
-        len: 0,
-        message: message_span
-    })
+    val diag_id: i64 = diag_push(
+        mut ref mem,
+        mut ref diags,
+        mut ref text_pool,
+        DiagSeverity.Error,
+        ref code,
+        -1,
+        0,
+        0,
+        ref message
+    )
+    diags.display_path[diag_id] = path_span
     diag_id
 }
 
