@@ -9,7 +9,8 @@ Current status:
 - support-library smoke tests now cover spans, typed buffers, path helpers, line maps, source loading, and diagnostic formatting
 - lexer bootstrap tests now cover golden dumps, one real compiler module, and lexer diagnostics
 - parser bootstrap tests now cover a stable AST golden dump, targeted parser regressions, and one real compiler support module
-- import-graph bootstrap tests now cover local imports, diamond deduplication, `std/` resolution, and missing-import diagnostics
+- import-graph bootstrap tests now cover local imports, lexical `.`/`..` path deduplication, diamond deduplication, `std/` resolution, and missing-import diagnostics
+- sema bootstrap tests now cover binding, basic subset typing, arena/table built-in typing, arena escape/reset diagnostics, table-column access, `match` arm binding plus duplicate/exhaustiveness diagnostics, shape-declaration field diagnostics, enum-payload validation, compiler-injected names, native-name diagnostics, alias/ref/constant-initializer/string-literal/equality regressions, and one real compiler support module plus one real compiler sema module and four real std modules
 - bootstrap-specific tests continue to land here as each later milestone becomes executable
 
 Planned subdirectories:

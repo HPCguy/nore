@@ -1,0 +1,21 @@
+pub func platform_flag(): i32 = {
+    if (TARGET_OS == OS.MacOS) { 1 } else { 2 }
+}
+
+func main(): void = {
+    val current: OS = TARGET_OS
+    val direct: i32 = 7
+    mut updated: i32 = 0
+    updated = 1
+    val nested: i32 = if (TARGET_OS == OS.Linux) {
+        10
+    } else {
+        20
+    }
+
+    assert current == OS.Linux || current == OS.MacOS
+    assert direct == 7
+    assert updated == 1
+    assert nested == 10 || nested == 20
+    assert i64(current) >= 0
+}

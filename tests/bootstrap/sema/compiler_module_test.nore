@@ -1,0 +1,64 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import check "../../../compiler/sema/check.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import scopes "../../../compiler/sema/scopes.nore"
+import source "../../../compiler/support/source.nore"
+import symbols "../../../compiler/sema/symbols.nore"
+import token "../../../compiler/frontend/token.nore"
+import types "../../../compiler/sema/types.nore"
+
+// Prove sema can now typecheck one real compiler support module end to end.
+func main(): void = {
+    mut mem: Arena = arena(16777216)
+    mut sources: source.Sources = table_alloc(mut ref mem, 32)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 4096)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 131072)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 8192)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 32768)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 131072)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 32)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 64)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 128)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 8192)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, 512)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, 2048)
+    mut types_table: types.Types = table_alloc(mut ref mem, 2048)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref ".",
+        ref "compiler/support/byte_buf.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert loaded.diags.count == 0
+    assert loaded.modules.count == 2
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert checked.diags.count == 0
+}

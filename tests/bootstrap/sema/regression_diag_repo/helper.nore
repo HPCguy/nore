@@ -1,0 +1,10 @@
+pub value Point { x: i64 }
+pub value Pair { left: Point }
+
+pub func runtime(): i64 = {
+    42
+}
+
+pub func make_pair(): Pair = {
+    Pair { left: Point { x: 1 } }
+}

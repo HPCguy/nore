@@ -568,14 +568,16 @@ pub func load_graph(
     val node_start: i64 = table_len(ref nodes)
     val diag_start: i64 = table_len(ref diags)
 
+    val normalized_root_path: str = path.path_normalize(mut ref mem, ref root_path)
+
     val root_source: i64 = ensure_source_loaded(
         mut ref mem,
         mut ref sources,
         mut ref path_pool,
         mut ref text_pool,
         mut ref line_starts,
-        ref root_path,
-        ref root_path,
+        ref normalized_root_path,
+        ref normalized_root_path,
         invalid_id(),
         0,
         0,

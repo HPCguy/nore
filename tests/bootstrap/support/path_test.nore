@@ -23,6 +23,15 @@ func main(): void = {
     val joined2: str = path.path_join(mut ref mem, ref "compiler/support/", ref "diag.nore")
     assert string.str_eq(ref joined2, ref "compiler/support/diag.nore")
 
+    val normalized1: str = path.path_normalize(mut ref mem, ref "compiler/frontend/../support/source.nore")
+    assert string.str_eq(ref normalized1, ref "compiler/support/source.nore")
+
+    val normalized2: str = path.path_normalize(mut ref mem, ref "./tests/./bootstrap/imports/repo/app/../app/shared.nore")
+    assert string.str_eq(ref normalized2, ref "tests/bootstrap/imports/repo/app/shared.nore")
+
+    val normalized3: str = path.path_normalize(mut ref mem, ref "../compiler/../std/string.nore")
+    assert string.str_eq(ref normalized3, ref "../std/string.nore")
+
     assert string.str_eq(ref path.path_extension(ref "compiler/main.nore"), ref ".nore")
     assert path.path_has_extension(ref "compiler/main.nore", ref ".nore")
     assert !path.path_has_extension(ref "compiler/main", ref ".nore")

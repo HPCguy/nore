@@ -1,0 +1,5 @@
+pub value Pair { left: i64, right: i64 }
+
+pub func sum_pair(pair: Pair): i64 = {
+    return pair.left + pair.right
+}

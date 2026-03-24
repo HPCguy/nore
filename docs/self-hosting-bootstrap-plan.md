@@ -443,6 +443,34 @@ Extend the frontend from one module to a whole import graph.
 
 ## Milestone 7: Semantic Analysis for the Bootstrap Subset
 
+**Status:** Complete
+
+Started in `compiler/sema/` and `tests/bootstrap/sema/`.
+The current committed slice binds module scopes, top-level declarations,
+locals/params, module-qualified lookups, and now typechecks the first
+user-declared subset: literals, field access, constructors, calls,
+assignments, block/if values, return/condition diagnostics, and the first
+compiler-built-in slice for `arena`/`arena_alloc`/`arena_reset` and
+`table_*`, plus native declaration validation. The current enum slice now
+handles variant construction, plain-enum comparisons/casts, typed array
+literals in annotated contexts, and slice/string-literal ref arguments.
+Compiler-injected `OS` / `TARGET_OS` names and expected integer literal
+typing in annotated contexts are now wired through the same module-scope and
+expected-type machinery. Table field access now produces slice-typed column
+views, statement `if` no longer forces expression branch unification, and the
+current `match` slice binds tagged-enum payload names, checks scalar literal
+and wildcard arms, and now emits duplicate/non-exhaustive diagnostics.
+Lexical import-path normalization now keeps transitive module
+identity stable enough for broader compiler coverage. One real compiler
+support module (`compiler/support/byte_buf.nore`), one real compiler sema
+module (`compiler/sema/check.nore`), and four real std modules
+(`std/string.nore`, `std/file.nore`, `std/json.nore`, `std/io.nore`) now
+sema-check cleanly. The arena-safety slice now covers local provenance,
+direct/indirect return escape diagnostics (`S053`), immutable reset rejection
+(`S055`), and in-function reset invalidation (`S056`). The documented
+cross-function reset hole remains a non-blocking limitation, but Milestone 7
+itself is now closed.
+
 ### Gaps to close before starting
 
 - Milestone 6 complete

@@ -1,0 +1,15 @@
+import helper "helper.nore"
+
+func main(): void = {
+    mut pair: helper.Pair = helper.Pair { left: 1, right: 2 }
+    pair.left = 3
+
+    val total: i64 = helper.sum_pair(pair)
+    val picked: i64 = if (total == 5) {
+        pair.left
+    } else {
+        pair.right
+    }
+
+    assert picked == 3
+}

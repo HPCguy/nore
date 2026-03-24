@@ -1,0 +1,24 @@
+import helper "helper.nore"
+
+val bad_global: i64 = helper.runtime()
+mut bad_text_global: str = "hello"
+
+func take_point(ref point: helper.Point): void = {
+}
+
+func take_i64(ref x: i64): void = {
+}
+
+func main(): void = {
+    val alias_value = helper
+    val local_runtime = helper.runtime()
+    mut local_text: str = "hello"
+    val bad_bool_eq: bool = true == false
+    val bad_str_eq: bool = "a" == "b"
+    val bad_pair_eq: bool = helper.make_pair() == helper.make_pair()
+    val point: helper.Point = helper.Point { x: 7 }
+    val arr: [i64; 1] = [9]
+    take_point(ref helper.make_pair().left)
+    take_i64(ref point.x)
+    take_i64(ref arr[0])
+}

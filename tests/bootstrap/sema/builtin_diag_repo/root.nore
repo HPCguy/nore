@@ -1,0 +1,17 @@
+native func banana(x: i32): void
+
+value Pair {
+    left: i64,
+    right: i64
+}
+
+func main(): void = {
+    mut bad_mem: i64 = 0
+    mut data: [i64] = arena_alloc(mut ref bad_mem, 4)
+    val pair: Pair = Pair { left: 1, right: 2 }
+
+    fd_write(1, ref "hello")
+    table_len(ref pair)
+
+    assert data.len == 4
+}

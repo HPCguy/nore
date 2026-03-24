@@ -1,0 +1,5 @@
+func hidden(): void = {
+}
+
+value Secret {
+}

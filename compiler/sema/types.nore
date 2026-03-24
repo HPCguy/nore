@@ -1,3 +1,234 @@
-// Bootstrap compiler semantic-analysis module placeholder.
-// Responsibility: internal type rows for the bootstrap subset.
-// Implement in Milestone 7.
+// Bootstrap compiler internal type rows.
+// Responsibility: own type kinds, type rows, and simple interning helpers.
+// Owns: TypeKind, Types storage, builtin-type rows, and array/slice reuse.
+// Does not own: name-resolution policy, field checking, or expression typing.
+
+import token "../frontend/token.nore"
+
+pub enum TypeKind {
+    InvalidType,
+    VoidType,
+    I64Type,
+    I32Type,
+    U8Type,
+    U32Type,
+    F64Type,
+    BoolType,
+    StrType,
+    ArenaType,
+    ArrayType,
+    SliceType,
+    ValueType,
+    StructType,
+    TableType,
+    TableRowType,
+    EnumType
+}
+
+pub table Types {
+    kind: TypeKind,
+    module_id: i64,
+    decl_node: i64,
+    symbol_id: i64,
+    data0: i64,
+    data1: i64,
+    data2: i64
+}
+
+pub value BuiltinTypes {
+    void_type: i64,
+    i64_type: i64,
+    i32_type: i64,
+    u8_type: i64,
+    u32_type: i64,
+    f64_type: i64,
+    bool_type: i64,
+    str_type: i64,
+    arena_type: i64
+}
+
+// Keep the shared invalid-type sentinel explicit across sema work.
+pub func invalid_type_id(): i64 = {
+    -1
+}
+
+// Centralize row initialization so every type row starts the same way.
+pub func types_push(
+    mut ref types: Types,
+    kind: TypeKind,
+    module_id: i64,
+    decl_node: i64,
+    symbol_id: i64,
+    data0: i64,
+    data1: i64,
+    data2: i64
+): i64 = {
+    val type_id: i64 = table_len(ref types)
+    table_insert(mut ref types, Types.Row {
+        kind: kind,
+        module_id: module_id,
+        decl_node: decl_node,
+        symbol_id: symbol_id,
+        data0: data0,
+        data1: data1,
+        data2: data2
+    })
+    type_id
+}
+
+// Builtins are fixed rows that later passes can reference by stable id.
+pub func types_init_builtins(mut ref types: Types): BuiltinTypes = {
+    val void_type: i64 = types_push(mut ref types, TypeKind.VoidType, -1, -1, -1, 0, 0, 0)
+    val i64_type: i64 = types_push(mut ref types, TypeKind.I64Type, -1, -1, -1, 0, 0, 0)
+    val i32_type: i64 = types_push(mut ref types, TypeKind.I32Type, -1, -1, -1, 0, 0, 0)
+    val u8_type: i64 = types_push(mut ref types, TypeKind.U8Type, -1, -1, -1, 0, 0, 0)
+    val u32_type: i64 = types_push(mut ref types, TypeKind.U32Type, -1, -1, -1, 0, 0, 0)
+    val f64_type: i64 = types_push(mut ref types, TypeKind.F64Type, -1, -1, -1, 0, 0, 0)
+    val bool_type: i64 = types_push(mut ref types, TypeKind.BoolType, -1, -1, -1, 0, 0, 0)
+    val str_type: i64 = types_push(mut ref types, TypeKind.StrType, -1, -1, -1, 0, 0, 0)
+    val arena_type: i64 = types_push(mut ref types, TypeKind.ArenaType, -1, -1, -1, 0, 0, 0)
+
+    BuiltinTypes {
+        void_type: void_type,
+        i64_type: i64_type,
+        i32_type: i32_type,
+        u8_type: u8_type,
+        u32_type: u32_type,
+        f64_type: f64_type,
+        bool_type: bool_type,
+        str_type: str_type,
+        arena_type: arena_type
+    }
+}
+
+// Keep builtin-token lowering in one place so parser and sema stay aligned.
+pub func builtin_type_from_token(ref builtins: BuiltinTypes, kind: token.TokenKind): i64 = {
+    if (kind == token.TokenKind.I64) {
+        return builtins.i64_type
+    }
+    if (kind == token.TokenKind.I32) {
+        return builtins.i32_type
+    }
+    if (kind == token.TokenKind.U8) {
+        return builtins.u8_type
+    }
+    if (kind == token.TokenKind.U32) {
+        return builtins.u32_type
+    }
+    if (kind == token.TokenKind.F64) {
+        return builtins.f64_type
+    }
+    if (kind == token.TokenKind.Bool) {
+        return builtins.bool_type
+    }
+    if (kind == token.TokenKind.Str) {
+        return builtins.str_type
+    }
+    if (kind == token.TokenKind.ArenaType) {
+        return builtins.arena_type
+    }
+    invalid_type_id()
+}
+
+// Named decl types are stable by symbol id and should not be duplicated.
+pub func type_named(
+    mut ref types: Types,
+    kind: TypeKind,
+    module_id: i64,
+    decl_node: i64,
+    symbol_id: i64
+): i64 = {
+    mut type_id: i64 = 0
+    while (type_id < table_len(ref types)) {
+        if (types.kind[type_id] == kind &&
+            types.symbol_id[type_id] == symbol_id &&
+            types.decl_node[type_id] == decl_node) {
+            return type_id
+        }
+        type_id += 1
+    }
+
+    types_push(mut ref types, kind, module_id, decl_node, symbol_id, 0, 0, 0)
+}
+
+// Array types are interned by element type and constant size.
+pub func type_array(mut ref types: Types, elem_type: i64, size: i64): i64 = {
+    mut type_id: i64 = 0
+    while (type_id < table_len(ref types)) {
+        if (types.kind[type_id] == TypeKind.ArrayType &&
+            types.data0[type_id] == elem_type &&
+            types.data1[type_id] == size) {
+            return type_id
+        }
+        type_id += 1
+    }
+
+    types_push(mut ref types, TypeKind.ArrayType, -1, -1, -1, elem_type, size, 0)
+}
+
+// Slice types are interned by element type alone.
+pub func type_slice(mut ref types: Types, elem_type: i64): i64 = {
+    mut type_id: i64 = 0
+    while (type_id < table_len(ref types)) {
+        if (types.kind[type_id] == TypeKind.SliceType &&
+            types.data0[type_id] == elem_type) {
+            return type_id
+        }
+        type_id += 1
+    }
+
+    types_push(mut ref types, TypeKind.SliceType, -1, -1, -1, elem_type, 0, 0)
+}
+
+// Table declarations synthesize one stable row type for `.Row` references.
+pub func type_table_row(
+    mut ref types: Types,
+    module_id: i64,
+    decl_node: i64,
+    base_table_type: i64
+): i64 = {
+    mut type_id: i64 = 0
+    while (type_id < table_len(ref types)) {
+        if (types.kind[type_id] == TypeKind.TableRowType &&
+            types.module_id[type_id] == module_id &&
+            types.decl_node[type_id] == decl_node &&
+            types.data0[type_id] == base_table_type) {
+            return type_id
+        }
+        type_id += 1
+    }
+
+    types_push(
+        mut ref types,
+        TypeKind.TableRowType,
+        module_id,
+        decl_node,
+        -1,
+        base_table_type,
+        0,
+        0
+    )
+}
+
+// Keep dumps and tests on one spelling table for every type kind.
+pub func type_kind_name(kind: TypeKind): str = {
+    match (kind) {
+        InvalidType = { "INVALID" }
+        VoidType = { "VOID" }
+        I64Type = { "I64" }
+        I32Type = { "I32" }
+        U8Type = { "U8" }
+        U32Type = { "U32" }
+        F64Type = { "F64" }
+        BoolType = { "BOOL" }
+        StrType = { "STR" }
+        ArenaType = { "ARENA" }
+        ArrayType = { "ARRAY" }
+        SliceType = { "SLICE" }
+        ValueType = { "VALUE" }
+        StructType = { "STRUCT" }
+        TableType = { "TABLE" }
+        TableRowType = { "TABLE_ROW" }
+        EnumType = { "ENUM" }
+    }
+}

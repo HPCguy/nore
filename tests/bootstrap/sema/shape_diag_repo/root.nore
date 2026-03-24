@@ -1,0 +1,22 @@
+struct Mesh {
+    count: i64
+}
+
+value BadValue {
+    mesh: Mesh,
+    data: [i64],
+    text: str
+}
+
+value Pair {
+    left: i64,
+    left: i64
+}
+
+table Bad {
+    mesh: Mesh,
+    data: [i64]
+}
+
+func main(): void = {
+}

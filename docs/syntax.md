@@ -236,7 +236,7 @@ scale(mut ref q, 2.0)
 ```
 
 - Call site must match: `ref` for `ref` params, `mut ref` for `mut ref` params
-- Argument must be addressable (variable or field-access chain)
+- Argument may be a variable, a field/index chain, a sub-slice, or a string literal
 - `mut ref` requires root variable to be `mut`
 - Cannot take ref of scalar fields or array elements
 - Refs are calling convention only: cannot be stored, returned, or used as locals

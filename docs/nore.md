@@ -462,7 +462,7 @@ struct Bad { v: ref Vec2 }       // error: cannot store reference
 - `ref` (read-only): generates `const T *` in C
 - `mut ref` (read-write): generates `T *` in C
 - Call-site syntax must match: `ref p` for `ref` params, `mut ref q` for `mut ref` params
-- Argument must be addressable (variable or field-access chain)
+- Argument may be a variable, a field/index chain, a sub-slice, or a string literal
 - `mut ref` requires the root variable to be `mut`
 - Cannot take ref of scalar fields (`i64`, `i32`, `u8`, `u32`, `f64`, `bool`). Just copy them.
 - Cannot take ref of array elements (use slices instead)

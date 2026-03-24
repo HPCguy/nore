@@ -1,0 +1,58 @@
+struct Result { items: [i64] }
+enum ReadResult { Ok([u8]), Err(i32) }
+
+func build(mut ref mem: Arena): Result = {
+    mut items: [i64] = arena_alloc(mut ref mem, 10)
+    return Result { items: items }
+}
+
+func level2(mut ref mem: Arena): [i64] = {
+    mut data: [i64] = arena_alloc(mut ref mem, 10)
+    return data
+}
+
+func level1(mut ref mem: Arena): [i64] = {
+    return level2(mut ref mem)
+}
+
+func bad_direct(): [i64] = {
+    mut mem: Arena = arena(1024)
+    mut data: [i64] = arena_alloc(mut ref mem, 10)
+    return data
+}
+
+func bad_struct(): Result = {
+    mut mem: Arena = arena(1024)
+    mut items: [i64] = arena_alloc(mut ref mem, 10)
+    return Result { items: items }
+}
+
+func bad_enum(): ReadResult = {
+    mut mem: Arena = arena(1024)
+    mut buf: [u8] = arena_alloc(mut ref mem, 4)
+    return ReadResult.Ok(buf)
+}
+
+func bad_indirect(): Result = {
+    mut mem: Arena = arena(1024)
+    return build(mut ref mem)
+}
+
+func bad_transitive(): [i64] = {
+    mut mem: Arena = arena(1024)
+    return level1(mut ref mem)
+}
+
+func bad_reset(): void = {
+    val frozen: Arena = arena(1024)
+    arena_reset(mut ref frozen)
+
+    mut mem: Arena = arena(1024)
+    mut data: [i64] = arena_alloc(mut ref mem, 10)
+    arena_reset(mut ref mem)
+    data[0] = 42
+}
+
+func main(): void = {
+    bad_reset()
+}

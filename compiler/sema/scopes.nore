@@ -1,3 +1,43 @@
-// Bootstrap compiler semantic-analysis module placeholder.
-// Responsibility: scope rows and lexical scope tracking.
-// Implement in Milestone 7.
+// Bootstrap compiler lexical scope rows.
+// Responsibility: own scope rows and parent/depth bookkeeping.
+// Owns: Scopes storage, parent links, and empty-scope initialization.
+// Does not own: symbol lookup policy, diagnostics, or expression checking.
+
+pub table Scopes {
+    parent: i64,
+    module_id: i64,
+    owner_node: i64,
+    first_symbol: i64,
+    last_symbol: i64,
+    depth: i64
+}
+
+// Keep the shared invalid-scope sentinel explicit across sema work.
+pub func invalid_scope_id(): i64 = {
+    -1
+}
+
+// New scopes inherit only parent/module context; symbols are linked later.
+pub func scopes_push(
+    mut ref scopes: Scopes,
+    parent: i64,
+    module_id: i64,
+    owner_node: i64
+): i64 = {
+    val scope_id: i64 = table_len(ref scopes)
+    val depth: i64 = if (parent >= 0) {
+        scopes.depth[parent] + 1
+    } else {
+        0
+    }
+
+    table_insert(mut ref scopes, Scopes.Row {
+        parent: parent,
+        module_id: module_id,
+        owner_node: owner_node,
+        first_symbol: -1,
+        last_symbol: -1,
+        depth: depth
+    })
+    scope_id
+}

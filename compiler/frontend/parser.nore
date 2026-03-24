@@ -2460,7 +2460,8 @@ func dump_node_line(
     depth: i64
 ): void = {
     append_indent(mut ref mem, mut ref out, depth)
-    append_bytes(mut ref mem, mut ref out, ref node.node_kind_name(nodes.kind[node_id]))
+    val kind_name: str = node.node_kind_name(nodes.kind[node_id])
+    append_bytes(mut ref mem, mut ref out, ref kind_name)
 
     val kind: node.NodeKind = nodes.kind[node_id]
     if (kind == node.NodeKind.ImportDecl) {

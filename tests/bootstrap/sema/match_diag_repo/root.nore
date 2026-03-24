@@ -1,0 +1,45 @@
+enum Option { Some(i64), None }
+enum Color { Red, Green, Blue }
+
+func duplicate_enum(x: Option): i64 = {
+    match (x) {
+        Some(n) = { n }
+        Some(m) = { m }
+        None = { 0 }
+    }
+}
+
+func missing_enum(c: Color): i64 = {
+    match (c) {
+        Red = { 1 }
+        Green = { 2 }
+    }
+}
+
+func duplicate_bool(flag: bool): i64 = {
+    match (flag) {
+        true = { 1 }
+        true = { 2 }
+        false = { 0 }
+    }
+}
+
+func missing_bool(flag: bool): i64 = {
+    match (flag) {
+        true = { 1 }
+    }
+}
+
+func duplicate_scalar(x: u8): i64 = {
+    match (x) {
+        65 = { 1 }
+        'A' = { 2 }
+        _ = { 0 }
+    }
+}
+
+func missing_scalar(x: u8): i64 = {
+    match (x) {
+        0 = { 0 }
+    }
+}

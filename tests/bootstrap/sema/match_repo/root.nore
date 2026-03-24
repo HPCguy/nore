@@ -1,0 +1,55 @@
+enum ParseResult { Ok(i64), Err }
+
+table Rows {
+    kind: u8,
+    score: i64
+}
+
+func helper(): i64 = {
+    9
+}
+
+func unwrap(result: ParseResult): i64 = {
+    match (result) {
+        Ok(n) = { n }
+        Err = { 0 }
+    }
+}
+
+func classify(c: u8): i64 = {
+    match (c) {
+        'a' = { 1 }
+        _ = { 0 }
+    }
+}
+
+func pick(flag: bool, x: u8): u8 = {
+    match (flag) {
+        true = { 1 }
+        false = { x }
+    }
+}
+
+func update(flag: bool, mut ref rows: Rows): i64 = {
+    if (flag) {
+        rows.score[0] = 1
+    } else {
+        helper()
+    }
+    rows.score[0]
+}
+
+func main(): void = {
+    mut mem: Arena = arena(4096)
+    mut rows: Rows = table_alloc(mut ref mem, 4)
+    table_insert(mut ref rows, Rows.Row { kind: 'a', score: 0 })
+
+    assert unwrap(ParseResult.Ok(7)) == 7
+    assert unwrap(ParseResult.Err) == 0
+    assert classify('a') == 1
+    assert classify('z') == 0
+    assert pick(true, 9) == 1
+    assert pick(false, 9) == 9
+    assert update(true, mut ref rows) == 1
+    assert update(false, mut ref rows) == 1
+}

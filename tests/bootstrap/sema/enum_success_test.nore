@@ -1,0 +1,167 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import check "../../../compiler/sema/check.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import scopes "../../../compiler/sema/scopes.nore"
+import source "../../../compiler/support/source.nore"
+import token "../../../compiler/frontend/token.nore"
+import types "../../../compiler/sema/types.nore"
+import string "std/string.nore"
+import symbols "../../../compiler/sema/symbols.nore"
+
+// Depth-first lookup is enough for the focused enum and array assertions here.
+func find_first_kind(ref nodes: node.Nodes, node_id: i64, wanted: node.NodeKind): i64 = {
+    if (node_id < 0) {
+        return -1
+    }
+    if (nodes.kind[node_id] == wanted) {
+        return node_id
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        val found: i64 = find_first_kind(ref nodes, child_id, wanted)
+        if (found >= 0) {
+            return found
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    -1
+}
+
+// Field-access checks stay readable when the test can search by variant spelling.
+func find_field_access(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    ref field_name: [u8]
+): i64 = {
+    if (node_id < 0) {
+        return -1
+    }
+    if (nodes.kind[node_id] == node.NodeKind.FieldAccess &&
+        string.str_eq(
+            ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]),
+            ref field_name
+        )) {
+        return node_id
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        val found: i64 = find_field_access(ref nodes, ref tokens, ref sources, ref text_pool, child_id, ref field_name)
+        if (found >= 0) {
+            return found
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    -1
+}
+
+// Tagged-variant construction appears as a call whose callee is a field access.
+func find_variant_call(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    ref variant_name: [u8]
+): i64 = {
+    if (node_id < 0) {
+        return -1
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.CallExpr) {
+        val callee_id: i64 = nodes.first_child[node_id]
+        if (callee_id >= 0 &&
+            nodes.kind[callee_id] == node.NodeKind.FieldAccess &&
+            string.str_eq(
+                ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id]),
+                ref variant_name
+            )) {
+            return node_id
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        val found: i64 = find_variant_call(ref nodes, ref tokens, ref sources, ref text_pool, child_id, ref variant_name)
+        if (found >= 0) {
+            return found
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    -1
+}
+
+// Prove enum variants, enum casts, slice refs, and typed array literals all typecheck.
+func main(): void = {
+    mut mem: Arena = arena(8388608)
+    mut sources: source.Sources = table_alloc(mut ref mem, 8)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 32768)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 2048)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 2048)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 8192)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 8)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 8)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 32)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 2048)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, 64)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, 128)
+    mut types_table: types.Types = table_alloc(mut ref mem, 128)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/bootstrap/sema/enum_repo",
+        ref "tests/bootstrap/sema/enum_repo/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert loaded.diags.count == 0
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert checked.diags.count == 0
+
+    val root_node: i64 = modules.root_node[loaded.root_module]
+    val array_lit_id: i64 = find_first_kind(ref nodes, root_node, node.NodeKind.ArrayLit)
+    val none_access_id: i64 = find_field_access(ref nodes, ref tokens, ref sources, ref text_pool, root_node, ref "None")
+    val ok_call_id: i64 = find_variant_call(ref nodes, ref tokens, ref sources, ref text_pool, root_node, ref "Ok")
+    val red_access_id: i64 = find_field_access(ref nodes, ref tokens, ref sources, ref text_pool, root_node, ref "Red")
+    assert array_lit_id >= 0
+    assert none_access_id >= 0
+    assert ok_call_id >= 0
+    assert red_access_id >= 0
+
+    assert types_table.kind[nodes.type_id[array_lit_id]] == types.TypeKind.ArrayType
+    assert types_table.kind[types_table.data0[nodes.type_id[array_lit_id]]] == types.TypeKind.U8Type
+    assert types_table.kind[nodes.type_id[none_access_id]] == types.TypeKind.EnumType
+    assert types_table.kind[nodes.type_id[ok_call_id]] == types.TypeKind.EnumType
+    assert types_table.kind[nodes.type_id[red_access_id]] == types.TypeKind.EnumType
+}

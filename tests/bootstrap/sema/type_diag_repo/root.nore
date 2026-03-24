@@ -1,0 +1,29 @@
+value Pair { left: i64, right: i64 }
+
+func add(a: i64, b: i64): i64 = {
+    return a + b
+}
+
+func take(mut ref x: i64): void = {
+    x = x + 1
+}
+
+func bad_return(flag: bool): i64 = {
+    if (flag) {
+        return
+    }
+    return false
+}
+
+func main(): void = {
+    val good: Pair = Pair { left: 1, right: 2 }
+    val bad_ctor: Pair = Pair { left: 1, extra: 2 }
+    val wrong_bool: bool = 1
+    if (1) {
+    }
+    val one: i64 = add(1)
+    val two: i64 = add(true, 1)
+    take(mut ref one)
+    good.missing = 3
+    add(1, 2) = 3
+}

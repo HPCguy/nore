@@ -1,8 +1,10 @@
 // Bootstrap path helpers for compiler imports and file display paths.
 // Responsibility: provide the minimal path operations and import-resolution policy needed now.
 // Owns: dirname/join/extension helpers plus bootstrap std-import resolution rules.
-// Does not own: canonicalization, filesystem queries, or a general stdlib path API.
+// Does not own: filesystem queries, realpath canonicalization, or a general stdlib path API.
 
+import bbuf "byte_buf.nore"
+import ibuf "i64_buf.nore"
 import string "std/string.nore"
 
 // Detect bootstrap std imports with the same simple prefix rule as stage-0.
@@ -57,7 +59,70 @@ pub func path_has_extension(ref path_text: [u8], ref ext: [u8]): bool = {
     string.str_eq(ref found, ref ext)
 }
 
-// Mirror stage-0 import joining while intentionally deferring canonicalization.
+// Dot and dot-dot segments only need lexical normalization for loader dedup today.
+pub func path_normalize(mut ref mem: Arena, ref path_text: [u8]): str = {
+    if (path_text.len == 0) {
+        return "."
+    }
+
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, path_text.len)
+    mut segment_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 8)
+    val absolute: bool = path_text[0] == '/'
+    if (absolute) {
+        bbuf.byte_buf_push(mut ref mem, mut ref out, '/')
+    }
+
+    mut i: i64 = 0
+    while (i < path_text.len) {
+        while (i < path_text.len && path_text[i] == '/') {
+            i += 1
+        }
+        if (i >= path_text.len) {
+            break
+        }
+
+        val start: i64 = i
+        while (i < path_text.len && path_text[i] != '/') {
+            i += 1
+        }
+
+        val part: [u8] = path_text[start..i]
+        if (string.str_eq(ref part, ref ".")) {
+            continue
+        }
+        if (string.str_eq(ref part, ref "..")) {
+            if (segment_starts.count > 0) {
+                segment_starts.count -= 1
+                out.count = segment_starts.data[segment_starts.count]
+            } else {
+                if (!absolute) {
+                    if (out.count > 0 && out.data[out.count - 1] != '/') {
+                        bbuf.byte_buf_push(mut ref mem, mut ref out, '/')
+                    }
+                    bbuf.byte_buf_append(mut ref mem, mut ref out, ref part)
+                }
+            }
+            continue
+        }
+
+        val segment_start: i64 = out.count
+        if (out.count > 0 && out.data[out.count - 1] != '/') {
+            bbuf.byte_buf_push(mut ref mem, mut ref out, '/')
+        }
+        bbuf.byte_buf_append(mut ref mem, mut ref out, ref part)
+        ibuf.i64_buf_push(mut ref mem, mut ref segment_starts, segment_start)
+    }
+
+    if (out.count == 0) {
+        if (absolute) {
+            return "/"
+        }
+        return "."
+    }
+    out.data[0..out.count]
+}
+
+// Mirror stage-0 import joining while normalizing duplicate relative spellings away.
 pub func path_resolve_import(
     mut ref mem: Arena,
     ref compiler_root: [u8],
@@ -65,9 +130,11 @@ pub func path_resolve_import(
     ref import_path: [u8]
 ): str = {
     if (path_is_std_import(ref import_path)) {
-        return path_join(mut ref mem, ref compiler_root, ref import_path)
+        val resolved: str = path_join(mut ref mem, ref compiler_root, ref import_path)
+        return path_normalize(mut ref mem, ref resolved)
     }
 
     val base_dir: str = path_dirname(mut ref mem, ref current_file)
-    path_join(mut ref mem, ref base_dir, ref import_path)
+    val resolved: str = path_join(mut ref mem, ref base_dir, ref import_path)
+    path_normalize(mut ref mem, ref resolved)
 }

@@ -1,0 +1,20 @@
+struct Mesh {
+    count: i64
+}
+
+enum Bad { Red, Green, Red }
+enum Color { Red, Green }
+enum Direction { North, South }
+enum Option { Some(i64), None }
+enum SliceResult { Ok([u8]), Err(i32) }
+enum PayloadBad { Data(Mesh), Heap(Arena), Nested(SliceResult) }
+
+func main(): void = {
+    val missing: Option = Option.Some
+    val unexpected: Option = Option.None(42)
+    val mismatch: Option = Option.Some(true)
+    val ordering: bool = Color.Red < Color.Green
+    val mixed: bool = Color.Red == Direction.North
+    val tagged_eq: bool = Option.None == Option.None
+    val casted: i64 = i64(Option.None)
+}

@@ -1,0 +1,22 @@
+import helper "helper.nore"
+
+val x: i64 = 1
+val x: i64 = 2
+
+func dup(): void = {
+}
+
+func dup(): void = {
+}
+
+value Thing {
+}
+
+value Thing {
+}
+
+pub func main(): void = {
+    helper.hidden()
+    val secret: helper.Secret = helper.Secret { }
+    assert secret == secret
+}

@@ -1,0 +1,26 @@
+value Pair {
+    left: i64,
+    right: i64
+}
+
+table Pairs {
+    left: i64,
+    right: i64
+}
+
+func main(): void = {
+    mut mem: Arena = arena(256)
+    mut data: [i64] = arena_alloc(mut ref mem, 4)
+    data[0] = 1
+    data[1] = 2
+
+    mut pairs: Pairs = table_alloc(mut ref mem, 4)
+    table_insert(mut ref pairs, Pairs.Row { left: data[0], right: data[1] })
+
+    val n: i64 = table_len(ref pairs)
+    val row: Pairs.Row = table_get(ref pairs, 0)
+    assert n == 1
+    assert row.left == 1
+
+    arena_reset(mut ref mem)
+}

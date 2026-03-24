@@ -1,0 +1,5 @@
+enum OS { Other }
+val TARGET_OS: i64 = 0
+
+func main(): void = {
+}

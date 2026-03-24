@@ -1,4 +1,4 @@
-import shared "shared.nore"
+import shared "./shared.nore"
 
 pub func right_value(): i64 = {
     shared.shared_value()

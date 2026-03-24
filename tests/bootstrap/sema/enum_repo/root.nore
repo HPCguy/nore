@@ -1,0 +1,28 @@
+pub enum Color { Red, Green }
+pub enum ParseResult { Ok(i64), None }
+
+func copy(mut ref dst: [u8], ref src: [u8]): void = {
+    assert dst.len >= src.len
+}
+
+pub func choose(ok: bool): ParseResult = {
+    if (ok) {
+        return ParseResult.Ok(7)
+    }
+    ParseResult.None
+}
+
+pub func main(): void = {
+    mut scratch: [u8; 4] = [0, 0, 0, 0]
+    copy(mut ref scratch[0..2], ref "hi")
+
+    val green: Color = Color.Green
+    assert green == Color.Green
+    assert i64(Color.Red) == 0
+
+    val ok: ParseResult = ParseResult.Ok(7)
+    val none: ParseResult = ParseResult.None
+    val chosen_none: ParseResult = choose(false)
+    val chosen_ok: ParseResult = choose(true)
+    assert i64(Color.Green) == 1
+}

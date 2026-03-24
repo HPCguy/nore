@@ -1,3 +1,119 @@
-// Bootstrap compiler semantic-analysis module placeholder.
-// Responsibility: symbol table rows and lookup helpers.
-// Implement in Milestone 7.
+// Bootstrap compiler symbol rows and metadata helpers.
+// Responsibility: own symbol kinds, symbol rows, and small flag helpers.
+// Owns: SymbolKind, Symbols storage, and symbol-flag decoding.
+// Does not own: scope nesting policy, name-resolution order, or diagnostics.
+
+pub enum SymbolKind {
+    ModuleAliasSymbol,
+    FunctionSymbol,
+    TypeSymbol,
+    GlobalSymbol,
+    ParamSymbol,
+    LocalSymbol
+}
+
+pub table Symbols {
+    kind: SymbolKind,
+    module_id: i64,
+    scope_id: i64,
+    decl_node: i64,
+    name_token: i64,
+    type_id: i64,
+    target_module: i64,
+    arena_source_symbol: i64,
+    next_symbol: i64,
+    flags: i64
+}
+
+val SYM_FLAG_PUBLIC: i64 = 1
+val SYM_FLAG_MUT: i64 = 2
+val SYM_FLAG_REF: i64 = 4
+val SYM_FLAG_NATIVE: i64 = 8
+pub val SYM_FLAG_ARENA_LOCAL: i64 = 16
+pub val SYM_FLAG_INVALIDATED: i64 = 32
+pub val SYM_FLAG_RETURNS_ARENA_SLICES: i64 = 64
+
+// Keep the shared invalid-symbol sentinel explicit across sema work.
+pub func invalid_symbol_id(): i64 = {
+    -1
+}
+
+// Centralize row initialization so every symbol starts with the same defaults.
+pub func symbols_push(
+    mut ref symbols: Symbols,
+    kind: SymbolKind,
+    module_id: i64,
+    scope_id: i64,
+    decl_node: i64,
+    name_token: i64,
+    type_id: i64,
+    target_module: i64,
+    flags: i64
+): i64 = {
+    val symbol_id: i64 = table_len(ref symbols)
+    table_insert(mut ref symbols, Symbols.Row {
+        kind: kind,
+        module_id: module_id,
+        scope_id: scope_id,
+        decl_node: decl_node,
+        name_token: name_token,
+        type_id: type_id,
+        target_module: target_module,
+        arena_source_symbol: invalid_symbol_id(),
+        next_symbol: invalid_symbol_id(),
+        flags: flags
+    })
+    symbol_id
+}
+
+// Keep dumps and tests on one spelling table for every symbol kind.
+pub func symbol_kind_name(kind: SymbolKind): str = {
+    match (kind) {
+        ModuleAliasSymbol = { "MODULE_ALIAS" }
+        FunctionSymbol = { "FUNC" }
+        TypeSymbol = { "TYPE" }
+        GlobalSymbol = { "GLOBAL" }
+        ParamSymbol = { "PARAM" }
+        LocalSymbol = { "LOCAL" }
+    }
+}
+
+// Reuse one bit-test helper so checker code stays readable at call sites.
+pub func symbol_flag_has(flags: i64, bit: i64): bool = {
+    (flags & bit) != 0
+}
+
+// Keep commonly tested flags behind small helpers instead of open-coded masks.
+pub func symbol_is_public(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_PUBLIC)
+}
+
+// Mutability is shared by globals, locals, and loop variables.
+pub func symbol_is_mut(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_MUT)
+}
+
+// Ref-parameter checks need one stable flag accessor.
+pub func symbol_is_ref(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_REF)
+}
+
+// Native functions are just normal function rows with one extra bit.
+pub func symbol_is_native(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_NATIVE)
+}
+
+// Arena-backed locals keep one provenance bit so reset invalidation can stay flow-sensitive.
+pub func symbol_arena_is_local(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_ARENA_LOCAL)
+}
+
+// Arena reset marks tracked values invalid until they are rebound from a live source.
+pub func symbol_is_invalidated(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_INVALIDATED)
+}
+
+// Function symbols record whether their return value can carry arena-backed data.
+pub func symbol_returns_arena_slices(ref symbols: Symbols, symbol_id: i64): bool = {
+    symbol_flag_has(symbols.flags[symbol_id], SYM_FLAG_RETURNS_ARENA_SLICES)
+}

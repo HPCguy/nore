@@ -88,9 +88,10 @@ Current committed file scope:
 
 - `compiler/support/path.nore`: simple path manipulation needed by bootstrap
   imports plus the bootstrap compiler's import-resolution policy. Generic path
-  operations such as `dirname`, `join`, and extension checks may stay here until
-  a real non-compiler consumer justifies extraction. Compiler-specific rules
-  such as bootstrap `std/` resolution belong here, not in the stdlib.
+  operations such as `dirname`, `join`, lexical dot-segment normalization, and
+  extension checks may stay here until a real non-compiler consumer justifies
+  extraction. Compiler-specific rules such as bootstrap `std/` resolution
+  belong here, not in the stdlib.
 
 - `compiler/support/line_map.nore`: byte-offset to line/column translation over
   precomputed line-start offsets. It owns lookup math and line-start recording,
@@ -127,19 +128,35 @@ Current committed file scope:
 
 - `compiler/frontend/loader.nore`: load one root module into a parsed import
   graph only. It owns module rows, import-edge rows, path resolution on top of
-  `compiler/support/path.nore`, and multi-module lex/parse orchestration, but
-  not name resolution, visibility checks, or code generation.
+  `compiler/support/path.nore`, lexical path dedup for stable module identity,
+  and multi-module lex/parse orchestration, but not name resolution,
+  visibility checks, or code generation.
+
+- `compiler/sema/symbols.nore`: symbol rows and symbol metadata only. It owns
+  sema symbol kinds, per-symbol flags, and the flat symbol-table layout, but
+  not lookup order, scope traversal, or diagnostics.
+
+- `compiler/sema/scopes.nore`: lexical scope rows and scope nesting only. It
+  owns parent/depth bookkeeping for module, function, block, and loop scopes,
+  but not symbol lookup policy or expression checking.
+
+- `compiler/sema/types.nore`: internal type rows and type metadata only. It
+  owns builtin/bootstrap type rows plus array/slice/table-row interning, but
+  not name resolution, field validation, or expression typing.
+
+- `compiler/sema/check.nore`: semantic binding and bootstrap-subset checking
+  only. It owns module-scope creation, declaration collection, local/param
+  binding, module-qualified lookup, basic expression/statement typing, the
+  first arena/table built-in typing rules, enum/tagged-variant construction,
+  plain-enum comparisons/casts, compiler-injected `OS` / `TARGET_OS`,
+  expected integer literal typing in annotated contexts, table-column slice
+  access, statement-vs-expression `if`, tagged-enum/scalar `match` arm
+  checking with duplicate/exhaustiveness diagnostics, first visibility/type
+  diagnostics, bootstrap arena escape/reset checks (`S053`, `S055`, `S056`)
+  with deferred return-slice propagation, and enough real-module coverage to
+  sema-check `compiler/sema/check.nore`, but not code generation.
 
 Remaining placeholder file scope:
-
-- `compiler/sema/symbols.nore`: symbol rows and symbol metadata only.
-
-- `compiler/sema/scopes.nore`: lexical scope rows and scope nesting only.
-
-- `compiler/sema/types.nore`: internal type rows and type metadata only.
-
-- `compiler/sema/check.nore`: name resolution, type checking, and bootstrap
-  arena-safety enforcement only.
 
 - `compiler/codegen/c_types.nore`: lower checked Nore types into C-facing type
   descriptions only.
@@ -177,7 +194,8 @@ storage upward toward compiler-facing reporting:
 
 1. `compiler/main.nore` owns the top-level pipeline and long-lived arenas.
 2. `compiler/support/path.nore` resolves the root file path and import paths
-   using the bootstrap compiler's current path policy.
+   using the bootstrap compiler's current path policy, including lexical
+   dot-segment normalization for loader dedup.
 3. `compiler/support/source.nore` loads file contents, assigns `source_id`
    values, and stores source bytes plus display-path metadata in stable pooled
    storage.
@@ -391,6 +409,58 @@ Memory ownership must stay obvious.
 - source text stays in compiler-owned byte buffers for the full compile
 - identifiers, paths, and rendered diagnostic strings should use spans into owned buffers
 - avoid creating one-off string wrapper types with independent ownership
+
+## Review Findings (Milestone 7, pending)
+
+The `/simplify` review of the sema milestone (check.nore and supporting sema
+modules) produced findings in three categories. Items marked **fixed** are
+already applied; the rest are deferred for later milestones.
+
+### Code Reuse
+
+| # | Finding | Status |
+|---|---------|--------|
+| R1 | `flag_has` appears 3x (parser, check, symbols). check.nore uses it for node flags while symbols.nore uses it for symbol flags, so the implementations are semantically distinct despite identical bodies. | skipped (different domains) |
+| R2 | `node_child_at` duplicated in parser.nore and check.nore (117 call sites in check.nore alone). Canonical home would be `node.nore` as a pub function. | deferred (high churn for a 10-line function) |
+| R3 | `name_text` in check.nore is a one-line alias for `token_text_or_synthetic`. | skipped (provides diagnostic-intent clarity) |
+| R4 | Duplicate variant-name S069 scan appeared in two branches of `check_type_decl`, one for payload variants and one for plain variants. | **fixed** (hoisted before the has_type branch) |
+| R5 | `check_enum_variant_access` and `check_enum_variant_call` share an identical visibility/S084 block (~10 lines each). | deferred (extracting a 15-parameter helper is marginal) |
+| R6 | `check_global_decl` and `check_local_decl` share type-annotation resolution, init checking, S006, and S054 logic. | deferred (interleaved differences make extraction hard) |
+| R7 | Five scope-find functions follow the same pattern but differ in SymbolKind filter. | deferred (language lacks closures or tagged-union predicates) |
+
+### Code Quality
+
+| # | Finding | Status |
+|---|---------|--------|
+| Q1 | Three arena escape functions (`check_return_identifier_arena_escape`, `check_return_constructor_arena_escape`, `check_return_variant_arena_escape`) share the same local-vs-propagate decision block with slight message variations. | deferred (13-parameter helper saves ~4 lines per site) |
+| Q2 | Comments on small helpers sometimes restate WHAT rather than WHY. Most carry useful intent or grouping context per the project guideline ("add a short essential comment to newly introduced functions"). | skipped (no clear removals after closer review) |
+
+### Efficiency
+
+| # | Finding | Status |
+|---|---------|--------|
+| E1 | `module_scope_id` does an O(N) linear scan of all scopes, called ~14 times on hot paths (every type reference, every function call, every declaration). | deferred (cache module-to-scope mapping in an array indexed by module_id) |
+| E2 | Type interning functions (`type_named`, `type_array`, `type_slice`, `type_table_row`) do full linear scans of the types table on each call. | deferred (scan from end, or maintain a small lookup structure) |
+| E3 | `check_match_enum_coverage` has O(V * A * V) behavior due to repeated `enum_find_variant` calls inside the variant loop. | deferred (compare resolved variant_id directly instead of re-scanning) |
+| E4 | `check_match_scalar_coverage` has O(arms^2) duplicate detection with repeated `str_to_i64` re-parsing. | deferred (precompute ScalarPatternInfo once, then compare) |
+| E5 | `arena_dep_add` and `deferred_arena_check_add` do linear duplicate scans on each insert. Table is over-allocated to `node_count + 8` but actual entries are typically small. | deferred (low priority, practical sizes are small) |
+| E6 | Recursive type-property queries (`type_has_arena_data`, `type_is_non_copyable`, etc.) are called repeatedly on the same types without memoization. Budget parameter bounds worst case. | deferred (candidate for per-type cached flag once types are fully resolved) |
+| E7 | `builtin_call_kind` does up to 7 sequential string comparisons per non-user call expression. | skipped (only on the non-user-function path, short lists) |
+
+### Priority for later milestones
+
+The two highest-impact deferred items are:
+
+1. **E1 (module_scope_id caching)**: called on virtually every expression and
+   type reference. A simple array indexed by module_id, built once in
+   `check_modules` after the initial scope-creation loop, would eliminate most
+   of the per-expression overhead.
+
+2. **E2 (type interning reverse scan)**: the same few slice/array types are
+   requested repeatedly. Scanning from the end of the table (most recent first)
+   would make the common case fast without adding a new data structure.
+
+Both can be addressed independently without changing the sema public API.
 
 ## Milestone Boundaries
 
