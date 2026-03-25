@@ -441,21 +441,16 @@ already applied; the rest are deferred for later milestones.
 |---|---------|--------|
 | E1 | `module_scope_id` does an O(N) linear scan of all scopes, called ~14 times on hot paths (every type reference, every function call, every declaration). | **fixed** (O(1) direct index, module scopes are first N scopes in order) |
 | E2 | Type interning functions (`type_named`, `type_array`, `type_slice`, `type_table_row`) do full linear scans of the types table on each call. | **fixed** (reverse scan, most recent types found first) |
-| E3 | `check_match_enum_coverage` has O(V * A * V) behavior due to repeated `enum_find_variant` calls inside the variant loop. | deferred (compare resolved variant_id directly instead of re-scanning) |
+| E3 | `check_match_enum_coverage` has O(V * A * V) behavior due to repeated `enum_find_variant` calls inside the variant loop. | **fixed** (store resolved variant_id in nodes.data2 during pattern check, compare directly in coverage) |
 | E4 | `check_match_scalar_coverage` has O(arms^2) duplicate detection with repeated `str_to_i64` re-parsing. | deferred (precompute ScalarPatternInfo once, then compare) |
 | E5 | `arena_dep_add` and `deferred_arena_check_add` do linear duplicate scans on each insert. Table is over-allocated to `node_count + 8` but actual entries are typically small. | deferred (low priority, practical sizes are small) |
-| E6 | Recursive type-property queries (`type_has_arena_data`, `type_is_non_copyable`, etc.) are called repeatedly on the same types without memoization. Budget parameter bounds worst case. | deferred (candidate for per-type cached flag once types are fully resolved) |
+| E6 | Recursive type-property queries (`type_has_arena_data`, `type_is_non_copyable`, etc.) are called repeatedly on the same types without memoization. Budget parameter bounds worst case. | **fixed** (per-type cached flags in types.data2 using bit-packed tri-state) |
 | E7 | `builtin_call_kind` does up to 7 sequential string comparisons per non-user call expression. | skipped (only on the non-user-function path, short lists) |
 
 ### Priority for later milestones
 
-The two highest-impact items (E1, E2) are now fixed. The next candidates are:
-
-1. **E3 (match enum coverage)**: compare resolved variant_id directly instead
-   of re-scanning by name.
-
-2. **E6 (type-property memoization)**: cache per-type flags once types are
-   fully resolved.
+All high-impact efficiency items (E1, E2, E3, E6) are now fixed. The remaining
+deferred items (E4, E5) are low priority with small practical input sizes.
 
 ## Milestone Boundaries
 

@@ -36,6 +36,14 @@ val SYNTHETIC_TOKEN_TARGET_OS: i64 = -3
 val SYNTHETIC_TOKEN_LINUX: i64 = -4
 val SYNTHETIC_TOKEN_MACOS: i64 = -5
 
+// Per-type property cache stored in types.data2, avoids redundant recursive queries.
+val TYPE_CACHE_HAS_ARENA_COMPUTED: i64 = 1
+val TYPE_CACHE_HAS_ARENA_VALUE: i64 = 2
+val TYPE_CACHE_NON_COPYABLE_COMPUTED: i64 = 4
+val TYPE_CACHE_NON_COPYABLE_VALUE: i64 = 8
+val TYPE_CACHE_VALUE_COMPAT_COMPUTED: i64 = 16
+val TYPE_CACHE_VALUE_COMPAT_VALUE: i64 = 32
+
 pub value CheckResult {
     scopes: span.Range,
     symbols: span.Range,
@@ -2224,6 +2232,7 @@ func type_decl_has_arena_fields(
 }
 
 // Arena safety only tracks types whose values can contain arena-backed slices/strings.
+// Results are cached in types.data2 to avoid redundant recursive walks.
 func type_has_arena_data(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -2243,14 +2252,36 @@ func type_has_arena_data(
         return false
     }
 
+    if (flag_has(types_table.data2[type_id], TYPE_CACHE_HAS_ARENA_COMPUTED)) {
+        return flag_has(types_table.data2[type_id], TYPE_CACHE_HAS_ARENA_VALUE)
+    }
+
     val kind: types.TypeKind = types_table.kind[type_id]
     if (kind == types.TypeKind.SliceType ||
         kind == types.TypeKind.StrType ||
         kind == types.TypeKind.TableType) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_HAS_ARENA_COMPUTED | TYPE_CACHE_HAS_ARENA_VALUE
         return true
     }
+    mut result: bool = false
     if (kind == types.TypeKind.EnumType) {
-        return enum_has_slice_payload(
+        result = enum_has_slice_payload(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            ref scopes_table,
+            ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            type_id,
+            budget - 1
+        )
+    } else {
+        result = type_decl_has_arena_fields(
             mut ref mem,
             ref sources,
             ref text_pool,
@@ -2266,21 +2297,11 @@ func type_has_arena_data(
             budget - 1
         )
     }
-    type_decl_has_arena_fields(
-        mut ref mem,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        mut ref nodes,
-        ref scopes_table,
-        ref symbols_table,
-        mut ref types_table,
-        ref builtins,
-        mut ref diags,
-        mut ref diag_pool,
-        type_id,
-        budget - 1
-    )
+    types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_HAS_ARENA_COMPUTED
+    if (result) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_HAS_ARENA_VALUE
+    }
+    result
 }
 
 // Deferred call-site checks only need one callee edge per function to reach fixpoint.
@@ -2958,6 +2979,7 @@ func check_return_arena_escape(
 }
 
 // Stage-0 field and payload validation treats structs, Arena, tables, and slice-bearing enums as non-copyable.
+// Results are cached in types.data2 to avoid redundant recursive walks.
 func type_is_non_copyable(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -2977,14 +2999,20 @@ func type_is_non_copyable(
         return false
     }
 
+    if (flag_has(types_table.data2[type_id], TYPE_CACHE_NON_COPYABLE_COMPUTED)) {
+        return flag_has(types_table.data2[type_id], TYPE_CACHE_NON_COPYABLE_VALUE)
+    }
+
     val kind: types.TypeKind = types_table.kind[type_id]
     if (kind == types.TypeKind.StructType ||
         kind == types.TypeKind.TableType ||
         kind == types.TypeKind.ArenaType) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_NON_COPYABLE_COMPUTED | TYPE_CACHE_NON_COPYABLE_VALUE
         return true
     }
+    mut result: bool = false
     if (kind == types.TypeKind.EnumType) {
-        return enum_has_slice_payload(
+        result = enum_has_slice_payload(
             mut ref mem,
             ref sources,
             ref text_pool,
@@ -3000,10 +3028,15 @@ func type_is_non_copyable(
             budget - 1
         )
     }
-    false
+    types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_NON_COPYABLE_COMPUTED
+    if (result) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_NON_COPYABLE_VALUE
+    }
+    result
 }
 
 // Table fields and tagged-enum payload checks both need the same recursive value-compatibility rule.
+// Results are cached in types.data2 to avoid redundant recursive walks.
 func type_is_value_compatible(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -3023,6 +3056,10 @@ func type_is_value_compatible(
         return false
     }
 
+    if (flag_has(types_table.data2[type_id], TYPE_CACHE_VALUE_COMPAT_COMPUTED)) {
+        return flag_has(types_table.data2[type_id], TYPE_CACHE_VALUE_COMPAT_VALUE)
+    }
+
     val kind: types.TypeKind = types_table.kind[type_id]
     if (kind == types.TypeKind.I64Type ||
         kind == types.TypeKind.I32Type ||
@@ -3030,6 +3067,7 @@ func type_is_value_compatible(
         kind == types.TypeKind.U32Type ||
         kind == types.TypeKind.F64Type ||
         kind == types.TypeKind.BoolType) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_VALUE_COMPAT_COMPUTED | TYPE_CACHE_VALUE_COMPAT_VALUE
         return true
     }
     if (kind == types.TypeKind.StrType ||
@@ -3039,10 +3077,12 @@ func type_is_value_compatible(
         kind == types.TypeKind.TableType ||
         kind == types.TypeKind.VoidType ||
         kind == types.TypeKind.InvalidType) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_VALUE_COMPAT_COMPUTED
         return false
     }
+    mut result: bool = true
     if (kind == types.TypeKind.ArrayType) {
-        return type_is_value_compatible(
+        result = type_is_value_compatible(
             mut ref mem,
             ref sources,
             ref text_pool,
@@ -3057,29 +3097,14 @@ func type_is_value_compatible(
             types_table.data0[type_id],
             budget - 1
         )
-    }
-    if (kind == types.TypeKind.EnumType) {
-        val enum_decl: i64 = types_table.decl_node[type_id]
-        mut variant_id: i64 = nodes.first_child[enum_decl]
-        while (variant_id >= 0) {
-            if (nodes.kind[variant_id] == node.NodeKind.VariantDecl &&
-                flag_has(nodes.data1[variant_id], CHECK_NODE_FLAG_HAS_TYPE)) {
-                val payload_type: i64 = ensure_variant_decl_type(
-                    mut ref mem,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    mut ref nodes,
-                    ref scopes_table,
-                    ref symbols_table,
-                    mut ref types_table,
-                    ref builtins,
-                    mut ref diags,
-                    mut ref diag_pool,
-                    type_id,
-                    variant_id
-                )
-                if (!type_is_value_compatible(
+    } else {
+        if (kind == types.TypeKind.EnumType) {
+            val enum_decl: i64 = types_table.decl_node[type_id]
+            mut variant_id: i64 = nodes.first_child[enum_decl]
+            while (variant_id >= 0) {
+                if (nodes.kind[variant_id] == node.NodeKind.VariantDecl &&
+                    flag_has(nodes.data1[variant_id], CHECK_NODE_FLAG_HAS_TYPE)) {
+                    val payload_type: i64 = ensure_variant_decl_type(
                         mut ref mem,
                         ref sources,
                         ref text_pool,
@@ -3091,61 +3116,80 @@ func type_is_value_compatible(
                         ref builtins,
                         mut ref diags,
                         mut ref diag_pool,
-                        payload_type,
-                        budget - 1
-                    )) {
-                    return false
+                        type_id,
+                        variant_id
+                    )
+                    if (!type_is_value_compatible(
+                            mut ref mem,
+                            ref sources,
+                            ref text_pool,
+                            ref tokens,
+                            mut ref nodes,
+                            ref scopes_table,
+                            ref symbols_table,
+                            mut ref types_table,
+                            ref builtins,
+                            mut ref diags,
+                            mut ref diag_pool,
+                            payload_type,
+                            budget - 1
+                        )) {
+                        result = false
+                    }
+                }
+                variant_id = nodes.next_sibling[variant_id]
+            }
+        } else {
+            val decl_id: i64 = record_decl_node(ref types_table, type_id)
+            if (decl_id < 0) {
+                result = false
+            } else {
+                mut field_id: i64 = nodes.first_child[decl_id]
+                while (field_id >= 0) {
+                    if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+                        val field_type: i64 = ensure_field_decl_type(
+                            mut ref mem,
+                            ref sources,
+                            ref text_pool,
+                            ref tokens,
+                            mut ref nodes,
+                            ref scopes_table,
+                            ref symbols_table,
+                            mut ref types_table,
+                            ref builtins,
+                            mut ref diags,
+                            mut ref diag_pool,
+                            type_id,
+                            field_id
+                        )
+                        if (!type_is_value_compatible(
+                                mut ref mem,
+                                ref sources,
+                                ref text_pool,
+                                ref tokens,
+                                mut ref nodes,
+                                ref scopes_table,
+                                ref symbols_table,
+                                mut ref types_table,
+                                ref builtins,
+                                mut ref diags,
+                                mut ref diag_pool,
+                                field_type,
+                                budget - 1
+                            )) {
+                            result = false
+                        }
+                    }
+                    field_id = nodes.next_sibling[field_id]
                 }
             }
-            variant_id = nodes.next_sibling[variant_id]
         }
-        return true
     }
-
-    val decl_id: i64 = record_decl_node(ref types_table, type_id)
-    if (decl_id < 0) {
-        return false
+    types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_VALUE_COMPAT_COMPUTED
+    if (result) {
+        types_table.data2[type_id] = types_table.data2[type_id] | TYPE_CACHE_VALUE_COMPAT_VALUE
     }
-
-    mut field_id: i64 = nodes.first_child[decl_id]
-    while (field_id >= 0) {
-        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
-            val field_type: i64 = ensure_field_decl_type(
-                mut ref mem,
-                ref sources,
-                ref text_pool,
-                ref tokens,
-                mut ref nodes,
-                ref scopes_table,
-                ref symbols_table,
-                mut ref types_table,
-                ref builtins,
-                mut ref diags,
-                mut ref diag_pool,
-                type_id,
-                field_id
-            )
-            if (!type_is_value_compatible(
-                    mut ref mem,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    mut ref nodes,
-                    ref scopes_table,
-                    ref symbols_table,
-                    mut ref types_table,
-                    ref builtins,
-                    mut ref diags,
-                    mut ref diag_pool,
-                    field_type,
-                    budget - 1
-                )) {
-                return false
-            }
-        }
-        field_id = nodes.next_sibling[field_id]
-    }
-    true
+    result
 }
 
 // Enum-pattern helpers only need the unqualified variant token from one identifier/call shape.
@@ -3163,31 +3207,6 @@ func match_pattern_variant_name(ref nodes: node.Nodes, pattern_id: i64): i64 = {
         }
     }
     -1
-}
-
-// Post-check coverage only needs the resolved enum variant declaration row, not payload details.
-func match_pattern_enum_variant_id(
-    ref nodes: node.Nodes,
-    ref sources: source.Sources,
-    ref text_pool: bbuf.ByteBuf,
-    ref tokens: token.Tokens,
-    ref types_table: types.Types,
-    scrutinee_type: i64,
-    pattern_id: i64
-): i64 = {
-    val variant_token: i64 = match_pattern_variant_name(ref nodes, pattern_id)
-    if (variant_token < 0) {
-        return node.invalid_node_id()
-    }
-    enum_find_variant(
-        ref nodes,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        ref types_table,
-        scrutinee_type,
-        variant_token
-    )
 }
 
 // Scalar wildcard matching is just the special bare `_` identifier spelling.
@@ -3330,9 +3349,6 @@ func match_scalar_pattern_info(
 // Enum matches are exhaustive when every declared variant is covered exactly once.
 func check_match_enum_coverage(
     mut ref mem: Arena,
-    ref sources: source.Sources,
-    ref text_pool: bbuf.ByteBuf,
-    ref tokens: token.Tokens,
     ref nodes: node.Nodes,
     ref types_table: types.Types,
     mut ref diags: diag.Diagnostics,
@@ -3341,6 +3357,8 @@ func check_match_enum_coverage(
     scrutinee_id: i64,
     scrutinee_type: i64
 ): void = {
+    // Variant ids were stored in data2 during check_match_enum_pattern, so
+    // coverage reduces to comparing resolved ids directly: O(V * A) total.
     val enum_decl: i64 = types_table.decl_node[scrutinee_type]
     mut missing_variant: bool = false
     mut variant_id: i64 = nodes.first_child[enum_decl]
@@ -3350,15 +3368,7 @@ func check_match_enum_coverage(
             mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
             while (arm_id >= 0) {
                 val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
-                if (match_pattern_enum_variant_id(
-                        ref nodes,
-                        ref sources,
-                        ref text_pool,
-                        ref tokens,
-                        ref types_table,
-                        scrutinee_type,
-                        pattern_id
-                    ) == variant_id) {
+                if (nodes.data2[pattern_id] == variant_id) {
                     if (seen_variant) {
                         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
                     } else {
@@ -3541,6 +3551,7 @@ func check_match_enum_pattern(
     }
 
     nodes.type_id[pattern_id] = scrutinee_type
+    nodes.data2[pattern_id] = variant_id
     val has_payload: bool = flag_has(nodes.data1[variant_id], CHECK_NODE_FLAG_HAS_TYPE)
     if (nodes.kind[pattern_id] != node.NodeKind.CallExpr) {
         if (has_payload) {
@@ -6654,9 +6665,6 @@ func check_expr(
             if (types_table.kind[nodes.type_id[scrutinee_id]] == types.TypeKind.EnumType) {
                 check_match_enum_coverage(
                     mut ref mem,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
                     ref nodes,
                     ref types_table,
                     mut ref diags,
