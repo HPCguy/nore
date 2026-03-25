@@ -153,7 +153,6 @@ pub func type_named(
 }
 
 // Array types are interned by element type and constant size.
-// Scan from end so recently interned types are found first.
 pub func type_array(mut ref types: Types, elem_type: i64, size: i64): i64 = {
     mut type_id: i64 = table_len(ref types) - 1
     while (type_id >= 0) {
@@ -169,7 +168,6 @@ pub func type_array(mut ref types: Types, elem_type: i64, size: i64): i64 = {
 }
 
 // Slice types are interned by element type alone.
-// Scan from end so recently interned types are found first.
 pub func type_slice(mut ref types: Types, elem_type: i64): i64 = {
     mut type_id: i64 = table_len(ref types) - 1
     while (type_id >= 0) {
@@ -184,7 +182,6 @@ pub func type_slice(mut ref types: Types, elem_type: i64): i64 = {
 }
 
 // Table declarations synthesize one stable row type for `.Row` references.
-// Scan from end so recently interned types are found first.
 pub func type_table_row(
     mut ref types: Types,
     module_id: i64,

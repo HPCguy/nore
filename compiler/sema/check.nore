@@ -2980,7 +2980,6 @@ func check_return_arena_escape(
 }
 
 // Stage-0 field and payload validation treats structs, Arena, tables, and slice-bearing enums as non-copyable.
-// Results are cached in types.data2 to avoid redundant recursive walks.
 func type_is_non_copyable(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -3037,7 +3036,6 @@ func type_is_non_copyable(
 }
 
 // Table fields and tagged-enum payload checks both need the same recursive value-compatibility rule.
-// Results are cached in types.data2 to avoid redundant recursive walks.
 func type_is_value_compatible(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -3136,9 +3134,12 @@ func type_is_value_compatible(
                             budget - 1
                         )) {
                         result = false
+                        variant_id = -1
                     }
                 }
-                variant_id = nodes.next_sibling[variant_id]
+                if (variant_id >= 0) {
+                    variant_id = nodes.next_sibling[variant_id]
+                }
             }
         } else {
             val decl_id: i64 = record_decl_node(ref types_table, type_id)
@@ -3179,9 +3180,12 @@ func type_is_value_compatible(
                                 budget - 1
                             )) {
                             result = false
+                            field_id = -1
                         }
                     }
-                    field_id = nodes.next_sibling[field_id]
+                    if (field_id >= 0) {
+                        field_id = nodes.next_sibling[field_id]
+                    }
                 }
             }
         }
@@ -3383,20 +3387,17 @@ func check_match_enum_coverage(
     // coverage reduces to comparing resolved ids directly: O(V * A) total.
     val enum_decl: i64 = types_table.decl_node[scrutinee_type]
     mut has_else: bool = false
-    mut seen_catch_all: bool = false
     mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
     while (arm_id >= 0) {
         val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
-        if (seen_catch_all) {
+        if (has_else) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S089", ref "Catch-all match arm must be last")
         }
         if (pattern_id >= 0 && nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
             if (has_else) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
-            } else {
-                has_else = true
             }
-            seen_catch_all = true
+            has_else = true
         }
         arm_id = nodes.next_sibling[arm_id]
     }
@@ -3448,7 +3449,6 @@ func check_match_scalar_coverage(
     mut has_catch_all: bool = false
     mut has_true: bool = false
     mut has_false: bool = false
-    mut seen_catch_all: bool = false
     val bool_match: bool = type_is_bool_builtin(ref types_table, scrutinee_type)
 
     mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
@@ -3462,17 +3462,15 @@ func check_match_scalar_coverage(
             pattern_id
         )
 
-        if (seen_catch_all) {
+        if (has_catch_all) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S089", ref "Catch-all match arm must be last")
         }
 
         if (pattern_id >= 0 && nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
             if (has_catch_all) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
-            } else {
-                has_catch_all = true
             }
-            seen_catch_all = true
+            has_catch_all = true
         } else {
             mut valid_value: bool = info.has_value
             if (valid_value && bool_match) {
@@ -5276,7 +5274,8 @@ func check_expr(
     }
 
     val kind: node.NodeKind = nodes.kind[node_id]
-    if (kind == node.NodeKind.NumberLit) {
+    match (kind) {
+        NumberLit = {
         val expected_type: i64 = expr_expected_type(
             mut ref mem,
             ref sources,
@@ -5300,24 +5299,24 @@ func check_expr(
         }
         return
     }
-    if (kind == node.NodeKind.FloatLit) {
+        FloatLit = {
         nodes.type_id[node_id] = builtins.f64_type
         return
     }
-    if (kind == node.NodeKind.BoolLit) {
+        BoolLit = {
         nodes.type_id[node_id] = builtins.bool_type
         return
     }
-    if (kind == node.NodeKind.StringLit) {
+        StringLit = {
         nodes.type_id[node_id] = builtins.str_type
         return
     }
-    if (kind == node.NodeKind.CharLit) {
+        CharLit = {
         nodes.type_id[node_id] = builtins.u8_type
         return
     }
 
-    if (kind == node.NodeKind.Identifier) {
+        Identifier = {
         if (call_target) {
             resolve_call_identifier(
                 mut ref mem,
@@ -5386,7 +5385,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.RefExpr) {
+        RefExpr = {
         val value_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
@@ -5429,7 +5428,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.FieldAccess) {
+        FieldAccess = {
         if (!call_target &&
             check_enum_variant_access(
                 mut ref mem,
@@ -5641,7 +5640,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.CallExpr) {
+        CallExpr = {
         val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         if (check_enum_variant_call(
                 mut ref mem,
@@ -5818,7 +5817,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.ConstructorExpr) {
+        ConstructorExpr = {
         val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val ctor_type: i64 = resolve_type_node(
             mut ref mem,
@@ -5949,7 +5948,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.ArrayLit) {
+        ArrayLit = {
         val first_elem: i64 = nodes.first_child[node_id]
         if (first_elem < 0) {
             return
@@ -6066,7 +6065,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.IndexExpr) {
+        IndexExpr = {
         val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val index_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         check_expr(
@@ -6124,7 +6123,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.SliceExpr) {
+        SliceExpr = {
         val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
@@ -6187,7 +6186,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.UnaryExpr) {
+        UnaryExpr = {
         val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
@@ -6235,7 +6234,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.BinaryExpr) {
+        BinaryExpr = {
         val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val right_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         check_expr(
@@ -6394,7 +6393,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.CastExpr) {
+        CastExpr = {
         val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
@@ -6437,7 +6436,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.Block) {
+        Block = {
         check_block(
             mut ref mem,
             ref sources,
@@ -6462,7 +6461,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.IfStmt) {
+        IfStmt = {
         val cond_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val then_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         val else_id: i64 = node.node_child_at(ref nodes, node_id, 2)
@@ -6597,7 +6596,7 @@ func check_expr(
         return
     }
 
-    if (kind == node.NodeKind.MatchExpr) {
+        MatchExpr = {
         val scrutinee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
@@ -6762,30 +6761,34 @@ func check_expr(
         return
     }
 
-    mut child_id: i64 = nodes.first_child[node_id]
-    while (child_id >= 0) {
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            child_id,
-            false
-        )
-        child_id = nodes.next_sibling[child_id]
+        else = {
+        mut child_id: i64 = nodes.first_child[node_id]
+        while (child_id >= 0) {
+            check_expr(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                child_id,
+                false
+            )
+            child_id = nodes.next_sibling[child_id]
+        }
+        return
+    }
     }
 }
 
@@ -7021,6 +7024,139 @@ func check_local_decl(
     }
 }
 
+// Assignment statements share target/value validation; compound ops add numeric checks.
+func check_assignment_stmt(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref scopes_table: scopes.Scopes,
+    mut ref symbols_table: symbols.Symbols,
+    mut ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    mut ref deps: ArenaDependencies,
+    mut ref deferred: DeferredArenaChecks,
+    module_id: i64,
+    scope_id: i64,
+    func_return_type: i64,
+    in_loop: bool,
+    stmt_id: i64
+): void = {
+    val target_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+    val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
+    val target_type: i64 = check_assignment_target(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        ref builtins,
+        mut ref diags,
+        mut ref diag_pool,
+        mut ref deps,
+        mut ref deferred,
+        module_id,
+        scope_id,
+        func_return_type,
+        in_loop,
+        target_id
+    )
+    check_expr(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        ref builtins,
+        mut ref diags,
+        mut ref diag_pool,
+        mut ref deps,
+        mut ref deferred,
+        module_id,
+        scope_id,
+        func_return_type,
+        in_loop,
+        value_id,
+        false
+    )
+
+    if (!expr_type_compatible(
+        ref types_table,
+        ref builtins,
+        ref nodes,
+        target_type,
+        nodes.type_id[value_id],
+        value_id,
+        false
+    )) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, value_id, ref "S006", ref "Type mismatch")
+    } else {
+        if (nodes.kind[target_id] == node.NodeKind.Identifier &&
+            nodes.symbol_id[target_id] >= 0 &&
+            type_has_arena_data(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                ref scopes_table,
+                ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                target_type,
+                64
+            )) {
+            track_symbol_arena_from_expr(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref builtins,
+                mut ref symbols_table,
+                nodes.symbol_id[target_id],
+                value_id
+            )
+        }
+        if (nodes.kind[stmt_id] == node.NodeKind.CompoundAssignStmt) {
+            val op_kind: token.TokenKind = tokens.kind[nodes.data0[stmt_id]]
+            val common_type: i64 = numeric_common_type(
+                ref types_table,
+                ref builtins,
+                ref nodes,
+                target_id,
+                target_type,
+                value_id,
+                nodes.type_id[value_id]
+            )
+            if (op_kind == token.TokenKind.PercentEqual ||
+                op_kind == token.TokenKind.AmpersandEqual ||
+                op_kind == token.TokenKind.PipeEqual ||
+                op_kind == token.TokenKind.CaretEqual ||
+                op_kind == token.TokenKind.LessLessEqual ||
+                op_kind == token.TokenKind.GreaterGreaterEqual) {
+                if (common_type < 0 || !type_is_integer_builtin(ref types_table, common_type)) {
+                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S006", ref "Type mismatch")
+                }
+            } else {
+                if (common_type < 0 || !type_is_numeric_builtin(ref types_table, common_type)) {
+                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S006", ref "Type mismatch")
+                }
+            }
+        }
+    }
+}
+
 // Statement checking owns control-flow, return rules, and assignment validation.
 func check_statement(
     mut ref mem: Arena,
@@ -7043,62 +7179,125 @@ func check_statement(
     stmt_id: i64
 ): void = {
     val kind: node.NodeKind = nodes.kind[stmt_id]
-    if (kind == node.NodeKind.VarDecl) {
-        check_local_decl(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            stmt_id
-        )
-        return
-    }
+    match (kind) {
+        VarDecl = {
+            check_local_decl(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                stmt_id
+            )
+            return
+        }
 
-    if (kind == node.NodeKind.Block) {
-        check_block(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            stmt_id,
-            true
-        )
-        return
-    }
+        Block = {
+            check_block(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                stmt_id,
+                true
+            )
+            return
+        }
 
-    if (kind == node.NodeKind.ReturnStmt) {
-        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
-        if (value_id < 0) {
-            if (func_return_type != builtins.void_type) {
-                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S015", ref "Non-void function must return a value")
+        ReturnStmt = {
+            val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+            if (value_id < 0) {
+                if (func_return_type != builtins.void_type) {
+                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S015", ref "Non-void function must return a value")
+                }
+            } else {
+                check_expr(
+                    mut ref mem,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    mut ref nodes,
+                    mut ref scopes_table,
+                    mut ref symbols_table,
+                    mut ref types_table,
+                    ref builtins,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    mut ref deps,
+                    mut ref deferred,
+                    module_id,
+                    scope_id,
+                    func_return_type,
+                    in_loop,
+                    value_id,
+                    false
+                )
+                if (func_return_type == builtins.void_type) {
+                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S014", ref "Void function cannot return a value")
+                } else {
+                    if (!expr_type_compatible(
+                        ref types_table,
+                        ref builtins,
+                        ref nodes,
+                        func_return_type,
+                        nodes.type_id[value_id],
+                        value_id,
+                        false
+                    )) {
+                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, value_id, ref "S013", ref "Return type mismatch")
+                    } else {
+                        check_return_arena_escape(
+                            mut ref mem,
+                            ref sources,
+                            ref text_pool,
+                            ref tokens,
+                            mut ref nodes,
+                            ref scopes_table,
+                            mut ref symbols_table,
+                            mut ref types_table,
+                            ref builtins,
+                            mut ref diags,
+                            mut ref diag_pool,
+                            mut ref deps,
+                            mut ref deferred,
+                            module_id,
+                            scope_id,
+                            value_id,
+                            func_return_type
+                        )
+                    }
+                }
             }
-        } else {
+            return
+        }
+
+        AssertStmt = {
+            val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
             check_expr(
                 mut ref mem,
                 ref sources,
@@ -7117,106 +7316,19 @@ func check_statement(
                 scope_id,
                 func_return_type,
                 in_loop,
-                value_id,
+                cond_id,
                 false
             )
-            if (func_return_type == builtins.void_type) {
-                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S014", ref "Void function cannot return a value")
-            } else {
-                if (!expr_type_compatible(
-                    ref types_table,
-                    ref builtins,
-                    ref nodes,
-                    func_return_type,
-                    nodes.type_id[value_id],
-                    value_id,
-                    false
-                )) {
-                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, value_id, ref "S013", ref "Return type mismatch")
-                } else {
-                    check_return_arena_escape(
-                        mut ref mem,
-                        ref sources,
-                        ref text_pool,
-                        ref tokens,
-                        mut ref nodes,
-                        ref scopes_table,
-                        mut ref symbols_table,
-                        mut ref types_table,
-                        ref builtins,
-                        mut ref diags,
-                        mut ref diag_pool,
-                        mut ref deps,
-                        mut ref deferred,
-                        module_id,
-                        scope_id,
-                        value_id,
-                        func_return_type
-                    )
-                }
+            if (!type_is_bool_builtin(ref types_table, nodes.type_id[cond_id])) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, cond_id, ref "S007", ref "Condition must be bool")
             }
+            return
         }
-        return
-    }
 
-    if (kind == node.NodeKind.AssertStmt) {
-        val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            cond_id,
-            false
-        )
-        if (!type_is_bool_builtin(ref types_table, nodes.type_id[cond_id])) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, cond_id, ref "S007", ref "Condition must be bool")
-        }
-        return
-    }
-
-    if (kind == node.NodeKind.WhileStmt) {
-        val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
-        val body_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            cond_id,
-            false
-        )
-        if (!type_is_bool_builtin(ref types_table, nodes.type_id[cond_id])) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, cond_id, ref "S007", ref "Condition must be bool")
-        }
-        if (body_id >= 0) {
-            check_block(
+        WhileStmt = {
+            val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+            val body_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
+            check_expr(
                 mut ref mem,
                 ref sources,
                 ref text_pool,
@@ -7233,85 +7345,44 @@ func check_statement(
                 module_id,
                 scope_id,
                 func_return_type,
-                true,
-                body_id,
-                true
+                in_loop,
+                cond_id,
+                false
             )
-        }
-        return
-    }
-
-    if (kind == node.NodeKind.ForStmt) {
-        val start_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
-        val end_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
-        val body_id: i64 = node.node_child_at(ref nodes, stmt_id, 2)
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            start_id,
-            false
-        )
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            end_id,
-            false
-        )
-        if (!type_is_integer_builtin(ref types_table, nodes.type_id[start_id]) &&
-            !node_is_integer_literal(ref nodes, start_id)) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, start_id, ref "S058", ref "For-loop range bound must be integer type")
-        }
-        if (!type_is_integer_builtin(ref types_table, nodes.type_id[end_id]) &&
-            !node_is_integer_literal(ref nodes, end_id)) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, end_id, ref "S058", ref "For-loop range bound must be integer type")
+            if (!type_is_bool_builtin(ref types_table, nodes.type_id[cond_id])) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, cond_id, ref "S007", ref "Condition must be bool")
+            }
+            if (body_id >= 0) {
+                check_block(
+                    mut ref mem,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    mut ref nodes,
+                    mut ref scopes_table,
+                    mut ref symbols_table,
+                    mut ref types_table,
+                    ref builtins,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    mut ref deps,
+                    mut ref deferred,
+                    module_id,
+                    scope_id,
+                    func_return_type,
+                    true,
+                    body_id,
+                    true
+                )
+            }
+            return
         }
 
-        val loop_scope: i64 = scopes.scopes_push(mut ref scopes_table, scope_id, module_id, stmt_id)
-        val loop_symbol: i64 = symbols.symbols_push(
-            mut ref symbols_table,
-            symbols.SymbolKind.LocalSymbol,
-            module_id,
-            loop_scope,
-            stmt_id,
-            nodes.data0[stmt_id],
-            builtins.i64_type,
-            -1,
-            0
-        )
-        scope_append_symbol(mut ref scopes_table, mut ref symbols_table, loop_scope, loop_symbol)
-        nodes.symbol_id[stmt_id] = loop_symbol
-        if (body_id >= 0) {
-            check_block(
+        ForStmt = {
+            val start_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+            val end_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
+            val body_id: i64 = node.node_child_at(ref nodes, stmt_id, 2)
+            check_expr(
                 mut ref mem,
                 ref sources,
                 ref text_pool,
@@ -7326,190 +7397,194 @@ func check_statement(
                 mut ref deps,
                 mut ref deferred,
                 module_id,
-                loop_scope,
+                scope_id,
                 func_return_type,
-                true,
-                body_id,
+                in_loop,
+                start_id,
                 false
             )
-        }
-        return
-    }
+            check_expr(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                end_id,
+                false
+            )
+            if (!type_is_integer_builtin(ref types_table, nodes.type_id[start_id]) &&
+                !node_is_integer_literal(ref nodes, start_id)) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, start_id, ref "S058", ref "For-loop range bound must be integer type")
+            }
+            if (!type_is_integer_builtin(ref types_table, nodes.type_id[end_id]) &&
+                !node_is_integer_literal(ref nodes, end_id)) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, end_id, ref "S058", ref "For-loop range bound must be integer type")
+            }
 
-    if (kind == node.NodeKind.BreakStmt) {
-        if (!in_loop) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S004", ref "'break' outside of loop")
-        }
-        return
-    }
-
-    if (kind == node.NodeKind.ContinueStmt) {
-        if (!in_loop) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S005", ref "'continue' outside of loop")
-        }
-        return
-    }
-
-    if (kind == node.NodeKind.AssignStmt || kind == node.NodeKind.CompoundAssignStmt) {
-        val target_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
-        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
-        val target_type: i64 = check_assignment_target(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            target_id
-        )
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            value_id,
-            false
-        )
-
-        if (!expr_type_compatible(
-            ref types_table,
-            ref builtins,
-            ref nodes,
-            target_type,
-            nodes.type_id[value_id],
-            value_id,
-            false
-        )) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, value_id, ref "S006", ref "Type mismatch")
-        } else {
-            if (nodes.kind[target_id] == node.NodeKind.Identifier &&
-                nodes.symbol_id[target_id] >= 0 &&
-                type_has_arena_data(
+            val loop_scope: i64 = scopes.scopes_push(mut ref scopes_table, scope_id, module_id, stmt_id)
+            val loop_symbol: i64 = symbols.symbols_push(
+                mut ref symbols_table,
+                symbols.SymbolKind.LocalSymbol,
+                module_id,
+                loop_scope,
+                stmt_id,
+                nodes.data0[stmt_id],
+                builtins.i64_type,
+                -1,
+                0
+            )
+            scope_append_symbol(mut ref scopes_table, mut ref symbols_table, loop_scope, loop_symbol)
+            nodes.symbol_id[stmt_id] = loop_symbol
+            if (body_id >= 0) {
+                check_block(
                     mut ref mem,
                     ref sources,
                     ref text_pool,
                     ref tokens,
                     mut ref nodes,
-                    ref scopes_table,
-                    ref symbols_table,
+                    mut ref scopes_table,
+                    mut ref symbols_table,
                     mut ref types_table,
                     ref builtins,
                     mut ref diags,
                     mut ref diag_pool,
-                    target_type,
-                    64
-                )) {
-                track_symbol_arena_from_expr(
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref builtins,
-                    mut ref symbols_table,
-                    nodes.symbol_id[target_id],
-                    value_id
+                    mut ref deps,
+                    mut ref deferred,
+                    module_id,
+                    loop_scope,
+                    func_return_type,
+                    true,
+                    body_id,
+                    false
                 )
             }
-            if (kind == node.NodeKind.CompoundAssignStmt) {
-                val op_kind: token.TokenKind = tokens.kind[nodes.data0[stmt_id]]
-                val common_type: i64 = numeric_common_type(
-                    ref types_table,
-                    ref builtins,
-                    ref nodes,
-                    target_id,
-                    target_type,
-                    value_id,
-                    nodes.type_id[value_id]
-                )
-                if (op_kind == token.TokenKind.PercentEqual ||
-                    op_kind == token.TokenKind.AmpersandEqual ||
-                    op_kind == token.TokenKind.PipeEqual ||
-                    op_kind == token.TokenKind.CaretEqual ||
-                    op_kind == token.TokenKind.LessLessEqual ||
-                    op_kind == token.TokenKind.GreaterGreaterEqual) {
-                    if (common_type < 0 || !type_is_integer_builtin(ref types_table, common_type)) {
-                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S006", ref "Type mismatch")
-                    }
-                } else {
-                    if (common_type < 0 || !type_is_numeric_builtin(ref types_table, common_type)) {
-                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S006", ref "Type mismatch")
-                    }
-                }
-            }
+            return
         }
-        return
-    }
 
-    if (kind == node.NodeKind.ExprStmt) {
-        check_expr(
-            mut ref mem,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            mut ref nodes,
-            mut ref scopes_table,
-            mut ref symbols_table,
-            mut ref types_table,
-            ref builtins,
-            mut ref diags,
-            mut ref diag_pool,
-            mut ref deps,
-            mut ref deferred,
-            module_id,
-            scope_id,
-            func_return_type,
-            in_loop,
-            node.node_child_at(ref nodes, stmt_id, 0),
-            false
-        )
-        return
-    }
+        BreakStmt = {
+            if (!in_loop) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S004", ref "'break' outside of loop")
+            }
+            return
+        }
 
-    check_expr(
-        mut ref mem,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        mut ref nodes,
-        mut ref scopes_table,
-        mut ref symbols_table,
-        mut ref types_table,
-        ref builtins,
-        mut ref diags,
-        mut ref diag_pool,
-        mut ref deps,
-        mut ref deferred,
-        module_id,
-        scope_id,
-        func_return_type,
-        in_loop,
-        stmt_id,
-        false
-    )
+        ContinueStmt = {
+            if (!in_loop) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S005", ref "'continue' outside of loop")
+            }
+            return
+        }
+
+        AssignStmt = {
+            check_assignment_stmt(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                stmt_id
+            )
+            return
+        }
+
+        CompoundAssignStmt = {
+            check_assignment_stmt(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                stmt_id
+            )
+            return
+        }
+
+        ExprStmt = {
+            check_expr(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                node.node_child_at(ref nodes, stmt_id, 0),
+                false
+            )
+            return
+        }
+
+        else = {
+            check_expr(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                mut ref scopes_table,
+                mut ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref deps,
+                mut ref deferred,
+                module_id,
+                scope_id,
+                func_return_type,
+                in_loop,
+                stmt_id,
+                false
+            )
+            return
+        }
+    }
 }
 
 // Blocks own lexical scope creation plus the trailing-value type of block expressions.
