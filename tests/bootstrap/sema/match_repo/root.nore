@@ -1,4 +1,5 @@
-enum ParseResult { Ok(i64), Err }
+enum ParseResult { Ok(i64), Err, Missing }
+enum Flag { _, Ready }
 
 table Rows {
     kind: u8,
@@ -12,21 +13,28 @@ func helper(): i64 = {
 func unwrap(result: ParseResult): i64 = {
     match (result) {
         Ok(n) = { n }
-        Err = { 0 }
+        else = { 0 }
     }
 }
 
 func classify(c: u8): i64 = {
     match (c) {
         'a' = { 1 }
-        _ = { 0 }
+        else = { 0 }
     }
 }
 
 func pick(flag: bool, x: u8): u8 = {
     match (flag) {
         true = { 1 }
-        false = { x }
+        else = { x }
+    }
+}
+
+func flag_code(flag: Flag): i64 = {
+    match (flag) {
+        _ = { 1 }
+        else = { 2 }
     }
 }
 
@@ -46,10 +54,13 @@ func main(): void = {
 
     assert unwrap(ParseResult.Ok(7)) == 7
     assert unwrap(ParseResult.Err) == 0
+    assert unwrap(ParseResult.Missing) == 0
     assert classify('a') == 1
     assert classify('z') == 0
     assert pick(true, 9) == 1
     assert pick(false, 9) == 9
+    assert flag_code(Flag._) == 1
+    assert flag_code(Flag.Ready) == 2
     assert update(true, mut ref rows) == 1
     assert update(false, mut ref rows) == 1
 }

@@ -169,7 +169,7 @@ error[D002]: Unknown flag: --invalid
 - **S071**: Slice range bound must be integer type
 - **S072**: Cannot sub-slice non-array/slice type
 - **S073**: Match scrutinee is not an enum, `bool`, or supported integer type
-- **S074**: Non-exhaustive match (missing variant, `bool` case, or wildcard arm)
+- **S074**: Non-exhaustive match (missing variant, `bool` case, or catch-all arm)
 - **S075**: Duplicate match arm
 - **S076**: Match arm types incompatible (expression form)
 - **S077**: Payload type mismatch in tagged union variant construction
@@ -184,6 +184,7 @@ error[D002]: Unknown flag: --invalid
 - **S086**: Unknown native function name (not a compiler-provided built-in)
 - **S087**: Built-in function requires native declaration in the current module
 - **S088**: Assignment target must be a variable, field, or index expression
+- **S089**: Catch-all match arm must be last
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

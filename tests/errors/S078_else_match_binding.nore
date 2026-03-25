@@ -1,0 +1,9 @@
+// Error: else catch-all arm cannot bind a payload
+enum Option { Some(i64), None }
+
+func main(): void = {
+    val opt: Option = Option.None
+    match (opt) {
+        else(n) = { }
+    }
+}

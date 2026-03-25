@@ -43,3 +43,24 @@ func missing_scalar(x: u8): i64 = {
         0 = { 0 }
     }
 }
+
+func duplicate_else(c: Color): i64 = {
+    match (c) {
+        Red = { 1 }
+        else = { 0 }
+        else = { 2 }
+    }
+}
+
+func else_binding(x: Option): i64 = {
+    match (x) {
+        else(n) = { n }
+    }
+}
+
+func else_not_last(flag: bool): i64 = {
+    match (flag) {
+        else = { 0 }
+        true = { 1 }
+    }
+}

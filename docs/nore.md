@@ -216,14 +216,13 @@ enum Color { Red, Green, Blue }
 
 match (Color.Green) {
     Red = { result = 1 }
-    Green = { result = 2 }
-    Blue = { result = 3 }
+    else = { result = 2 }
 }
 
 // As statement
 match (opt) {
     Some(n) = { result = n }
-    None = { result = 0 }
+    else = { result = 0 }
 }
 
 // As expression (val/mut initializer or function body value)
@@ -235,7 +234,7 @@ val x: i64 = match (opt) {
 func unwrap_or(opt: Option, default: i64): i64 = {
     match (opt) {
         Some(n) = { n }
-        None = { default }
+        else = { default }
     }
 }
 
@@ -243,6 +242,12 @@ func classify_byte(b: u8): i64 = {
     match (b) {
         '0' = { 0 }
         '1' = { 1 }
+        else = { 9 }
+    }
+}
+
+func classify_byte_legacy(b: u8): i64 = {
+    match (b) {
         _ = { 9 }
     }
 }
@@ -251,15 +256,17 @@ func classify_byte(b: u8): i64 = {
 Match rules:
 - `match (scrutinee) { arms }` with parentheses around the scrutinee
 - Scrutinee may be a plain enum, a tagged enum, `bool`, `i64`, `i32`, `u32`, or `u8`
-- Plain enum arms use `VariantName = { body }`
+- Plain enum arms use `VariantName = { body }` or `else = { body }`
 - Tagged-enum arms use `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
 - Scalar arms use literal patterns: `-1`, `0`, `'+'`, `true`, `false`
-- Bare `_ = { body }` is the wildcard arm for scalar matches
+- Bare `_ = { body }` and `else = { body }` are catch-all arms for scalar matches
+- `else = { body }` is also the catch-all arm for enum matches
+- Catch-all arms do not bind payloads and must be the last arm (S078, S089)
 - On enum matches, `_` remains a normal variant name if the enum declares one
 - `=` separates pattern from body (consistent with function syntax)
 - Variant names are unqualified (the scrutinee type determines the enum)
 - `_` wildcard for unused bindings: `Some(_) = { ... }`
-- Exhaustiveness required: all enum variants must be covered, `bool` must cover both values or use `_`, and integer matches must use `_`
+- Exhaustiveness required: all enum variants must be covered or ended with `else`, `bool` must cover both values or use `_` / `else`, and integer matches must use `_` or `else`
 - Binding variables are scoped to the arm body
 - All arms must produce values of compatible types when used as expression (S076)
 - Plain enum arms cannot bind payloads

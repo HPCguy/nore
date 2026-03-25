@@ -35,6 +35,7 @@ val SYNTHETIC_TOKEN_OS: i64 = -2
 val SYNTHETIC_TOKEN_TARGET_OS: i64 = -3
 val SYNTHETIC_TOKEN_LINUX: i64 = -4
 val SYNTHETIC_TOKEN_MACOS: i64 = -5
+val MATCH_PATTERN_CATCH_ALL_ID: i64 = -6
 
 // Per-type property cache stored in types.data2, avoids redundant recursive queries.
 val TYPE_CACHE_HAS_ARENA_COMPUTED: i64 = 1
@@ -3209,6 +3210,27 @@ func match_pattern_variant_name(ref nodes: node.Nodes, pattern_id: i64): i64 = {
     -1
 }
 
+// Catch-all match arms reuse the identifier/call pattern shape, but the spelling is reserved.
+func match_pattern_is_else(
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    pattern_id: i64
+): bool = {
+    if (pattern_id < 0) {
+        return false
+    }
+    if (nodes.kind[pattern_id] == node.NodeKind.Identifier) {
+        return tokens.kind[nodes.data0[pattern_id]] == token.TokenKind.Else
+    }
+    if (nodes.kind[pattern_id] == node.NodeKind.CallExpr) {
+        val callee_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
+        if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier) {
+            return tokens.kind[nodes.data0[callee_id]] == token.TokenKind.Else
+        }
+    }
+    false
+}
+
 // Scalar wildcard matching is just the special bare `_` identifier spelling.
 func match_pattern_is_scalar_wildcard(
     ref sources: source.Sources,
@@ -3360,6 +3382,25 @@ func check_match_enum_coverage(
     // Variant ids were stored in data2 during check_match_enum_pattern, so
     // coverage reduces to comparing resolved ids directly: O(V * A) total.
     val enum_decl: i64 = types_table.decl_node[scrutinee_type]
+    mut has_else: bool = false
+    mut seen_catch_all: bool = false
+    mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
+    while (arm_id >= 0) {
+        val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
+        if (seen_catch_all) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S089", ref "Catch-all match arm must be last")
+        }
+        if (pattern_id >= 0 && nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
+            if (has_else) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+            } else {
+                has_else = true
+            }
+            seen_catch_all = true
+        }
+        arm_id = nodes.next_sibling[arm_id]
+    }
+
     mut missing_variant: bool = false
     mut variant_id: i64 = nodes.first_child[enum_decl]
     while (variant_id >= 0) {
@@ -3384,7 +3425,7 @@ func check_match_enum_coverage(
         variant_id = nodes.next_sibling[variant_id]
     }
 
-    if (missing_variant) {
+    if (!has_else && missing_variant) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, match_id, ref "S074", ref "Non-exhaustive match")
     }
 }
@@ -3404,9 +3445,10 @@ func check_match_scalar_coverage(
     scrutinee_id: i64,
     scrutinee_type: i64
 ): void = {
-    mut has_wildcard: bool = false
+    mut has_catch_all: bool = false
     mut has_true: bool = false
     mut has_false: bool = false
+    mut seen_catch_all: bool = false
     val bool_match: bool = type_is_bool_builtin(ref types_table, scrutinee_type)
 
     mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
@@ -3420,12 +3462,17 @@ func check_match_scalar_coverage(
             pattern_id
         )
 
-        if (info.wildcard) {
-            if (has_wildcard) {
+        if (seen_catch_all) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S089", ref "Catch-all match arm must be last")
+        }
+
+        if (pattern_id >= 0 && nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
+            if (has_catch_all) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
             } else {
-                has_wildcard = true
+                has_catch_all = true
             }
+            seen_catch_all = true
         } else {
             mut valid_value: bool = info.has_value
             if (valid_value && bool_match) {
@@ -3502,11 +3549,11 @@ func check_match_scalar_coverage(
     }
 
     if (bool_match) {
-        if (!has_wildcard && (!has_true || !has_false)) {
+        if (!has_catch_all && (!has_true || !has_false)) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, match_id, ref "S074", ref "Non-exhaustive match")
         }
     } else {
-        if (!has_wildcard) {
+        if (!has_catch_all) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, match_id, ref "S074", ref "Non-exhaustive match")
         }
     }
@@ -3530,6 +3577,15 @@ func check_match_enum_pattern(
     scrutinee_type: i64,
     pattern_id: i64
 ): void = {
+    if (match_pattern_is_else(ref tokens, ref nodes, pattern_id)) {
+        nodes.type_id[pattern_id] = scrutinee_type
+        nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
+        if (nodes.kind[pattern_id] != node.NodeKind.Identifier) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Catch-all match arm does not bind a payload")
+        }
+        return
+    }
+
     val variant_token: i64 = match_pattern_variant_name(ref nodes, pattern_id)
     if (variant_token < 0) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S006", ref "Type mismatch")
@@ -3665,8 +3721,18 @@ func check_match_scalar_pattern(
     scrutinee_type: i64,
     pattern_id: i64
 ): void = {
+    if (match_pattern_is_else(ref tokens, ref nodes, pattern_id)) {
+        nodes.type_id[pattern_id] = scrutinee_type
+        nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
+        if (nodes.kind[pattern_id] != node.NodeKind.Identifier) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Catch-all match arm does not bind a payload")
+        }
+        return
+    }
     if (nodes.kind[pattern_id] == node.NodeKind.Identifier &&
         token_name_is(ref sources, ref text_pool, ref tokens, nodes.data0[pattern_id], ref "_")) {
+        nodes.type_id[pattern_id] = scrutinee_type
+        nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
         return
     }
     if (nodes.kind[pattern_id] == node.NodeKind.Identifier ||

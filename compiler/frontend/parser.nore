@@ -864,6 +864,32 @@ func parse_for(
     parser_finish_node(mut ref nodes, ref tokens, for_id, parser_previous_token_id(ref parser), name_token_id, 0, 0)
 }
 
+// `else` is reserved, so match patterns need a tiny local parser escape hatch for it.
+func parse_match_else_pattern(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    val else_id: i64 = parser_make_leaf(
+        mut ref nodes,
+        ref tokens,
+        node.NodeKind.Identifier,
+        parser_advance(mut ref parser, ref tokens)
+    )
+    parse_postfix(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool,
+        else_id
+    )
+}
+
 // Match arms always use block bodies in the bootstrap subset.
 func parse_match_arm(
     mut ref mem: Arena,
@@ -873,14 +899,25 @@ func parse_match_arm(
     mut ref diags: diag.Diagnostics,
     mut ref diag_pool: bbuf.ByteBuf
 ): i64 = {
-    val pattern_id: i64 = parse_expression(
-        mut ref mem,
-        mut ref parser,
-        ref tokens,
-        mut ref nodes,
-        mut ref diags,
-        mut ref diag_pool
-    )
+    val pattern_id: i64 = if (parser_check(ref parser, ref tokens, token.TokenKind.Else)) {
+        parse_match_else_pattern(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    } else {
+        parse_expression(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+    }
     if (pattern_id < 0) {
         parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P052", ref "Expected match pattern in arm")
         return node.invalid_node_id()

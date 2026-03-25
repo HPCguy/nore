@@ -55,6 +55,7 @@ syn match noreImportAlias /[a-z_][A-Za-z0-9_]*/ contained
 syn match noreMatchArm /^\s*\zs[A-Z][A-Za-z0-9_]*\ze\(\s*(\|\s*=\)/
 syn match noreMatchArm /^\s*\zs_\ze\s*(/
 syn match noreMatchWildcard /^\s*\zs_\ze\s*=/
+syn match noreMatchWildcard /^\s*\zselse\ze\s*\%(=\|(\)/
 
 syn match noreLineComment "//.*$" contains=noreTodo,@Spell containedin=ALLBUT,noreString,noreChar
 syn region noreBlockComment start="/\*" end="\*/" contains=noreTodo,@Spell containedin=ALLBUT,noreString,noreChar

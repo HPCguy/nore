@@ -163,10 +163,13 @@ func main(): void = {
     val arm0_id: i64 = child_at(ref nodes, match_id, 1)
     val arm1_id: i64 = child_at(ref nodes, match_id, 2)
     assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, arm0_id), ref "0 = { { 10 } }")
-    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, arm1_id), ref "1 = { { 20 } }")
+    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, arm1_id), ref "else = { { 20 } }")
 
     val arm0_body_id: i64 = child_at(ref nodes, arm0_id, 1)
     val arm1_body_id: i64 = child_at(ref nodes, arm1_id, 1)
+    val arm1_pattern_id: i64 = child_at(ref nodes, arm1_id, 0)
     assert flag_has(nodes.data1[arm0_body_id], BLOCK_VALUE_FLAG)
     assert flag_has(nodes.data1[arm1_body_id], BLOCK_VALUE_FLAG)
+    assert nodes.kind[arm1_pattern_id] == node.NodeKind.Identifier
+    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[arm1_pattern_id]), ref "else")
 }

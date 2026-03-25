@@ -1,0 +1,9 @@
+// Error: else catch-all arm must be the last match arm
+
+func main(): void = {
+    val flag: bool = true
+    match (flag) {
+        else = { }
+        true = { }
+    }
+}

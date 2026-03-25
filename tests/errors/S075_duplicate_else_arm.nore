@@ -1,0 +1,11 @@
+// Error: duplicate else catch-all arm
+enum Color { Red, Green }
+
+func main(): void = {
+    val c: Color = Color.Red
+    match (c) {
+        Red = { }
+        else = { }
+        else = { }
+    }
+}

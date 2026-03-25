@@ -1,0 +1,48 @@
+// Test else catch-all arms for enums, tagged enums, and scalar matches.
+
+enum Flag { _, Ready, Busy }
+enum Result { Ok(i64), Err(i64), Missing }
+
+func flag_code(flag: Flag): i64 = {
+    match (flag) {
+        _ = { 1 }
+        else = { 2 }
+    }
+}
+
+func unwrap(result: Result): i64 = {
+    match (result) {
+        Ok(n) = { n }
+        else = { 0 }
+    }
+}
+
+func classify(b: u8): i64 = {
+    match (b) {
+        'a' = { 1 }
+        else = { 9 }
+    }
+}
+
+func pick(flag: bool, x: i64): i64 = {
+    match (flag) {
+        true = { x }
+        else = { 0 }
+    }
+}
+
+func main(): void = {
+    assert flag_code(Flag._) == 1
+    assert flag_code(Flag.Ready) == 2
+    assert flag_code(Flag.Busy) == 2
+
+    assert unwrap(Result.Ok(7)) == 7
+    assert unwrap(Result.Err(3)) == 0
+    assert unwrap(Result.Missing) == 0
+
+    assert classify('a') == 1
+    assert classify('z') == 9
+
+    assert pick(true, 5) == 5
+    assert pick(false, 5) == 0
+}

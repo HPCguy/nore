@@ -7,6 +7,6 @@ func compound_and_if(flag: bool, n: i64): i64 = {
 func tail_match(n: i64): i64 = {
     match (n) {
         0 = { { 10 } }
-        1 = { { 20 } }
+        else = { { 20 } }
     }
 }
