@@ -70,17 +70,12 @@ func flag_has(flags: i64, bit: i64): bool = {
     (flags & bit) != 0
 }
 
-// Module binding wants one stable lookup from module id to its root lexical scope.
+// Module scopes are the first N scopes created in module_id order, so direct index works.
 func module_scope_id(ref scopes_table: scopes.Scopes, module_id: i64): i64 = {
-    mut scope_id: i64 = 0
-    while (scope_id < table_len(ref scopes_table)) {
-        if (scopes_table.module_id[scope_id] == module_id &&
-            scopes_table.parent[scope_id] < 0) {
-            return scope_id
-        }
-        scope_id += 1
-    }
-    scopes.invalid_scope_id()
+    assert module_id >= 0
+    assert module_id < table_len(ref scopes_table)
+    assert scopes_table.parent[module_id] < 0
+    module_id
 }
 
 // Function-level arena escape tracking needs the owning function symbol from any nested scope.

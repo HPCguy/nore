@@ -131,6 +131,7 @@ pub func builtin_type_from_token(ref builtins: BuiltinTypes, kind: token.TokenKi
 }
 
 // Named decl types are stable by symbol id and should not be duplicated.
+// Scan from end so recently interned types are found first.
 pub func type_named(
     mut ref types: Types,
     kind: TypeKind,
@@ -138,64 +139,67 @@ pub func type_named(
     decl_node: i64,
     symbol_id: i64
 ): i64 = {
-    mut type_id: i64 = 0
-    while (type_id < table_len(ref types)) {
+    mut type_id: i64 = table_len(ref types) - 1
+    while (type_id >= 0) {
         if (types.kind[type_id] == kind &&
             types.symbol_id[type_id] == symbol_id &&
             types.decl_node[type_id] == decl_node) {
             return type_id
         }
-        type_id += 1
+        type_id -= 1
     }
 
     types_push(mut ref types, kind, module_id, decl_node, symbol_id, 0, 0, 0)
 }
 
 // Array types are interned by element type and constant size.
+// Scan from end so recently interned types are found first.
 pub func type_array(mut ref types: Types, elem_type: i64, size: i64): i64 = {
-    mut type_id: i64 = 0
-    while (type_id < table_len(ref types)) {
+    mut type_id: i64 = table_len(ref types) - 1
+    while (type_id >= 0) {
         if (types.kind[type_id] == TypeKind.ArrayType &&
             types.data0[type_id] == elem_type &&
             types.data1[type_id] == size) {
             return type_id
         }
-        type_id += 1
+        type_id -= 1
     }
 
     types_push(mut ref types, TypeKind.ArrayType, -1, -1, -1, elem_type, size, 0)
 }
 
 // Slice types are interned by element type alone.
+// Scan from end so recently interned types are found first.
 pub func type_slice(mut ref types: Types, elem_type: i64): i64 = {
-    mut type_id: i64 = 0
-    while (type_id < table_len(ref types)) {
+    mut type_id: i64 = table_len(ref types) - 1
+    while (type_id >= 0) {
         if (types.kind[type_id] == TypeKind.SliceType &&
             types.data0[type_id] == elem_type) {
             return type_id
         }
-        type_id += 1
+        type_id -= 1
     }
 
     types_push(mut ref types, TypeKind.SliceType, -1, -1, -1, elem_type, 0, 0)
 }
 
 // Table declarations synthesize one stable row type for `.Row` references.
+// Scan from end so recently interned types are found first.
 pub func type_table_row(
     mut ref types: Types,
     module_id: i64,
     decl_node: i64,
     base_table_type: i64
 ): i64 = {
-    mut type_id: i64 = 0
-    while (type_id < table_len(ref types)) {
+    mut type_id: i64 = table_len(ref types) - 1
+    while (type_id >= 0) {
         if (types.kind[type_id] == TypeKind.TableRowType &&
             types.module_id[type_id] == module_id &&
             types.decl_node[type_id] == decl_node &&
             types.data0[type_id] == base_table_type) {
             return type_id
         }
-        type_id += 1
+        type_id -= 1
     }
 
     types_push(

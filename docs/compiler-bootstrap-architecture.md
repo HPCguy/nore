@@ -421,7 +421,7 @@ already applied; the rest are deferred for later milestones.
 | # | Finding | Status |
 |---|---------|--------|
 | R1 | `flag_has` appears 3x (parser, check, symbols). check.nore uses it for node flags while symbols.nore uses it for symbol flags, so the implementations are semantically distinct despite identical bodies. | skipped (different domains) |
-| R2 | `node_child_at` duplicated in parser.nore and check.nore (117 call sites in check.nore alone). Canonical home would be `node.nore` as a pub function. | deferred (high churn for a 10-line function) |
+| R2 | `node_child_at` duplicated in parser.nore and check.nore (117 call sites in check.nore alone). Canonical home would be `node.nore` as a pub function. | **fixed** (moved to node.nore as pub, all call sites use node.node_child_at) |
 | R3 | `name_text` in check.nore is a one-line alias for `token_text_or_synthetic`. | skipped (provides diagnostic-intent clarity) |
 | R4 | Duplicate variant-name S069 scan appeared in two branches of `check_type_decl`, one for payload variants and one for plain variants. | **fixed** (hoisted before the has_type branch) |
 | R5 | `check_enum_variant_access` and `check_enum_variant_call` share an identical visibility/S084 block (~10 lines each). | deferred (extracting a 15-parameter helper is marginal) |
@@ -439,8 +439,8 @@ already applied; the rest are deferred for later milestones.
 
 | # | Finding | Status |
 |---|---------|--------|
-| E1 | `module_scope_id` does an O(N) linear scan of all scopes, called ~14 times on hot paths (every type reference, every function call, every declaration). | deferred (cache module-to-scope mapping in an array indexed by module_id) |
-| E2 | Type interning functions (`type_named`, `type_array`, `type_slice`, `type_table_row`) do full linear scans of the types table on each call. | deferred (scan from end, or maintain a small lookup structure) |
+| E1 | `module_scope_id` does an O(N) linear scan of all scopes, called ~14 times on hot paths (every type reference, every function call, every declaration). | **fixed** (O(1) direct index, module scopes are first N scopes in order) |
+| E2 | Type interning functions (`type_named`, `type_array`, `type_slice`, `type_table_row`) do full linear scans of the types table on each call. | **fixed** (reverse scan, most recent types found first) |
 | E3 | `check_match_enum_coverage` has O(V * A * V) behavior due to repeated `enum_find_variant` calls inside the variant loop. | deferred (compare resolved variant_id directly instead of re-scanning) |
 | E4 | `check_match_scalar_coverage` has O(arms^2) duplicate detection with repeated `str_to_i64` re-parsing. | deferred (precompute ScalarPatternInfo once, then compare) |
 | E5 | `arena_dep_add` and `deferred_arena_check_add` do linear duplicate scans on each insert. Table is over-allocated to `node_count + 8` but actual entries are typically small. | deferred (low priority, practical sizes are small) |
@@ -449,18 +449,13 @@ already applied; the rest are deferred for later milestones.
 
 ### Priority for later milestones
 
-The two highest-impact deferred items are:
+The two highest-impact items (E1, E2) are now fixed. The next candidates are:
 
-1. **E1 (module_scope_id caching)**: called on virtually every expression and
-   type reference. A simple array indexed by module_id, built once in
-   `check_modules` after the initial scope-creation loop, would eliminate most
-   of the per-expression overhead.
+1. **E3 (match enum coverage)**: compare resolved variant_id directly instead
+   of re-scanning by name.
 
-2. **E2 (type interning reverse scan)**: the same few slice/array types are
-   requested repeatedly. Scanning from the end of the table (most recent first)
-   would make the common case fast without adding a new data structure.
-
-Both can be addressed independently without changing the sema public API.
+2. **E6 (type-property memoization)**: cache per-type flags once types are
+   fully resolved.
 
 ## Milestone Boundaries
 
