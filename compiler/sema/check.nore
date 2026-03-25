@@ -70,20 +70,6 @@ func flag_has(flags: i64, bit: i64): bool = {
     (flags & bit) != 0
 }
 
-// Child order is semantic throughout the flat tree, so later passes need indexed access.
-func node_child_at(ref nodes: node.Nodes, parent_id: i64, wanted_index: i64): i64 = {
-    mut child_id: i64 = nodes.first_child[parent_id]
-    mut index: i64 = 0
-    while (child_id >= 0) {
-        if (index == wanted_index) {
-            return child_id
-        }
-        child_id = nodes.next_sibling[child_id]
-        index += 1
-    }
-    node.invalid_node_id()
-}
-
 // Module binding wants one stable lookup from module id to its root lexical scope.
 func module_scope_id(ref scopes_table: scopes.Scopes, module_id: i64): i64 = {
     mut scope_id: i64 = 0
@@ -943,7 +929,7 @@ func resolve_type_node(
         return builtins.void_type
     }
     if (kind == node.NodeKind.ArrayType) {
-        val elem_node: i64 = node_child_at(ref nodes, node_id, 0)
+        val elem_node: i64 = node.node_child_at(ref nodes, node_id, 0)
         val elem_type: i64 = resolve_type_node(
             mut ref mem,
             ref sources,
@@ -974,7 +960,7 @@ func resolve_type_node(
         return type_id
     }
     if (kind == node.NodeKind.SliceType) {
-        val elem_node: i64 = node_child_at(ref nodes, node_id, 0)
+        val elem_node: i64 = node.node_child_at(ref nodes, node_id, 0)
         val elem_type: i64 = resolve_type_node(
             mut ref mem,
             ref sources,
@@ -1037,7 +1023,7 @@ func resolve_type_node(
         return types.invalid_type_id()
     }
     if (kind == node.NodeKind.FieldAccess) {
-        val left_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val field_token: i64 = nodes.data0[node_id]
         val left_type: i64 = resolve_type_node(
             mut ref mem,
@@ -1372,7 +1358,7 @@ func resolve_expr_type_path(
     }
 
     if (nodes.kind[node_id] == node.NodeKind.FieldAccess) {
-        val left_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val field_token: i64 = nodes.data0[node_id]
         val left: TypePathResolution = resolve_expr_type_path(
             ref sources,
@@ -1711,7 +1697,7 @@ func ensure_field_decl_type(
     } else {
         -1
     }
-    val type_node: i64 = node_child_at(ref nodes, field_decl, 0)
+    val type_node: i64 = node.node_child_at(ref nodes, field_decl, 0)
     val type_id: i64 = resolve_type_node(
         mut ref mem,
         ref sources,
@@ -1755,7 +1741,7 @@ func ensure_param_decl_type(
         return nodes.type_id[param_id]
     }
 
-    val type_node: i64 = node_child_at(ref nodes, param_id, 0)
+    val type_node: i64 = node.node_child_at(ref nodes, param_id, 0)
     val type_id: i64 = resolve_type_node(
         mut ref mem,
         ref sources,
@@ -1801,7 +1787,7 @@ func ensure_function_return_type(
     val decl_id: i64 = symbols_table.decl_node[function_symbol]
     val module_id: i64 = symbols_table.module_id[function_symbol]
     val param_count: i64 = nodes.data2[decl_id]
-    val return_type_node: i64 = node_child_at(ref nodes, decl_id, param_count)
+    val return_type_node: i64 = node.node_child_at(ref nodes, decl_id, param_count)
     val return_type: i64 = resolve_type_node(
         mut ref mem,
         ref sources,
@@ -1869,7 +1855,7 @@ func ensure_symbol_type(
             return nodes.type_id[decl_id]
         }
         if (decl_has_type(ref nodes, decl_id)) {
-            val type_node: i64 = node_child_at(ref nodes, decl_id, 0)
+            val type_node: i64 = node.node_child_at(ref nodes, decl_id, 0)
             val type_id: i64 = resolve_type_node(
                 mut ref mem,
                 ref sources,
@@ -1906,7 +1892,7 @@ func expr_has_addressable_root(ref nodes: node.Nodes, node_id: i64): bool = {
     if (nodes.kind[node_id] == node.NodeKind.FieldAccess ||
         nodes.kind[node_id] == node.NodeKind.IndexExpr ||
         nodes.kind[node_id] == node.NodeKind.SliceExpr) {
-        return expr_has_addressable_root(ref nodes, node_child_at(ref nodes, node_id, 0))
+        return expr_has_addressable_root(ref nodes, node.node_child_at(ref nodes, node_id, 0))
     }
     false
 }
@@ -1936,7 +1922,7 @@ func expr_has_ref_root(ref nodes: node.Nodes, node_id: i64): bool = {
     }
     if (nodes.kind[node_id] == node.NodeKind.FieldAccess ||
         nodes.kind[node_id] == node.NodeKind.SliceExpr) {
-        return expr_has_ref_root(ref nodes, node_child_at(ref nodes, node_id, 0))
+        return expr_has_ref_root(ref nodes, node.node_child_at(ref nodes, node_id, 0))
     }
     false
 }
@@ -1981,7 +1967,7 @@ func expr_is_mutable_place(
         return expr_is_mutable_place(
             ref nodes,
             ref symbols_table,
-            node_child_at(ref nodes, node_id, 0)
+            node.node_child_at(ref nodes, node_id, 0)
         )
     }
 
@@ -2000,7 +1986,7 @@ func expr_root_identifier_node(ref nodes: node.Nodes, node_id: i64): i64 = {
         nodes.kind[node_id] == node.NodeKind.FieldAccess ||
         nodes.kind[node_id] == node.NodeKind.IndexExpr ||
         nodes.kind[node_id] == node.NodeKind.SliceExpr) {
-        return expr_root_identifier_node(ref nodes, node_child_at(ref nodes, node_id, 0))
+        return expr_root_identifier_node(ref nodes, node.node_child_at(ref nodes, node_id, 0))
     }
     node.invalid_node_id()
 }
@@ -2392,7 +2378,7 @@ func track_symbol_arena_from_expr(
             ref builtins,
             mut ref symbols_table,
             symbol_id,
-            node_child_at(ref nodes, expr_id, 0)
+            node.node_child_at(ref nodes, expr_id, 0)
         )
         return
     }
@@ -2401,12 +2387,12 @@ func track_symbol_arena_from_expr(
         return
     }
 
-    val callee_id: i64 = node_child_at(ref nodes, expr_id, 0)
+    val callee_id: i64 = node.node_child_at(ref nodes, expr_id, 0)
     if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier) {
         val builtin_kind: i64 = builtin_call_kind(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id])
         if (builtin_kind == BUILTIN_CALL_ARENA_ALLOC ||
             builtin_kind == BUILTIN_CALL_TABLE_ALLOC) {
-            val arena_root: i64 = expr_root_identifier_node(ref nodes, node_child_at(ref nodes, expr_id, 1))
+            val arena_root: i64 = expr_root_identifier_node(ref nodes, node.node_child_at(ref nodes, expr_id, 1))
             if (arena_root >= 0 && nodes.symbol_id[arena_root] >= 0) {
                 symbol_set_arena_tracking(
                     mut ref symbols_table,
@@ -2418,7 +2404,7 @@ func track_symbol_arena_from_expr(
             return
         }
         if (token_name_is(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id], ref "args")) {
-            val arena_root: i64 = expr_root_identifier_node(ref nodes, node_child_at(ref nodes, expr_id, 1))
+            val arena_root: i64 = expr_root_identifier_node(ref nodes, node.node_child_at(ref nodes, expr_id, 1))
             if (arena_root >= 0 && nodes.symbol_id[arena_root] >= 0) {
                 symbol_set_arena_tracking(
                     mut ref symbols_table,
@@ -2436,7 +2422,7 @@ func track_symbol_arena_from_expr(
             mut arg_id: i64 = nodes.next_sibling[callee_id]
             mut arg_index: i64 = 0
             while (arg_id >= 0 && arg_index < nodes.data2[callee_decl]) {
-                val param_id: i64 = node_child_at(ref nodes, callee_decl, arg_index)
+                val param_id: i64 = node.node_child_at(ref nodes, callee_decl, arg_index)
                 if (nodes.type_id[param_id] == builtins.arena_type &&
                     decl_is_ref(ref nodes, param_id)) {
                     val arena_root: i64 = expr_root_identifier_node(ref nodes, arg_id)
@@ -2546,7 +2532,7 @@ func check_return_call_arena_escape(
         return
     }
 
-    val callee_id: i64 = node_child_at(ref nodes, call_id, 0)
+    val callee_id: i64 = node.node_child_at(ref nodes, call_id, 0)
     val callee_symbol: i64 = if (callee_id >= 0) {
         nodes.symbol_id[callee_id]
     } else {
@@ -2561,7 +2547,7 @@ func check_return_call_arena_escape(
     mut arg_id: i64 = nodes.next_sibling[callee_id]
     mut arg_index: i64 = 0
     while (arg_id >= 0 && arg_index < nodes.data2[callee_decl]) {
-        val param_id: i64 = node_child_at(ref nodes, callee_decl, arg_index)
+        val param_id: i64 = node.node_child_at(ref nodes, callee_decl, arg_index)
         val param_type: i64 = ensure_param_decl_type(
             mut ref mem,
             ref sources,
@@ -2681,7 +2667,7 @@ func check_return_constructor_arena_escape(
         return
     }
 
-    val callee_id: i64 = node_child_at(ref nodes, value_id, 0)
+    val callee_id: i64 = node.node_child_at(ref nodes, value_id, 0)
     mut init_id: i64 = nodes.next_sibling[callee_id]
     while (init_id >= 0) {
         val field_decl: i64 = type_find_field(
@@ -2724,7 +2710,7 @@ func check_return_constructor_arena_escape(
                     field_type,
                     64
                 )) {
-                val field_value: i64 = node_child_at(ref nodes, init_id, 0)
+                val field_value: i64 = node.node_child_at(ref nodes, init_id, 0)
                 if (field_value >= 0 &&
                     nodes.kind[field_value] == node.NodeKind.Identifier &&
                     nodes.symbol_id[field_value] >= 0 &&
@@ -2791,14 +2777,14 @@ func check_return_variant_arena_escape(
         return
     }
 
-    val callee_id: i64 = node_child_at(ref nodes, value_id, 0)
+    val callee_id: i64 = node.node_child_at(ref nodes, value_id, 0)
     if (callee_id < 0 ||
         nodes.kind[callee_id] != node.NodeKind.FieldAccess ||
-        node_child_at(ref nodes, value_id, 1) < 0) {
+        node.node_child_at(ref nodes, value_id, 1) < 0) {
         return
     }
 
-    val payload_id: i64 = node_child_at(ref nodes, value_id, 1)
+    val payload_id: i64 = node.node_child_at(ref nodes, value_id, 1)
     val payload_type: i64 = nodes.type_id[payload_id]
     if (!type_has_arena_data(
             mut ref mem,
@@ -3176,7 +3162,7 @@ func match_pattern_variant_name(ref nodes: node.Nodes, pattern_id: i64): i64 = {
         return nodes.data0[pattern_id]
     }
     if (nodes.kind[pattern_id] == node.NodeKind.CallExpr) {
-        val callee_id: i64 = node_child_at(ref nodes, pattern_id, 0)
+        val callee_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
         if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier) {
             return nodes.data0[callee_id]
         }
@@ -3317,7 +3303,7 @@ func match_scalar_pattern_info(
     }
     if (kind == node.NodeKind.UnaryExpr &&
         tokens.kind[nodes.data0[pattern_id]] == token.TokenKind.Minus) {
-        val operand_id: i64 = node_child_at(ref nodes, pattern_id, 0)
+        val operand_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
         val operand_info: ScalarPatternInfo = match_scalar_pattern_info(
             ref sources,
             ref text_pool,
@@ -3368,7 +3354,7 @@ func check_match_enum_coverage(
             mut seen_variant: bool = false
             mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
             while (arm_id >= 0) {
-                val pattern_id: i64 = node_child_at(ref nodes, arm_id, 0)
+                val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
                 if (match_pattern_enum_variant_id(
                         ref nodes,
                         ref sources,
@@ -3420,7 +3406,7 @@ func check_match_scalar_coverage(
 
     mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
     while (arm_id >= 0) {
-        val pattern_id: i64 = node_child_at(ref nodes, arm_id, 0)
+        val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
         val info: ScalarPatternInfo = match_scalar_pattern_info(
             ref sources,
             ref text_pool,
@@ -3470,7 +3456,7 @@ func check_match_scalar_coverage(
                 } else {
                     mut prev_arm_id: i64 = nodes.next_sibling[scrutinee_id]
                     while (prev_arm_id >= 0 && prev_arm_id != arm_id) {
-                        val prev_pattern_id: i64 = node_child_at(ref nodes, prev_arm_id, 0)
+                        val prev_pattern_id: i64 = node.node_child_at(ref nodes, prev_arm_id, 0)
                         val prev_info: ScalarPatternInfo = match_scalar_pattern_info(
                             ref sources,
                             ref text_pool,
@@ -3577,7 +3563,7 @@ func check_match_enum_pattern(
         return
     }
 
-    val binding_id: i64 = node_child_at(ref nodes, pattern_id, 1)
+    val binding_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
     if (binding_id < 0 || nodes.kind[binding_id] != node.NodeKind.Identifier) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S006", ref "Type mismatch")
         return
@@ -3638,7 +3624,7 @@ func check_match_enum_pattern(
             node.invalid_node_id()
         }
         val scrutinee_id: i64 = if (match_id >= 0) {
-            node_child_at(ref nodes, match_id, 0)
+            node.node_child_at(ref nodes, match_id, 0)
         } else {
             node.invalid_node_id()
         }
@@ -3866,7 +3852,7 @@ func ensure_variant_decl_type(
         return nodes.type_id[variant_id]
     }
 
-    val type_node: i64 = node_child_at(ref nodes, variant_id, 0)
+    val type_node: i64 = node.node_child_at(ref nodes, variant_id, 0)
     val type_id: i64 = resolve_type_node(
         mut ref mem,
         ref sources,
@@ -3893,9 +3879,9 @@ func decl_init_node(ref nodes: node.Nodes, decl_id: i64): i64 = {
         return node.invalid_node_id()
     }
     if (decl_has_type(ref nodes, decl_id)) {
-        return node_child_at(ref nodes, decl_id, 1)
+        return node.node_child_at(ref nodes, decl_id, 1)
     }
-    node_child_at(ref nodes, decl_id, 0)
+    node.node_child_at(ref nodes, decl_id, 0)
 }
 
 // Value blocks only contribute to constant-expression checks through their trailing expression.
@@ -3915,8 +3901,8 @@ func if_stmt_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
         return false
     }
 
-    val then_id: i64 = node_child_at(ref nodes, node_id, 1)
-    val else_id: i64 = node_child_at(ref nodes, node_id, 2)
+    val then_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+    val else_id: i64 = node.node_child_at(ref nodes, node_id, 2)
     if (block_value_expr(ref nodes, then_id) < 0 || else_id < 0) {
         return false
     }
@@ -3984,7 +3970,7 @@ func expr_is_untyped_constant(
         return expr_is_untyped_constant(
             ref nodes,
             ref symbols_table,
-            node_child_at(ref nodes, node_id, 0),
+            node.node_child_at(ref nodes, node_id, 0),
             budget - 1
         )
     }
@@ -3993,27 +3979,27 @@ func expr_is_untyped_constant(
         return expr_is_untyped_constant(
                 ref nodes,
                 ref symbols_table,
-                node_child_at(ref nodes, node_id, 0),
+                node.node_child_at(ref nodes, node_id, 0),
                 budget - 1
             ) &&
             expr_is_untyped_constant(
                 ref nodes,
                 ref symbols_table,
-                node_child_at(ref nodes, node_id, 1),
+                node.node_child_at(ref nodes, node_id, 1),
                 budget - 1
             )
     }
 
     if (kind == node.NodeKind.IfStmt) {
-        val then_value: i64 = block_value_expr(ref nodes, node_child_at(ref nodes, node_id, 1))
-        val else_value: i64 = block_value_expr(ref nodes, node_child_at(ref nodes, node_id, 2))
+        val then_value: i64 = block_value_expr(ref nodes, node.node_child_at(ref nodes, node_id, 1))
+        val else_value: i64 = block_value_expr(ref nodes, node.node_child_at(ref nodes, node_id, 2))
         if (then_value < 0 || else_value < 0) {
             return false
         }
         return expr_is_untyped_constant(
                 ref nodes,
                 ref symbols_table,
-                node_child_at(ref nodes, node_id, 0),
+                node.node_child_at(ref nodes, node_id, 0),
                 budget - 1
             ) &&
             expr_is_untyped_constant(ref nodes, ref symbols_table, then_value, budget - 1) &&
@@ -4089,7 +4075,7 @@ func expr_is_global_initializer(
             mut ref types_table,
             ref builtins,
             module_id,
-            node_child_at(ref nodes, node_id, 0),
+            node.node_child_at(ref nodes, node_id, 0),
             budget - 1
         )
     }
@@ -4105,7 +4091,7 @@ func expr_is_global_initializer(
                 mut ref types_table,
                 ref builtins,
                 module_id,
-                node_child_at(ref nodes, node_id, 0),
+                node.node_child_at(ref nodes, node_id, 0),
                 budget - 1
             ) &&
             expr_is_global_initializer(
@@ -4118,13 +4104,13 @@ func expr_is_global_initializer(
                 mut ref types_table,
                 ref builtins,
                 module_id,
-                node_child_at(ref nodes, node_id, 1),
+                node.node_child_at(ref nodes, node_id, 1),
                 budget - 1
             )
     }
 
     if (kind == node.NodeKind.FieldAccess) {
-        val left_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val left: TypePathResolution = resolve_expr_type_path(
             ref sources,
             ref text_pool,
@@ -4152,7 +4138,7 @@ func expr_is_global_initializer(
     }
 
     if (kind == node.NodeKind.CallExpr) {
-        val callee_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier &&
             builtin_call_kind(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id]) == BUILTIN_CALL_ARENA &&
             nodes.type_id[node_id] == builtins.arena_type) {
@@ -4182,7 +4168,7 @@ func expr_is_global_initializer(
             return false
         }
 
-        val left_id: i64 = node_child_at(ref nodes, callee_id, 0)
+        val left_id: i64 = node.node_child_at(ref nodes, callee_id, 0)
         val left: TypePathResolution = resolve_expr_type_path(
             ref sources,
             ref text_pool,
@@ -4232,7 +4218,7 @@ func expr_is_global_initializer(
     }
 
     if (kind == node.NodeKind.ConstructorExpr) {
-        mut init_id: i64 = nodes.next_sibling[node_child_at(ref nodes, node_id, 0)]
+        mut init_id: i64 = nodes.next_sibling[node.node_child_at(ref nodes, node_id, 0)]
         while (init_id >= 0) {
             if (!expr_is_global_initializer(
                     ref sources,
@@ -4244,7 +4230,7 @@ func expr_is_global_initializer(
                     mut ref types_table,
                     ref builtins,
                     module_id,
-                    node_child_at(ref nodes, init_id, 0),
+                    node.node_child_at(ref nodes, init_id, 0),
                     budget - 1
                 )) {
                 return false
@@ -4278,8 +4264,8 @@ func expr_is_global_initializer(
     }
 
     if (kind == node.NodeKind.IfStmt) {
-        val then_value: i64 = block_value_expr(ref nodes, node_child_at(ref nodes, node_id, 1))
-        val else_value: i64 = block_value_expr(ref nodes, node_child_at(ref nodes, node_id, 2))
+        val then_value: i64 = block_value_expr(ref nodes, node.node_child_at(ref nodes, node_id, 1))
+        val else_value: i64 = block_value_expr(ref nodes, node.node_child_at(ref nodes, node_id, 2))
         if (then_value < 0 || else_value < 0) {
             return false
         }
@@ -4293,7 +4279,7 @@ func expr_is_global_initializer(
                 mut ref types_table,
                 ref builtins,
                 module_id,
-                node_child_at(ref nodes, node_id, 0),
+                node.node_child_at(ref nodes, node_id, 0),
                 budget - 1
             ) &&
             expr_is_global_initializer(
@@ -4353,7 +4339,7 @@ func expr_expected_type(
         if (!decl_has_type(ref nodes, parent_id)) {
             return types.invalid_type_id()
         }
-        val type_node: i64 = node_child_at(ref nodes, parent_id, 0)
+        val type_node: i64 = node.node_child_at(ref nodes, parent_id, 0)
         return resolve_type_node(
             mut ref mem,
             ref sources,
@@ -4374,12 +4360,12 @@ func expr_expected_type(
 
     if ((nodes.kind[parent_id] == node.NodeKind.AssignStmt ||
          nodes.kind[parent_id] == node.NodeKind.CompoundAssignStmt) &&
-        node_child_at(ref nodes, parent_id, 1) == node_id) {
-        return nodes.type_id[node_child_at(ref nodes, parent_id, 0)]
+        node.node_child_at(ref nodes, parent_id, 1) == node_id) {
+        return nodes.type_id[node.node_child_at(ref nodes, parent_id, 0)]
     }
 
     if (nodes.kind[parent_id] == node.NodeKind.ReturnStmt &&
-        node_child_at(ref nodes, parent_id, 0) == node_id) {
+        node.node_child_at(ref nodes, parent_id, 0) == node_id) {
         return func_return_type
     }
 
@@ -4411,8 +4397,8 @@ func expr_expected_type(
     }
 
     if (nodes.kind[parent_id] == node.NodeKind.IfStmt &&
-        (node_child_at(ref nodes, parent_id, 1) == node_id ||
-         node_child_at(ref nodes, parent_id, 2) == node_id)) {
+        (node.node_child_at(ref nodes, parent_id, 1) == node_id ||
+         node.node_child_at(ref nodes, parent_id, 2) == node_id)) {
         return expr_expected_type(
             mut ref mem,
             ref sources,
@@ -4456,7 +4442,7 @@ func builtin_ref_value_id(
     if ((expects_mut_ref && !is_mut_ref) || (!expects_mut_ref && is_mut_ref)) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S038", ref "ref/mut ref mismatch between call site and parameter")
     }
-    node_child_at(ref nodes, arg_id, 0)
+    node.node_child_at(ref nodes, arg_id, 0)
 }
 
 // Enum-variant values reuse type-path syntax on the left side and stay typed as the enum.
@@ -4479,7 +4465,7 @@ func check_enum_variant_access(
         return false
     }
 
-    val left_id: i64 = node_child_at(ref nodes, node_id, 0)
+    val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
     val field_token: i64 = nodes.data0[node_id]
     val left: TypePathResolution = resolve_expr_type_path(
         ref sources,
@@ -4558,12 +4544,12 @@ func check_enum_variant_call(
         return false
     }
 
-    val callee_id: i64 = node_child_at(ref nodes, node_id, 0)
+    val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
     if (callee_id < 0 || nodes.kind[callee_id] != node.NodeKind.FieldAccess) {
         return false
     }
 
-    val left_id: i64 = node_child_at(ref nodes, callee_id, 0)
+    val left_id: i64 = node.node_child_at(ref nodes, callee_id, 0)
     val field_token: i64 = nodes.data0[callee_id]
     val left: TypePathResolution = resolve_expr_type_path(
         ref sources,
@@ -4655,7 +4641,7 @@ func check_enum_variant_call(
         return true
     }
 
-    val payload_id: i64 = node_child_at(ref nodes, node_id, 1)
+    val payload_id: i64 = node.node_child_at(ref nodes, node_id, 1)
     val payload_type: i64 = ensure_variant_decl_type(
         mut ref mem,
         ref sources,
@@ -4709,7 +4695,7 @@ func check_builtin_call(
     in_loop: bool,
     node_id: i64
 ): bool = {
-    val callee_id: i64 = node_child_at(ref nodes, node_id, 0)
+    val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
     if (callee_id < 0 || nodes.kind[callee_id] != node.NodeKind.Identifier) {
         return false
     }
@@ -4736,7 +4722,7 @@ func check_builtin_call(
     val arg_count: i64 = nodes.data0[node_id]
 
     if (builtin_kind == BUILTIN_CALL_ARENA) {
-        val capacity_id: i64 = node_child_at(ref nodes, node_id, 1)
+        val capacity_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         if (capacity_id >= 0) {
             check_expr(
                 mut ref mem,
@@ -4772,8 +4758,8 @@ func check_builtin_call(
     }
 
     if (builtin_kind == BUILTIN_CALL_ARENA_ALLOC) {
-        val arena_id: i64 = node_child_at(ref nodes, node_id, 1)
-        val count_id: i64 = node_child_at(ref nodes, node_id, 2)
+        val arena_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+        val count_id: i64 = node.node_child_at(ref nodes, node_id, 2)
         if (arena_id >= 0) {
             check_expr(
                 mut ref mem,
@@ -4861,7 +4847,7 @@ func check_builtin_call(
     }
 
     if (builtin_kind == BUILTIN_CALL_ARENA_RESET) {
-        val arena_id: i64 = node_child_at(ref nodes, node_id, 1)
+        val arena_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         if (arena_id >= 0) {
             check_expr(
                 mut ref mem,
@@ -4919,8 +4905,8 @@ func check_builtin_call(
     }
 
     if (builtin_kind == BUILTIN_CALL_TABLE_ALLOC) {
-        val arena_id: i64 = node_child_at(ref nodes, node_id, 1)
-        val count_id: i64 = node_child_at(ref nodes, node_id, 2)
+        val arena_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+        val count_id: i64 = node.node_child_at(ref nodes, node_id, 2)
         if (arena_id >= 0) {
             check_expr(
                 mut ref mem,
@@ -5006,7 +4992,7 @@ func check_builtin_call(
     }
 
     if (builtin_kind == BUILTIN_CALL_TABLE_LEN) {
-        val table_id: i64 = node_child_at(ref nodes, node_id, 1)
+        val table_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         if (table_id >= 0) {
             check_expr(
                 mut ref mem,
@@ -5044,8 +5030,8 @@ func check_builtin_call(
     }
 
     if (builtin_kind == BUILTIN_CALL_TABLE_GET) {
-        val table_id: i64 = node_child_at(ref nodes, node_id, 1)
-        val index_id: i64 = node_child_at(ref nodes, node_id, 2)
+        val table_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+        val index_id: i64 = node.node_child_at(ref nodes, node_id, 2)
         mut table_type: i64 = types.invalid_type_id()
         if (table_id >= 0) {
             check_expr(
@@ -5113,8 +5099,8 @@ func check_builtin_call(
         return true
     }
 
-    val table_id: i64 = node_child_at(ref nodes, node_id, 1)
-    val row_id: i64 = node_child_at(ref nodes, node_id, 2)
+    val table_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+    val row_id: i64 = node.node_child_at(ref nodes, node_id, 2)
     mut table_type: i64 = types.invalid_type_id()
     if (table_id >= 0) {
         check_expr(
@@ -5329,7 +5315,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.RefExpr) {
-        val value_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val value_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
             ref sources,
@@ -5391,7 +5377,7 @@ func check_expr(
             return
         }
 
-        val left_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val field_token: i64 = nodes.data0[node_id]
         if (left_id >= 0 && nodes.kind[left_id] == node.NodeKind.Identifier) {
             val name_token: i64 = nodes.data0[left_id]
@@ -5584,7 +5570,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.CallExpr) {
-        val callee_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         if (check_enum_variant_call(
                 mut ref mem,
                 ref sources,
@@ -5690,7 +5676,7 @@ func check_expr(
             )
 
             if (arg_index < expected_arg_count) {
-                val param_id: i64 = node_child_at(ref nodes, callee_decl, arg_index)
+                val param_id: i64 = node.node_child_at(ref nodes, callee_decl, arg_index)
                 val param_type: i64 = ensure_param_decl_type(
                     mut ref mem,
                     ref sources,
@@ -5720,7 +5706,7 @@ func check_expr(
                         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S038", ref "ref/mut ref mismatch between call site and parameter")
                     } else {
                         val value_id: i64 = if (arg_is_ref) {
-                            node_child_at(ref nodes, arg_id, 0)
+                            node.node_child_at(ref nodes, arg_id, 0)
                         } else {
                             arg_id
                         }
@@ -5761,7 +5747,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.ConstructorExpr) {
-        val callee_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         val ctor_type: i64 = resolve_type_node(
             mut ref mem,
             ref sources,
@@ -5791,7 +5777,7 @@ func check_expr(
 
         mut init_id: i64 = nodes.next_sibling[callee_id]
         while (init_id >= 0) {
-            val value_id: i64 = node_child_at(ref nodes, init_id, 0)
+            val value_id: i64 = node.node_child_at(ref nodes, init_id, 0)
             check_expr(
                 mut ref mem,
                 ref sources,
@@ -6009,8 +5995,8 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.IndexExpr) {
-        val object_id: i64 = node_child_at(ref nodes, node_id, 0)
-        val index_id: i64 = node_child_at(ref nodes, node_id, 1)
+        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val index_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6067,7 +6053,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.SliceExpr) {
-        val object_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6130,7 +6116,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.UnaryExpr) {
-        val operand_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6178,8 +6164,8 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.BinaryExpr) {
-        val left_id: i64 = node_child_at(ref nodes, node_id, 0)
-        val right_id: i64 = node_child_at(ref nodes, node_id, 1)
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val right_id: i64 = node.node_child_at(ref nodes, node_id, 1)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6337,7 +6323,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.CastExpr) {
-        val operand_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6405,9 +6391,9 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.IfStmt) {
-        val cond_id: i64 = node_child_at(ref nodes, node_id, 0)
-        val then_id: i64 = node_child_at(ref nodes, node_id, 1)
-        val else_id: i64 = node_child_at(ref nodes, node_id, 2)
+        val cond_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val then_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+        val else_id: i64 = node.node_child_at(ref nodes, node_id, 2)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6540,7 +6526,7 @@ func check_expr(
     }
 
     if (kind == node.NodeKind.MatchExpr) {
-        val scrutinee_id: i64 = node_child_at(ref nodes, node_id, 0)
+        val scrutinee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
         check_expr(
             mut ref mem,
             ref sources,
@@ -6568,8 +6554,8 @@ func check_expr(
         mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
         mut first_arm: bool = true
         while (arm_id >= 0) {
-            val pattern_id: i64 = node_child_at(ref nodes, arm_id, 0)
-            val body_id: i64 = node_child_at(ref nodes, arm_id, 1)
+            val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
+            val body_id: i64 = node.node_child_at(ref nodes, arm_id, 1)
             if (body_id >= 0) {
                 val arm_scope: i64 = scopes.scopes_push(mut ref scopes_table, scope_id, module_id, arm_id)
                 if (pattern_id >= 0) {
@@ -6825,14 +6811,14 @@ func check_local_decl(
     val name_token: i64 = nodes.data0[decl_id]
     mut type_id: i64 = types.invalid_type_id()
     val type_child: i64 = if (decl_has_type(ref nodes, decl_id)) {
-        node_child_at(ref nodes, decl_id, 0)
+        node.node_child_at(ref nodes, decl_id, 0)
     } else {
         node.invalid_node_id()
     }
     val init_child: i64 = if (decl_has_type(ref nodes, decl_id)) {
-        node_child_at(ref nodes, decl_id, 1)
+        node.node_child_at(ref nodes, decl_id, 1)
     } else {
-        node_child_at(ref nodes, decl_id, 0)
+        node.node_child_at(ref nodes, decl_id, 0)
     }
 
     if (type_child >= 0) {
@@ -7038,7 +7024,7 @@ func check_statement(
     }
 
     if (kind == node.NodeKind.ReturnStmt) {
-        val value_id: i64 = node_child_at(ref nodes, stmt_id, 0)
+        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
         if (value_id < 0) {
             if (func_return_type != builtins.void_type) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, stmt_id, ref "S015", ref "Non-void function must return a value")
@@ -7105,7 +7091,7 @@ func check_statement(
     }
 
     if (kind == node.NodeKind.AssertStmt) {
-        val cond_id: i64 = node_child_at(ref nodes, stmt_id, 0)
+        val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
         check_expr(
             mut ref mem,
             ref sources,
@@ -7134,8 +7120,8 @@ func check_statement(
     }
 
     if (kind == node.NodeKind.WhileStmt) {
-        val cond_id: i64 = node_child_at(ref nodes, stmt_id, 0)
-        val body_id: i64 = node_child_at(ref nodes, stmt_id, 1)
+        val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+        val body_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
         check_expr(
             mut ref mem,
             ref sources,
@@ -7187,9 +7173,9 @@ func check_statement(
     }
 
     if (kind == node.NodeKind.ForStmt) {
-        val start_id: i64 = node_child_at(ref nodes, stmt_id, 0)
-        val end_id: i64 = node_child_at(ref nodes, stmt_id, 1)
-        val body_id: i64 = node_child_at(ref nodes, stmt_id, 2)
+        val start_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+        val end_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
+        val body_id: i64 = node.node_child_at(ref nodes, stmt_id, 2)
         check_expr(
             mut ref mem,
             ref sources,
@@ -7296,8 +7282,8 @@ func check_statement(
     }
 
     if (kind == node.NodeKind.AssignStmt || kind == node.NodeKind.CompoundAssignStmt) {
-        val target_id: i64 = node_child_at(ref nodes, stmt_id, 0)
-        val value_id: i64 = node_child_at(ref nodes, stmt_id, 1)
+        val target_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
         val target_type: i64 = check_assignment_target(
             mut ref mem,
             ref sources,
@@ -7428,7 +7414,7 @@ func check_statement(
             scope_id,
             func_return_type,
             in_loop,
-            node_child_at(ref nodes, stmt_id, 0),
+            node.node_child_at(ref nodes, stmt_id, 0),
             false
         )
         return
@@ -7547,9 +7533,9 @@ func check_func_decl(
 
     mut index: i64 = 0
     while (index < param_count) {
-        val param_id: i64 = node_child_at(ref nodes, decl_id, index)
+        val param_id: i64 = node.node_child_at(ref nodes, decl_id, index)
         val name_token: i64 = nodes.data0[param_id]
-        val type_node: i64 = node_child_at(ref nodes, param_id, 0)
+        val type_node: i64 = node.node_child_at(ref nodes, param_id, 0)
         val type_id: i64 = resolve_type_node(
             mut ref mem,
             ref sources,
@@ -7609,7 +7595,7 @@ func check_func_decl(
         index += 1
     }
 
-    val return_type_node: i64 = node_child_at(ref nodes, decl_id, param_count)
+    val return_type_node: i64 = node.node_child_at(ref nodes, decl_id, param_count)
     val return_type: i64 = resolve_type_node(
         mut ref mem,
         ref sources,
@@ -7641,7 +7627,7 @@ func check_func_decl(
         return
     }
 
-    val body_id: i64 = node_child_at(ref nodes, decl_id, param_count + 1)
+    val body_id: i64 = node.node_child_at(ref nodes, decl_id, param_count + 1)
     if (body_id >= 0) {
         check_block(
             mut ref mem,
@@ -7689,7 +7675,7 @@ func check_global_decl(
     val symbol_id: i64 = nodes.symbol_id[decl_id]
     mut type_id: i64 = types.invalid_type_id()
     if (decl_has_type(ref nodes, decl_id)) {
-        val type_node: i64 = node_child_at(ref nodes, decl_id, 0)
+        val type_node: i64 = node.node_child_at(ref nodes, decl_id, 0)
         type_id = resolve_type_node(
             mut ref mem,
             ref sources,
@@ -7817,7 +7803,7 @@ func check_type_decl(
                 }
             }
 
-            val type_node: i64 = node_child_at(ref nodes, child_id, 0)
+            val type_node: i64 = node.node_child_at(ref nodes, child_id, 0)
             nodes.type_id[child_id] = resolve_type_node(
                 mut ref mem,
                 ref sources,
@@ -7898,7 +7884,7 @@ func check_type_decl(
                 }
 
                 if (flag_has(nodes.data1[child_id], CHECK_NODE_FLAG_HAS_TYPE)) {
-                    val type_node: i64 = node_child_at(ref nodes, child_id, 0)
+                    val type_node: i64 = node.node_child_at(ref nodes, child_id, 0)
                     nodes.type_id[child_id] = resolve_type_node(
                         mut ref mem,
                         ref sources,

@@ -129,6 +129,20 @@ pub func node_append_child(mut ref nodes: Nodes, parent_id: i64, child_id: i64):
     nodes.last_child[parent_id] = child_id
 }
 
+// Child order is semantic for the flat tree, so later passes need indexed access.
+pub func node_child_at(ref nodes: Nodes, parent_id: i64, wanted_index: i64): i64 = {
+    mut child_id: i64 = nodes.first_child[parent_id]
+    mut index: i64 = 0
+    while (child_id >= 0) {
+        if (index == wanted_index) {
+            return child_id
+        }
+        child_id = nodes.next_sibling[child_id]
+        index += 1
+    }
+    invalid_node_id()
+}
+
 // Keep debug output stable by using one spelling table for every node kind.
 pub func node_kind_name(kind: NodeKind): str = {
     match (kind) {

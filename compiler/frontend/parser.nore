@@ -225,20 +225,6 @@ func parser_finish_node(
     node_id
 }
 
-// Child order is semantic for the flat tree, so later helpers need indexed access.
-func node_child_at(ref nodes: node.Nodes, parent_id: i64, wanted_index: i64): i64 = {
-    mut child_id: i64 = nodes.first_child[parent_id]
-    mut index: i64 = 0
-    while (child_id >= 0) {
-        if (index == wanted_index) {
-            return child_id
-        }
-        child_id = nodes.next_sibling[child_id]
-        index += 1
-    }
-    node.invalid_node_id()
-}
-
 // Blocks record their trailing value-expression bit explicitly so if/match checks stay cheap.
 func node_block_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
     if (node_id < 0 || nodes.kind[node_id] != node.NodeKind.Block) {
@@ -259,7 +245,7 @@ func node_match_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
     mut arm_id: i64 = nodes.first_child[node_id]
     arm_id = nodes.next_sibling[arm_id]
     while (arm_id >= 0) {
-        val body_id: i64 = node_child_at(ref nodes, arm_id, 1)
+        val body_id: i64 = node.node_child_at(ref nodes, arm_id, 1)
         if (!node_block_has_value(ref nodes, body_id)) {
             return false
         }
@@ -274,8 +260,8 @@ func node_if_has_value(ref nodes: node.Nodes, node_id: i64): bool = {
         return false
     }
 
-    val then_id: i64 = node_child_at(ref nodes, node_id, 1)
-    val else_id: i64 = node_child_at(ref nodes, node_id, 2)
+    val then_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+    val else_id: i64 = node.node_child_at(ref nodes, node_id, 2)
     if (!node_block_has_value(ref nodes, then_id) || else_id < 0) {
         return false
     }
