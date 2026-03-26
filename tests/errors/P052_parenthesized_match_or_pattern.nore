@@ -1,0 +1,7 @@
+// Error: parenthesized `|` expressions are not match patterns
+func main(): void = {
+    match (0) {
+        (1 | 2) = { }
+        else = { }
+    }
+}

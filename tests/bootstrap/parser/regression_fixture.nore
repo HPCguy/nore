@@ -10,3 +10,9 @@ func tail_match(n: i64): i64 = {
         else = { { 20 } }
     }
 }
+
+func grouped_else_match(n: i64): i64 = {
+    match (n) {
+        0 | else = { { 30 } }
+    }
+}

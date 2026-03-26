@@ -64,3 +64,30 @@ func else_not_last(flag: bool): i64 = {
         true = { 1 }
     }
 }
+
+func duplicate_or_enum(c: Color): i64 = {
+    match (c) {
+        Red | Green = { 1 }
+        Green | Blue = { 2 }
+    }
+}
+
+func duplicate_or_scalar(x: u8): i64 = {
+    match (x) {
+        65 | 'A' = { 1 }
+        else = { 0 }
+    }
+}
+
+func or_binding(x: Option): i64 = {
+    match (x) {
+        Some(n) | None = { 0 }
+    }
+}
+
+func grouped_else(flag: bool): i64 = {
+    match (flag) {
+        true | else = { 1 }
+        false = { 0 }
+    }
+}

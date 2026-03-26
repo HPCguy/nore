@@ -17,9 +17,23 @@ func unwrap(result: ParseResult): i64 = {
     }
 }
 
+func group_result(result: ParseResult): i64 = {
+    match (result) {
+        Ok | Err = { 1 }
+        Missing = { 0 }
+    }
+}
+
 func classify(c: u8): i64 = {
     match (c) {
         'a' = { 1 }
+        else = { 0 }
+    }
+}
+
+func classify_group(c: u8): i64 = {
+    match (c) {
+        0 | 1 | 'a' = { 1 }
         else = { 0 }
     }
 }
@@ -28,6 +42,12 @@ func pick(flag: bool, x: u8): u8 = {
     match (flag) {
         true = { 1 }
         else = { x }
+    }
+}
+
+func pick_group(flag: bool): u8 = {
+    match (flag) {
+        true | false = { 7 }
     }
 }
 
@@ -55,10 +75,19 @@ func main(): void = {
     assert unwrap(ParseResult.Ok(7)) == 7
     assert unwrap(ParseResult.Err) == 0
     assert unwrap(ParseResult.Missing) == 0
+    assert group_result(ParseResult.Ok(1)) == 1
+    assert group_result(ParseResult.Err) == 1
+    assert group_result(ParseResult.Missing) == 0
     assert classify('a') == 1
     assert classify('z') == 0
+    assert classify_group(0) == 1
+    assert classify_group(1) == 1
+    assert classify_group('a') == 1
+    assert classify_group('z') == 0
     assert pick(true, 9) == 1
     assert pick(false, 9) == 9
+    assert pick_group(true) == 7
+    assert pick_group(false) == 7
     assert flag_code(Flag._) == 1
     assert flag_code(Flag.Ready) == 2
     assert update(true, mut ref rows) == 1

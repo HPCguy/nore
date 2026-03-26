@@ -172,4 +172,18 @@ func main(): void = {
     assert flag_has(nodes.data1[arm1_body_id], BLOCK_VALUE_FLAG)
     assert nodes.kind[arm1_pattern_id] == node.NodeKind.Identifier
     assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[arm1_pattern_id]), ref "else")
+
+    val grouped_func_id: i64 = find_func(ref sources, ref text_pool, ref tokens, ref nodes, ref "grouped_else_match")
+    assert grouped_func_id >= 0
+    val grouped_body_id: i64 = first_child_kind(ref nodes, grouped_func_id, node.NodeKind.Block)
+    val grouped_match_id: i64 = child_at(ref nodes, grouped_body_id, 0)
+    val grouped_arm_id: i64 = child_at(ref nodes, grouped_match_id, 1)
+    val grouped_pattern_id: i64 = child_at(ref nodes, grouped_arm_id, 0)
+    val grouped_left_id: i64 = child_at(ref nodes, grouped_pattern_id, 0)
+    val grouped_right_id: i64 = child_at(ref nodes, grouped_pattern_id, 1)
+    assert nodes.kind[grouped_pattern_id] == node.NodeKind.BinaryExpr
+    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[grouped_pattern_id]), ref "|")
+    assert nodes.kind[grouped_left_id] == node.NodeKind.NumberLit
+    assert nodes.kind[grouped_right_id] == node.NodeKind.Identifier
+    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[grouped_right_id]), ref "else")
 }

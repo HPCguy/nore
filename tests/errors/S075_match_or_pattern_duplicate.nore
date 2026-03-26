@@ -1,0 +1,10 @@
+// Error: duplicate coverage across enum or-pattern groups
+enum Color { Red, Green, Blue }
+
+func main(): void = {
+    val c: Color = Color.Red
+    match (c) {
+        Red | Green = { }
+        Green | Blue = { }
+    }
+}

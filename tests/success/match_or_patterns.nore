@@ -1,0 +1,50 @@
+// Test grouped match patterns for enums, tagged enums, bools, and scalar literals.
+
+enum TokenKind { Number, Float, Char, Ident }
+enum Result { Ok(i64), Err(i64), Missing }
+
+func classify_token(kind: TokenKind): i64 = {
+    match (kind) {
+        Number | Float | Char = { 1 }
+        Ident = { 2 }
+    }
+}
+
+func classify_result(result: Result): i64 = {
+    match (result) {
+        Ok | Err = { 1 }
+        Missing = { 0 }
+    }
+}
+
+func classify_byte(b: u8): i64 = {
+    match (b) {
+        0 | 1 | 'A' = { 1 }
+        else = { 9 }
+    }
+}
+
+func classify_flag(flag: bool): i64 = {
+    match (flag) {
+        true | false = { 7 }
+    }
+}
+
+func main(): void = {
+    assert classify_token(TokenKind.Number) == 1
+    assert classify_token(TokenKind.Float) == 1
+    assert classify_token(TokenKind.Char) == 1
+    assert classify_token(TokenKind.Ident) == 2
+
+    assert classify_result(Result.Ok(7)) == 1
+    assert classify_result(Result.Err(3)) == 1
+    assert classify_result(Result.Missing) == 0
+
+    assert classify_byte(0) == 1
+    assert classify_byte(1) == 1
+    assert classify_byte('A') == 1
+    assert classify_byte('Z') == 9
+
+    assert classify_flag(true) == 7
+    assert classify_flag(false) == 7
+}

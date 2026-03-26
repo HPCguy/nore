@@ -1,0 +1,7 @@
+// Error: catch-all patterns cannot be grouped inside an or-pattern
+func main(): void = {
+    match (true) {
+        true | else = { }
+        false = { }
+    }
+}

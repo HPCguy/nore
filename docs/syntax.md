@@ -321,6 +321,10 @@ match (opt) {
     else = { result = 0 }
 }
 
+match (opt) {
+    Some | None = { result = 0 }
+}
+
 match (scalar_value) {
     -1 = { }
     '0' = { }
@@ -342,9 +346,13 @@ val x: i64 = match (opt) {
 - Scrutinee may be a plain enum, a tagged enum, `bool`, `i64`, `i32`, `u32`, or `u8`
 - Plain enum arms: `VariantName = { body }` plus `else = { body }`
 - Tagged enum arms: `VariantName(binding) = { body }` or `VariantName = { body }`
+- Or-patterns group same-kind patterns with `|`: `Red | Blue = { ... }`
+- Tagged-enum or-patterns may match data variants by tag, but do not bind payloads: `Ok | Err = { ... }`
 - Scalar arms: literal patterns (`-1`, `0`, `'+'`, `true`, `false`) plus bare `_ = { body }` or `else = { body }`
+- Scalar or-patterns group literals only: `0 | 1 | 'A' = { ... }`
 - `else = { body }` is the catch-all arm for enum and scalar matches
 - Catch-all arms do not bind payloads and must be the last arm (S078, S089)
+- Catch-all arms stand alone; `_` / `else` are not part of `|` groups
 - On enum matches, `_` is still a regular variant name if declared
 - `_` wildcard: `Some(_) = { ... }`
 - Exhaustiveness required; enum matches may use `else`, `bool` may cover both values or use `_` / `else`, and integer matches must use `_` or `else`

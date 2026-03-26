@@ -77,9 +77,10 @@ func main(): void = {
         mut ref diag_pool
     )
 
-    assert checked.diags.count >= 9
+    assert checked.diags.count >= 12
+    assert count_diag_code(ref diags, ref diag_pool, ref "S006") >= 1
     assert count_diag_code(ref diags, ref diag_pool, ref "S074") >= 3
-    assert count_diag_code(ref diags, ref diag_pool, ref "S075") >= 4
-    assert count_diag_code(ref diags, ref diag_pool, ref "S078") >= 1
+    assert count_diag_code(ref diags, ref diag_pool, ref "S075") >= 6
+    assert count_diag_code(ref diags, ref diag_pool, ref "S078") >= 2
     assert count_diag_code(ref diags, ref diag_pool, ref "S089") >= 1
 }

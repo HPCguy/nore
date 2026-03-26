@@ -225,6 +225,12 @@ match (opt) {
     else = { result = 0 }
 }
 
+func classify_result(opt: Option): i64 = {
+    match (opt) {
+        Some | None = { 1 }
+    }
+}
+
 // As expression (val/mut initializer or function body value)
 val x: i64 = match (opt) {
     Some(n) = { n }
@@ -258,10 +264,14 @@ Match rules:
 - Scrutinee may be a plain enum, a tagged enum, `bool`, `i64`, `i32`, `u32`, or `u8`
 - Plain enum arms use `VariantName = { body }` or `else = { body }`
 - Tagged-enum arms use `VariantName(binding) = { body }` or `VariantName = { body }` for non-data variants
+- Or-patterns group same-kind patterns with `|`: `Red | Blue = { body }`
+- Tagged-enum or-patterns may match data variants by tag, but do not bind payloads: `Ok | Err = { body }`
 - Scalar arms use literal patterns: `-1`, `0`, `'+'`, `true`, `false`
+- Scalar or-patterns group literals only: `0 | 1 | 'A' = { body }`
 - Bare `_ = { body }` and `else = { body }` are catch-all arms for scalar matches
 - `else = { body }` is also the catch-all arm for enum matches
 - Catch-all arms do not bind payloads and must be the last arm (S078, S089)
+- Catch-all arms stand alone; `_` / `else` cannot be mixed into an or-pattern
 - On enum matches, `_` remains a normal variant name if the enum declares one
 - `=` separates pattern from body (consistent with function syntax)
 - Variant names are unqualified (the scrutinee type determines the enum)

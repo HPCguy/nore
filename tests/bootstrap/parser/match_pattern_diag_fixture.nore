@@ -1,0 +1,6 @@
+func bad_group(n: i64): i64 = {
+    match (n) {
+        (1 | 2) = { 0 }
+        else = { 1 }
+    }
+}

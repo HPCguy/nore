@@ -1,0 +1,10 @@
+// Error: tagged enum or-patterns cannot bind payloads
+enum Result { Ok(i64), Err(i64), Missing }
+
+func main(): void = {
+    val result: Result = Result.Ok(1)
+    match (result) {
+        Ok(n) | Err = { }
+        Missing = { }
+    }
+}

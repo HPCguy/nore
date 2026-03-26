@@ -864,8 +864,43 @@ func parse_for(
     parser_finish_node(mut ref nodes, ref tokens, for_id, parser_previous_token_id(ref parser), name_token_id, 0, 0)
 }
 
-// `else` is reserved, so match patterns need a tiny local parser escape hatch for it.
-func parse_match_else_pattern(
+// Match-pattern bindings only allow the enum/tagged-enum `Variant(name)` shape.
+func parse_match_pattern_binding(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    callee_id: i64
+): i64 = {
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.LParen)) {
+        return callee_id
+    }
+
+    val call_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.CallExpr, callee_id)
+    node.node_append_child(mut ref nodes, call_id, callee_id)
+    mut arg_count: i64 = 0
+    if (parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        val arg_id: i64 = parser_make_leaf(
+            mut ref nodes,
+            ref tokens,
+            node.NodeKind.Identifier,
+            parser_advance(mut ref parser, ref tokens)
+        )
+        node.node_append_child(mut ref nodes, call_id, arg_id)
+        arg_count = 1
+    }
+    if (!parser_match(mut ref parser, ref tokens, token.TokenKind.RParen)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P055", ref "Expected ')' after match binding")
+        return node.invalid_node_id()
+    }
+
+    parser_finish_node(mut ref nodes, ref tokens, call_id, parser_previous_token_id(ref parser), arg_count, 0, 0)
+}
+
+// Match patterns intentionally accept a narrower grammar than general expressions.
+func parse_match_pattern_atom(
     mut ref mem: Arena,
     mut ref parser: Parser,
     ref tokens: token.Tokens,
@@ -873,21 +908,98 @@ func parse_match_else_pattern(
     mut ref diags: diag.Diagnostics,
     mut ref diag_pool: bbuf.ByteBuf
 ): i64 = {
-    val else_id: i64 = parser_make_leaf(
-        mut ref nodes,
-        ref tokens,
-        node.NodeKind.Identifier,
-        parser_advance(mut ref parser, ref tokens)
-    )
-    parse_postfix(
+    if (parser_check(ref parser, ref tokens, token.TokenKind.Else) ||
+        parser_check(ref parser, ref tokens, token.TokenKind.Identifier)) {
+        val id: i64 = parser_make_leaf(
+            mut ref nodes,
+            ref tokens,
+            node.NodeKind.Identifier,
+            parser_advance(mut ref parser, ref tokens)
+        )
+        return parse_match_pattern_binding(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            id
+        )
+    }
+    if (parser_check(ref parser, ref tokens, token.TokenKind.Number)) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.NumberLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (parser_check(ref parser, ref tokens, token.TokenKind.Char)) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.CharLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (parser_check(ref parser, ref tokens, token.TokenKind.True) ||
+        parser_check(ref parser, ref tokens, token.TokenKind.False)) {
+        return parser_make_leaf(mut ref nodes, ref tokens, node.NodeKind.BoolLit, parser_advance(mut ref parser, ref tokens))
+    }
+    if (parser_match(mut ref parser, ref tokens, token.TokenKind.Minus)) {
+        val minus_token_id: i64 = parser_previous_token_id(ref parser)
+        if (!parser_check(ref parser, ref tokens, token.TokenKind.Number)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P052", ref "Expected integer literal after '-' in match arm")
+            return node.invalid_node_id()
+        }
+
+        val operand_id: i64 = parser_make_leaf(
+            mut ref nodes,
+            ref tokens,
+            node.NodeKind.NumberLit,
+            parser_advance(mut ref parser, ref tokens)
+        )
+        val unary_id: i64 = parser_open_node(mut ref nodes, ref tokens, node.NodeKind.UnaryExpr, minus_token_id)
+        node.node_append_child(mut ref nodes, unary_id, operand_id)
+        return parser_finish_node(mut ref nodes, ref tokens, unary_id, parser_previous_token_id(ref parser), minus_token_id, 0, 0)
+    }
+
+    parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P052", ref "Expected match pattern in arm")
+    node.invalid_node_id()
+}
+
+// Match or-patterns are a flat `pattern ('|' pattern)*` grammar, not full expressions.
+func parse_match_pattern(
+    mut ref mem: Arena,
+    mut ref parser: Parser,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): i64 = {
+    mut left_id: i64 = parse_match_pattern_atom(
         mut ref mem,
         mut ref parser,
         ref tokens,
         mut ref nodes,
         mut ref diags,
-        mut ref diag_pool,
-        else_id
+        mut ref diag_pool
     )
+    if (left_id < 0) {
+        return node.invalid_node_id()
+    }
+
+    while (parser_match(mut ref parser, ref tokens, token.TokenKind.Pipe)) {
+        val pipe_token_id: i64 = parser_previous_token_id(ref parser)
+        val right_id: i64 = parse_match_pattern_atom(
+            mut ref mem,
+            mut ref parser,
+            ref tokens,
+            mut ref nodes,
+            mut ref diags,
+            mut ref diag_pool
+        )
+        if (right_id < 0) {
+            return node.invalid_node_id()
+        }
+
+        val binary_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.BinaryExpr, left_id)
+        node.node_append_child(mut ref nodes, binary_id, left_id)
+        node.node_append_child(mut ref nodes, binary_id, right_id)
+        left_id = parser_finish_node(mut ref nodes, ref tokens, binary_id, parser_previous_token_id(ref parser), pipe_token_id, 0, 0)
+    }
+
+    left_id
 }
 
 // Match arms always use block bodies in the bootstrap subset.
@@ -899,27 +1011,15 @@ func parse_match_arm(
     mut ref diags: diag.Diagnostics,
     mut ref diag_pool: bbuf.ByteBuf
 ): i64 = {
-    val pattern_id: i64 = if (parser_check(ref parser, ref tokens, token.TokenKind.Else)) {
-        parse_match_else_pattern(
-            mut ref mem,
-            mut ref parser,
-            ref tokens,
-            mut ref nodes,
-            mut ref diags,
-            mut ref diag_pool
-        )
-    } else {
-        parse_expression(
-            mut ref mem,
-            mut ref parser,
-            ref tokens,
-            mut ref nodes,
-            mut ref diags,
-            mut ref diag_pool
-        )
-    }
+    val pattern_id: i64 = parse_match_pattern(
+        mut ref mem,
+        mut ref parser,
+        ref tokens,
+        mut ref nodes,
+        mut ref diags,
+        mut ref diag_pool
+    )
     if (pattern_id < 0) {
-        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P052", ref "Expected match pattern in arm")
         return node.invalid_node_id()
     }
 

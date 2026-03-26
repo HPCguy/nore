@@ -5,6 +5,7 @@
 
 import bbuf "../support/byte_buf.nore"
 import diag "../support/diag.nore"
+import ibuf "../support/i64_buf.nore"
 import loader "../frontend/loader.nore"
 import node "../frontend/node.nore"
 import scopes "scopes.nore"
@@ -61,6 +62,11 @@ value ScalarPatternInfo {
     wildcard: bool,
     has_value: bool,
     literal_value: i64
+}
+
+value ScalarCoverageState {
+    has_true: bool,
+    has_false: bool
 }
 
 table ArenaDependencies {
@@ -3214,6 +3220,17 @@ func match_pattern_variant_name(ref nodes: node.Nodes, pattern_id: i64): i64 = {
     -1
 }
 
+// Bootstrap or-patterns reuse the existing binary `|` expression node shape.
+func match_pattern_is_or(
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    pattern_id: i64
+): bool = {
+    pattern_id >= 0 &&
+    nodes.kind[pattern_id] == node.NodeKind.BinaryExpr &&
+    tokens.kind[nodes.data0[pattern_id]] == token.TokenKind.Pipe
+}
+
 // Catch-all match arms reuse the identifier/call pattern shape, but the spelling is reserved.
 func match_pattern_is_else(
     ref tokens: token.Tokens,
@@ -3233,6 +3250,32 @@ func match_pattern_is_else(
         }
     }
     false
+}
+
+// Validate and tag an `else` catch-all leaf; returns true if the pattern was handled.
+func check_match_catch_all_pattern(
+    mut ref mem: Arena,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    pattern_id: i64,
+    scrutinee_type: i64,
+    in_or_group: bool
+): bool = {
+    if (!match_pattern_is_else(ref tokens, ref nodes, pattern_id)) {
+        return false
+    }
+    nodes.type_id[pattern_id] = scrutinee_type
+    if (nodes.kind[pattern_id] != node.NodeKind.Identifier) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Catch-all match arm does not bind a payload")
+    }
+    if (in_or_group) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S006", ref "Type mismatch")
+    } else {
+        nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
+    }
+    true
 }
 
 // Scalar wildcard matching is just the special bare `_` identifier spelling.
@@ -3372,9 +3415,197 @@ func match_scalar_pattern_info(
     }
 }
 
+// Catch-all coverage only counts when sema accepted a real leaf pattern.
+func match_pattern_find_catch_all_id(
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    pattern_id: i64
+): i64 = {
+    if (pattern_id < 0) {
+        return node.invalid_node_id()
+    }
+    if (match_pattern_is_or(ref tokens, ref nodes, pattern_id)) {
+        val left_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
+        val left_match: i64 = match_pattern_find_catch_all_id(ref tokens, ref nodes, left_id)
+        if (left_match >= 0) {
+            return left_match
+        }
+        val right_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
+        return match_pattern_find_catch_all_id(ref tokens, ref nodes, right_id)
+    }
+    if (nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
+        return pattern_id
+    }
+    node.invalid_node_id()
+}
+
+// Walk each enum-or-pattern leaf in source order so duplicates get flagged at the repeated leaf.
+func check_match_enum_variant_duplicates(
+    mut ref mem: Arena,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    pattern_id: i64,
+    variant_id: i64,
+    seen_before: bool
+): bool = {
+    if (pattern_id < 0) {
+        return seen_before
+    }
+    if (match_pattern_is_or(ref tokens, ref nodes, pattern_id)) {
+        val left_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
+        val left_seen: bool = check_match_enum_variant_duplicates(
+            mut ref mem,
+            ref tokens,
+            ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            left_id,
+            variant_id,
+            seen_before
+        )
+        val right_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
+        return check_match_enum_variant_duplicates(
+            mut ref mem,
+            ref tokens,
+            ref nodes,
+            mut ref diags,
+            mut ref diag_pool,
+            right_id,
+            variant_id,
+            left_seen
+        )
+    }
+    if (nodes.data2[pattern_id] == variant_id) {
+        if (seen_before) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+        }
+        return true
+    }
+    seen_before
+}
+
+// Scalar coverage reuses one flat buffer so duplicates span earlier arms and earlier leaves in the same arm.
+func check_match_scalar_pattern_coverage(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    mut ref literal_values: ibuf.I64Buf,
+    scrutinee_type: i64,
+    bool_match: bool,
+    pattern_id: i64,
+    state: ScalarCoverageState
+): ScalarCoverageState = {
+    if (pattern_id < 0) {
+        return state
+    }
+    if (match_pattern_is_or(ref tokens, ref nodes, pattern_id)) {
+        val left_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
+        val left_state: ScalarCoverageState = check_match_scalar_pattern_coverage(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            mut ref literal_values,
+            scrutinee_type,
+            bool_match,
+            left_id,
+            state
+        )
+        val right_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
+        return check_match_scalar_pattern_coverage(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            mut ref literal_values,
+            scrutinee_type,
+            bool_match,
+            right_id,
+            left_state
+        )
+    }
+
+    if (nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
+        return state
+    }
+
+    val info: ScalarPatternInfo = match_scalar_pattern_info(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        pattern_id
+    )
+    mut valid_value: bool = info.has_value
+    if (valid_value && bool_match) {
+        valid_value = nodes.kind[pattern_id] == node.NodeKind.BoolLit
+    } else {
+        if (valid_value) {
+            valid_value = expr_type_compatible(
+                ref types_table,
+                ref builtins,
+                ref nodes,
+                scrutinee_type,
+                nodes.type_id[pattern_id],
+                pattern_id,
+                false
+            )
+        }
+    }
+    if (!valid_value) {
+        return state
+    }
+
+    if (bool_match) {
+        mut next_state: ScalarCoverageState = state
+        if (info.literal_value != 0) {
+            if (state.has_true) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+            }
+            next_state.has_true = true
+        } else {
+            if (state.has_false) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+            }
+            next_state.has_false = true
+        }
+        return next_state
+    }
+
+    mut literal_id: i64 = 0
+    while (literal_id < literal_values.count) {
+        if (literal_values.data[literal_id] == info.literal_value) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+            return state
+        }
+        literal_id += 1
+    }
+    ibuf.i64_buf_push(mut ref mem, mut ref literal_values, info.literal_value)
+    state
+}
+
 // Enum matches are exhaustive when every declared variant is covered exactly once.
 func check_match_enum_coverage(
     mut ref mem: Arena,
+    ref tokens: token.Tokens,
     ref nodes: node.Nodes,
     ref types_table: types.Types,
     mut ref diags: diag.Diagnostics,
@@ -3383,8 +3614,6 @@ func check_match_enum_coverage(
     scrutinee_id: i64,
     scrutinee_type: i64
 ): void = {
-    // Variant ids were stored in data2 during check_match_enum_pattern, so
-    // coverage reduces to comparing resolved ids directly: O(V * A) total.
     val enum_decl: i64 = types_table.decl_node[scrutinee_type]
     mut has_else: bool = false
     mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
@@ -3393,9 +3622,11 @@ func check_match_enum_coverage(
         if (has_else) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S089", ref "Catch-all match arm must be last")
         }
-        if (pattern_id >= 0 && nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
+
+        val catch_all_id: i64 = match_pattern_find_catch_all_id(ref tokens, ref nodes, pattern_id)
+        if (catch_all_id >= 0) {
             if (has_else) {
-                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, catch_all_id, ref "S075", ref "Duplicate match arm")
             }
             has_else = true
         }
@@ -3410,13 +3641,16 @@ func check_match_enum_coverage(
             mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
             while (arm_id >= 0) {
                 val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
-                if (nodes.data2[pattern_id] == variant_id) {
-                    if (seen_variant) {
-                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
-                    } else {
-                        seen_variant = true
-                    }
-                }
+                seen_variant = check_match_enum_variant_duplicates(
+                    mut ref mem,
+                    ref tokens,
+                    ref nodes,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    pattern_id,
+                    variant_id,
+                    seen_variant
+                )
                 arm_id = nodes.next_sibling[arm_id]
             }
             if (!seen_variant) {
@@ -3447,107 +3681,50 @@ func check_match_scalar_coverage(
     scrutinee_type: i64
 ): void = {
     mut has_catch_all: bool = false
-    mut has_true: bool = false
-    mut has_false: bool = false
     val bool_match: bool = type_is_bool_builtin(ref types_table, scrutinee_type)
+    mut state: ScalarCoverageState = ScalarCoverageState {
+        has_true: false,
+        has_false: false
+    }
+    mut literal_values: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 8)
 
     mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
     while (arm_id >= 0) {
         val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
-        val info: ScalarPatternInfo = match_scalar_pattern_info(
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            ref nodes,
-            pattern_id
-        )
-
         if (has_catch_all) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S089", ref "Catch-all match arm must be last")
         }
 
-        if (pattern_id >= 0 && nodes.data2[pattern_id] == MATCH_PATTERN_CATCH_ALL_ID) {
+        val catch_all_id: i64 = match_pattern_find_catch_all_id(ref tokens, ref nodes, pattern_id)
+        if (catch_all_id >= 0) {
             if (has_catch_all) {
-                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, catch_all_id, ref "S075", ref "Duplicate match arm")
             }
             has_catch_all = true
         } else {
-            mut valid_value: bool = info.has_value
-            if (valid_value && bool_match) {
-                valid_value = nodes.kind[pattern_id] == node.NodeKind.BoolLit
-            } else {
-                if (valid_value) {
-                    valid_value = expr_type_compatible(
-                        ref types_table,
-                        ref builtins,
-                        ref nodes,
-                        scrutinee_type,
-                        nodes.type_id[pattern_id],
-                        pattern_id,
-                        false
-                    )
-                }
-            }
-            if (valid_value) {
-                if (bool_match) {
-                    if (info.literal_value != 0) {
-                        if (has_true) {
-                            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
-                        } else {
-                            has_true = true
-                        }
-                    } else {
-                        if (has_false) {
-                            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
-                        } else {
-                            has_false = true
-                        }
-                    }
-                } else {
-                    mut prev_arm_id: i64 = nodes.next_sibling[scrutinee_id]
-                    while (prev_arm_id >= 0 && prev_arm_id != arm_id) {
-                        val prev_pattern_id: i64 = node.node_child_at(ref nodes, prev_arm_id, 0)
-                        val prev_info: ScalarPatternInfo = match_scalar_pattern_info(
-                            ref sources,
-                            ref text_pool,
-                            ref tokens,
-                            ref nodes,
-                            prev_pattern_id
-                        )
-                        if (prev_info.has_value &&
-                            prev_info.literal_value == info.literal_value &&
-                            expr_type_compatible(
-                                ref types_table,
-                                ref builtins,
-                                ref nodes,
-                                scrutinee_type,
-                                nodes.type_id[prev_pattern_id],
-                                prev_pattern_id,
-                                false
-                            )) {
-                            mut duplicate_literal: bool = true
-                            if (prev_info.wildcard) {
-                                duplicate_literal = false
-                            }
-                            if (duplicate_literal) {
-                                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S075", ref "Duplicate match arm")
-                                prev_arm_id = arm_id
-                            } else {
-                                prev_arm_id = nodes.next_sibling[prev_arm_id]
-                            }
-                        } else {
-                            prev_arm_id = nodes.next_sibling[prev_arm_id]
-                        }
-                    }
-                }
-            }
+            state = check_match_scalar_pattern_coverage(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                mut ref literal_values,
+                scrutinee_type,
+                bool_match,
+                pattern_id,
+                state
+            )
         }
 
         arm_id = nodes.next_sibling[arm_id]
     }
 
     if (bool_match) {
-        if (!has_catch_all && (!has_true || !has_false)) {
+        if (!has_catch_all && (!(state.has_true) || !(state.has_false))) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, match_id, ref "S074", ref "Non-exhaustive match")
         }
     } else {
@@ -3557,8 +3734,8 @@ func check_match_scalar_coverage(
     }
 }
 
-// Tagged-enum arms bind one payload name into the arm scope before the body is checked.
-func check_match_enum_pattern(
+// Tagged-enum arms recurse through `|` groups, but only single-variant arms may bind payloads.
+func check_match_enum_pattern_impl(
     mut ref mem: Arena,
     ref sources: source.Sources,
     ref text_pool: bbuf.ByteBuf,
@@ -3573,14 +3750,53 @@ func check_match_enum_pattern(
     module_id: i64,
     arm_scope: i64,
     scrutinee_type: i64,
-    pattern_id: i64
+    pattern_id: i64,
+    in_or_group: bool
 ): void = {
-    if (match_pattern_is_else(ref tokens, ref nodes, pattern_id)) {
+    if (match_pattern_is_or(ref tokens, ref nodes, pattern_id)) {
         nodes.type_id[pattern_id] = scrutinee_type
-        nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
-        if (nodes.kind[pattern_id] != node.NodeKind.Identifier) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Catch-all match arm does not bind a payload")
-        }
+        val left_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
+        val right_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
+        check_match_enum_pattern_impl(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            mut ref scopes_table,
+            mut ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            module_id,
+            arm_scope,
+            scrutinee_type,
+            left_id,
+            true
+        )
+        check_match_enum_pattern_impl(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            mut ref scopes_table,
+            mut ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            module_id,
+            arm_scope,
+            scrutinee_type,
+            right_id,
+            true
+        )
+        return
+    }
+
+    if (check_match_catch_all_pattern(mut ref mem, ref tokens, mut ref nodes, mut ref diags, mut ref diag_pool, pattern_id, scrutinee_type, in_or_group)) {
         return
     }
 
@@ -3608,12 +3824,16 @@ func check_match_enum_pattern(
     nodes.data2[pattern_id] = variant_id
     val has_payload: bool = flag_has(nodes.data1[variant_id], CHECK_NODE_FLAG_HAS_TYPE)
     if (nodes.kind[pattern_id] != node.NodeKind.CallExpr) {
-        if (has_payload) {
+        if (has_payload && !in_or_group) {
             diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S079", ref "Missing payload for data variant")
         }
         return
     }
 
+    if (in_or_group) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Or-pattern enum variants do not bind payloads")
+        return
+    }
     if (!has_payload) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Unexpected payload/binding for non-data variant")
         return
@@ -3697,8 +3917,45 @@ func check_match_enum_pattern(
     }
 }
 
+func check_match_enum_pattern(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref scopes_table: scopes.Scopes,
+    mut ref symbols_table: symbols.Symbols,
+    mut ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    module_id: i64,
+    arm_scope: i64,
+    scrutinee_type: i64,
+    pattern_id: i64
+): void = {
+    check_match_enum_pattern_impl(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        ref builtins,
+        mut ref diags,
+        mut ref diag_pool,
+        module_id,
+        arm_scope,
+        scrutinee_type,
+        pattern_id,
+        false
+    )
+}
+
 // Scalar-pattern checking keeps `_` special and otherwise reuses normal expression typing.
-func check_match_scalar_pattern(
+func check_match_scalar_pattern_impl(
     mut ref mem: Arena,
     ref sources: source.Sources,
     ref text_pool: bbuf.ByteBuf,
@@ -3717,19 +3974,70 @@ func check_match_scalar_pattern(
     func_return_type: i64,
     in_loop: bool,
     scrutinee_type: i64,
-    pattern_id: i64
+    pattern_id: i64,
+    in_or_group: bool
 ): void = {
-    if (match_pattern_is_else(ref tokens, ref nodes, pattern_id)) {
+    if (match_pattern_is_or(ref tokens, ref nodes, pattern_id)) {
         nodes.type_id[pattern_id] = scrutinee_type
-        nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
-        if (nodes.kind[pattern_id] != node.NodeKind.Identifier) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S078", ref "Catch-all match arm does not bind a payload")
-        }
+        val left_id: i64 = node.node_child_at(ref nodes, pattern_id, 0)
+        val right_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
+        check_match_scalar_pattern_impl(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            mut ref scopes_table,
+            mut ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            mut ref deps,
+            mut ref deferred,
+            module_id,
+            scope_id,
+            func_return_type,
+            in_loop,
+            scrutinee_type,
+            left_id,
+            true
+        )
+        check_match_scalar_pattern_impl(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            mut ref scopes_table,
+            mut ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            mut ref deps,
+            mut ref deferred,
+            module_id,
+            scope_id,
+            func_return_type,
+            in_loop,
+            scrutinee_type,
+            right_id,
+            true
+        )
+        return
+    }
+
+    if (check_match_catch_all_pattern(mut ref mem, ref tokens, mut ref nodes, mut ref diags, mut ref diag_pool, pattern_id, scrutinee_type, in_or_group)) {
         return
     }
     if (nodes.kind[pattern_id] == node.NodeKind.Identifier &&
         token_name_is(ref sources, ref text_pool, ref tokens, nodes.data0[pattern_id], ref "_")) {
         nodes.type_id[pattern_id] = scrutinee_type
+        if (in_or_group) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S006", ref "Type mismatch")
+            return
+        }
         nodes.data2[pattern_id] = MATCH_PATTERN_CATCH_ALL_ID
         return
     }
@@ -3771,6 +4079,51 @@ func check_match_scalar_pattern(
         )) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, pattern_id, ref "S006", ref "Type mismatch")
     }
+}
+
+func check_match_scalar_pattern(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref scopes_table: scopes.Scopes,
+    mut ref symbols_table: symbols.Symbols,
+    mut ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    mut ref deps: ArenaDependencies,
+    mut ref deferred: DeferredArenaChecks,
+    module_id: i64,
+    scope_id: i64,
+    func_return_type: i64,
+    in_loop: bool,
+    scrutinee_type: i64,
+    pattern_id: i64
+): void = {
+    check_match_scalar_pattern_impl(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        ref builtins,
+        mut ref diags,
+        mut ref diag_pool,
+        mut ref deps,
+        mut ref deferred,
+        module_id,
+        scope_id,
+        func_return_type,
+        in_loop,
+        scrutinee_type,
+        pattern_id,
+        false
+    )
 }
 
 // Match arms split into enum-pattern and scalar-pattern checking before the body scope runs.
@@ -6730,6 +7083,7 @@ func check_expr(
                 if (types_table.kind[nodes.type_id[scrutinee_id]] == types.TypeKind.EnumType) {
                     check_match_enum_coverage(
                         mut ref mem,
+                        ref tokens,
                         ref nodes,
                         ref types_table,
                         mut ref diags,
