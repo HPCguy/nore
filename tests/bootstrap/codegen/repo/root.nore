@@ -1,0 +1,32 @@
+value Pair {
+    left: i64,
+    bytes: [u8; 4]
+}
+
+struct View {
+    bytes: [u8],
+    name: str
+}
+
+table Scores {
+    id: i64,
+    ok: bool
+}
+
+enum Color {
+    Red,
+    Blue
+}
+
+enum MaybeNum {
+    None,
+    Some(i64),
+    Pair(Pair)
+}
+
+func make_row(): Scores.Row = {
+    Scores.Row {
+        id: 1,
+        ok: true
+    }
+}

@@ -156,10 +156,14 @@ Current committed file scope:
   with deferred return-slice propagation, and enough real-module coverage to
   sema-check `compiler/sema/check.nore`, but not code generation.
 
-Remaining placeholder file scope:
+Current early codegen file scope:
 
-- `compiler/codegen/c_types.nore`: lower checked Nore types into C-facing type
-  descriptions only.
+- `compiler/codegen/c_types.nore`: lower checked Nore types into stable C-facing
+  names and emit dependency-ordered typedefs for arrays, slices, values,
+  structs, tables, table rows, and enums only. It should not absorb expression,
+  statement, runtime, or whole-file orchestration logic.
+
+Remaining placeholder file scope:
 
 - `compiler/codegen/c_emit_expr.nore`: C emission for expressions only.
 

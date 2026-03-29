@@ -1,3 +1,872 @@
-// Bootstrap compiler codegen module placeholder.
-// Responsibility: lower Nore types to C-facing representations.
-// Implement in Milestone 8.
+// Bootstrap compiler C type lowering and typedef emission.
+// Responsibility: map checked Nore types to stable C names and emit aggregate typedefs.
+// Owns: builtin/runtime-facing type names, dependency ordering, and typedef text emission.
+// Does not own: statement lowering, expression lowering, runtime bodies, or full-file orchestration.
+
+import bbuf "../support/byte_buf.nore"
+import node "../frontend/node.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import token "../frontend/token.nore"
+import types "../sema/types.nore"
+import string "std/string.nore"
+
+val TYPE_STATE_UNSEEN: i64 = 0
+val TYPE_STATE_VISITING: i64 = 1
+val TYPE_STATE_EMITTED: i64 = 2
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
+    val text: str = string.i64_to_str(mut ref mem, n)
+    append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// The typedef dump uses fixed four-space indentation for tagged-enum bodies.
+func append_indent(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, depth: i64): void = {
+    mut i: i64 = 0
+    while (i < depth) {
+        append_bytes(mut ref mem, mut ref out, ref "    ")
+        i += 1
+    }
+}
+
+// Named type ids always point back to a declaration node that owns the source spelling.
+func type_decl_name_token(ref nodes: node.Nodes, ref types_table: types.Types, type_id: i64): i64 = {
+    if (type_id < 0) {
+        return -1
+    }
+
+    val kind: types.TypeKind = types_table.kind[type_id]
+    if (kind == types.TypeKind.TableRowType) {
+        return type_decl_name_token(ref nodes, ref types_table, types_table.data0[type_id])
+    }
+
+    val decl_id: i64 = types_table.decl_node[type_id]
+    if (decl_id < 0) {
+        return -1
+    }
+    nodes.data0[decl_id]
+}
+
+// Named C types use a simple module-id prefix until the driver grows a richer symbol policy.
+func named_type_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    type_id: i64
+): str = {
+    val name_token: i64 = type_decl_name_token(ref nodes, ref types_table, type_id)
+    val module_text: str = string.i64_to_str(mut ref mem, types_table.module_id[type_id])
+    val prefix: str = string.str_concat3(mut ref mem, ref "ni_m", ref module_text, ref "_")
+    if (name_token < 0) {
+        return string.str_concat(mut ref mem, ref prefix, ref "invalid")
+    }
+
+    val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
+    string.str_concat(mut ref mem, ref prefix, ref name)
+}
+
+// Codegen uses one public spelling function so later emitters and tests share the same contract.
+pub func type_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    type_id: i64
+): str = {
+    if (type_id < 0) {
+        return "int64_t"
+    }
+
+    val kind: types.TypeKind = types_table.kind[type_id]
+    if (kind == types.TypeKind.VoidType) {
+        return "void"
+    }
+    if (kind == types.TypeKind.I64Type) {
+        return "int64_t"
+    }
+    if (kind == types.TypeKind.I32Type) {
+        return "int32_t"
+    }
+    if (kind == types.TypeKind.U8Type) {
+        return "uint8_t"
+    }
+    if (kind == types.TypeKind.U32Type) {
+        return "uint32_t"
+    }
+    if (kind == types.TypeKind.F64Type) {
+        return "double"
+    }
+    if (kind == types.TypeKind.BoolType) {
+        return "int"
+    }
+    if (kind == types.TypeKind.StrType) {
+        return "ni_str"
+    }
+    if (kind == types.TypeKind.ArenaType) {
+        return "ni_Arena"
+    }
+    if (kind == types.TypeKind.ArrayType) {
+        val elem_name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[type_id]
+        )
+        val size_text: str = string.i64_to_str(mut ref mem, types_table.data1[type_id])
+        val prefix: str = string.str_concat3(mut ref mem, ref "ni_arr_", ref size_text, ref "_")
+        return string.str_concat(mut ref mem, ref prefix, ref elem_name)
+    }
+    if (kind == types.TypeKind.SliceType) {
+        val elem_name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[type_id]
+        )
+        return string.str_concat(mut ref mem, ref "ni_slice_", ref elem_name)
+    }
+    if (kind == types.TypeKind.TableRowType) {
+        val base_name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[type_id]
+        )
+        return string.str_concat(mut ref mem, ref base_name, ref "_Row")
+    }
+    if (kind == types.TypeKind.ValueType ||
+        kind == types.TypeKind.StructType ||
+        kind == types.TypeKind.TableType ||
+        kind == types.TypeKind.EnumType) {
+        return named_type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            type_id
+        )
+    }
+
+    "int64_t"
+}
+
+// Builtins lower directly and do not need standalone typedefs.
+func type_needs_definition(ref types_table: types.Types, type_id: i64): bool = {
+    if (type_id < 0) {
+        return false
+    }
+
+    val kind: types.TypeKind = types_table.kind[type_id]
+    if ((kind == types.TypeKind.ValueType ||
+         kind == types.TypeKind.StructType ||
+         kind == types.TypeKind.TableType ||
+         kind == types.TypeKind.TableRowType ||
+         kind == types.TypeKind.EnumType) &&
+        types_table.module_id[type_id] < 0) {
+        return false
+    }
+
+    kind == types.TypeKind.ArrayType ||
+    kind == types.TypeKind.SliceType ||
+    kind == types.TypeKind.ValueType ||
+    kind == types.TypeKind.StructType ||
+    kind == types.TypeKind.TableType ||
+    kind == types.TypeKind.TableRowType ||
+    kind == types.TypeKind.EnumType
+}
+
+// Table codegen needs the column-slice helper types even when sema never names them explicitly.
+func preintern_table_column_slices(mut ref types_table: types.Types, ref nodes: node.Nodes, ref type_range: span.Range): void = {
+    mut type_id: i64 = type_range.start
+    val end: i64 = span.range_end(ref type_range)
+    while (type_id < end && type_id < table_len(ref types_table)) {
+        if (types_table.kind[type_id] == types.TypeKind.TableType) {
+            val decl_id: i64 = types_table.decl_node[type_id]
+            mut field_id: i64 = nodes.first_child[decl_id]
+            while (field_id >= 0) {
+                if (nodes.kind[field_id] == node.NodeKind.FieldDecl && nodes.type_id[field_id] >= 0) {
+                    types.type_slice(mut ref types_table, nodes.type_id[field_id])
+                }
+                field_id = nodes.next_sibling[field_id]
+            }
+        }
+        type_id += 1
+    }
+}
+
+// Table rows share the original declaration fields and keep one stable name when materialized.
+func find_table_row_type(ref types_table: types.Types, table_type: i64): i64 = {
+    mut type_id: i64 = 0
+    while (type_id < table_len(ref types_table)) {
+        if (types_table.kind[type_id] == types.TypeKind.TableRowType &&
+            types_table.data0[type_id] == table_type) {
+            return type_id
+        }
+        type_id += 1
+    }
+    -1
+}
+
+// Record-like typedefs all iterate the same field declaration shape.
+func emit_record_fields(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    decl_id: i64
+): bool = {
+    mut field_id: i64 = nodes.first_child[decl_id]
+    mut wrote_any: bool = false
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+            val field_type: str = type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                nodes.type_id[field_id]
+            )
+            val field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[field_id])
+            append_bytes(mut ref mem, mut ref out, ref " ")
+            append_bytes(mut ref mem, mut ref out, ref field_type)
+            append_bytes(mut ref mem, mut ref out, ref " ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref ";")
+            wrote_any = true
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+    wrote_any
+}
+
+// C99 rejects empty structs, so empty Nore records need one private placeholder field.
+func emit_empty_record_field(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref " uint8_t ni__empty;")
+}
+
+// Table rows keep one stable spelling even when sema never interned a `.Row` type id.
+func table_row_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    table_type: i64
+): str = {
+    val base_name: str = type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type
+    )
+    string.str_concat(mut ref mem, ref base_name, ref "_Row")
+}
+
+// Record-like C typedef emission is shared once the caller has resolved the declaration and output name.
+func emit_named_record_typedef(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    decl_id: i64,
+    ref name: [u8]
+): void = {
+    append_bytes(mut ref mem, mut ref out, ref "typedef struct {")
+    val wrote_any: bool = emit_record_fields(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        decl_id
+    )
+    if (!wrote_any) {
+        emit_empty_record_field(mut ref mem, mut ref out)
+    }
+    append_bytes(mut ref mem, mut ref out, ref " } ")
+    append_bytes(mut ref mem, mut ref out, ref name)
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Table row typedefs are derived from the base table declaration, not from row-type interning.
+func emit_table_row_typedef(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    table_type: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[table_type]
+    val name: str = table_row_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type
+    )
+    emit_named_record_typedef(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        decl_id,
+        ref name
+    )
+}
+
+// Value and struct typedefs come from already-interned record type rows.
+func emit_record_typedef(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    type_id: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[type_id]
+    val name: str = type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        type_id
+    )
+    emit_named_record_typedef(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        decl_id,
+        ref name
+    )
+}
+
+// Table storage lowers to slice columns plus a length field in the generated C layout.
+func emit_table_typedef(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    type_id: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[type_id]
+    val name: str = type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        type_id
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "typedef struct {")
+    mut field_id: i64 = nodes.first_child[decl_id]
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+            val slice_type_id: i64 = types.type_slice(mut ref types_table, nodes.type_id[field_id])
+            val field_type: str = type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                slice_type_id
+            )
+            val field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[field_id])
+            append_bytes(mut ref mem, mut ref out, ref " ")
+            append_bytes(mut ref mem, mut ref out, ref field_type)
+            append_bytes(mut ref mem, mut ref out, ref " ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref ";")
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+    append_bytes(mut ref mem, mut ref out, ref " int64_t ni__len; } ")
+    append_bytes(mut ref mem, mut ref out, ref name)
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Plain enums stay integer typedefs; tagged enums emit a tag plus payload union.
+func emit_enum_typedef(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    type_id: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[type_id]
+    val name: str = type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        type_id
+    )
+
+    mut has_payload: bool = false
+    mut variant_id: i64 = nodes.first_child[decl_id]
+    while (variant_id >= 0 && !has_payload) {
+        if (nodes.kind[variant_id] == node.NodeKind.VariantDecl && nodes.type_id[variant_id] >= 0) {
+            has_payload = true
+        }
+        variant_id = nodes.next_sibling[variant_id]
+    }
+
+    if (!has_payload) {
+        append_bytes(mut ref mem, mut ref out, ref "typedef int64_t ")
+        append_bytes(mut ref mem, mut ref out, ref name)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "typedef struct {\n")
+    append_indent(mut ref mem, mut ref out, 1)
+    append_bytes(mut ref mem, mut ref out, ref "int64_t tag;\n")
+    append_indent(mut ref mem, mut ref out, 1)
+    append_bytes(mut ref mem, mut ref out, ref "union {\n")
+
+    variant_id = nodes.first_child[decl_id]
+    while (variant_id >= 0) {
+        if (nodes.kind[variant_id] == node.NodeKind.VariantDecl && nodes.type_id[variant_id] >= 0) {
+            val payload_type: str = type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                nodes.type_id[variant_id]
+            )
+            val variant_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[variant_id])
+            append_indent(mut ref mem, mut ref out, 2)
+            append_bytes(mut ref mem, mut ref out, ref payload_type)
+            append_bytes(mut ref mem, mut ref out, ref " ni_")
+            append_bytes(mut ref mem, mut ref out, ref variant_name)
+            append_bytes(mut ref mem, mut ref out, ref ";\n")
+        }
+        variant_id = nodes.next_sibling[variant_id]
+    }
+
+    append_indent(mut ref mem, mut ref out, 1)
+    append_bytes(mut ref mem, mut ref out, ref "} data;\n")
+    append_bytes(mut ref mem, mut ref out, ref "} ")
+    append_bytes(mut ref mem, mut ref out, ref name)
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Record declarations emit their field-type dependencies before the owning typedef.
+func emit_record_deps(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    mut ref state: [i64],
+    mut ref out: bbuf.ByteBuf,
+    decl_id: i64
+): void = {
+    mut field_id: i64 = nodes.first_child[decl_id]
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl && nodes.type_id[field_id] >= 0) {
+            emit_type_recursive(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                mut ref types_table,
+                mut ref state,
+                mut ref out,
+                nodes.type_id[field_id]
+            )
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+}
+
+// Table declarations also depend on the synthesized slice-column helper types.
+func emit_table_column_deps(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    mut ref state: [i64],
+    mut ref out: bbuf.ByteBuf,
+    decl_id: i64
+): void = {
+    mut field_id: i64 = nodes.first_child[decl_id]
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl && nodes.type_id[field_id] >= 0) {
+            val slice_type_id: i64 = types.type_slice(mut ref types_table, nodes.type_id[field_id])
+            if (slice_type_id >= 0 && slice_type_id < state.len) {
+                emit_type_recursive(
+                    mut ref mem,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    mut ref types_table,
+                    mut ref state,
+                    mut ref out,
+                    slice_type_id
+                )
+            }
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+}
+
+// Tagged enums only depend on payload-bearing variants.
+func emit_enum_deps(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    mut ref state: [i64],
+    mut ref out: bbuf.ByteBuf,
+    decl_id: i64
+): void = {
+    mut variant_id: i64 = nodes.first_child[decl_id]
+    while (variant_id >= 0) {
+        if (nodes.kind[variant_id] == node.NodeKind.VariantDecl && nodes.type_id[variant_id] >= 0) {
+            emit_type_recursive(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                mut ref types_table,
+                mut ref state,
+                mut ref out,
+                nodes.type_id[variant_id]
+            )
+        }
+        variant_id = nodes.next_sibling[variant_id]
+    }
+}
+
+// Dependency-first emission keeps later C files simple and stable for golden tests.
+func emit_type_recursive(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    mut ref state: [i64],
+    mut ref out: bbuf.ByteBuf,
+    type_id: i64
+): void = {
+    if (type_id < 0 || type_id >= state.len || !type_needs_definition(ref types_table, type_id)) {
+        return
+    }
+    if (state[type_id] == TYPE_STATE_EMITTED || state[type_id] == TYPE_STATE_VISITING) {
+        return
+    }
+
+    state[type_id] = TYPE_STATE_VISITING
+
+    val kind: types.TypeKind = types_table.kind[type_id]
+    if (kind == types.TypeKind.ArrayType || kind == types.TypeKind.SliceType) {
+        emit_type_recursive(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            mut ref state,
+            mut ref out,
+            types_table.data0[type_id]
+        )
+    } else {
+        if (kind == types.TypeKind.ValueType ||
+            kind == types.TypeKind.StructType ||
+            kind == types.TypeKind.TableRowType) {
+            val decl_id: i64 = if (kind == types.TypeKind.TableRowType) {
+                types_table.decl_node[types_table.data0[type_id]]
+            } else {
+                types_table.decl_node[type_id]
+            }
+            emit_record_deps(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                mut ref types_table,
+                mut ref state,
+                mut ref out,
+                decl_id
+            )
+        } else {
+            if (kind == types.TypeKind.TableType) {
+                val decl_id: i64 = types_table.decl_node[type_id]
+                emit_record_deps(
+                    mut ref mem,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    mut ref types_table,
+                    mut ref state,
+                    mut ref out,
+                    decl_id
+                )
+                emit_table_column_deps(
+                    mut ref mem,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    mut ref types_table,
+                    mut ref state,
+                    mut ref out,
+                    decl_id
+                )
+            } else {
+                if (kind == types.TypeKind.EnumType) {
+                    emit_enum_deps(
+                        mut ref mem,
+                        ref sources,
+                        ref text_pool,
+                        ref tokens,
+                        ref nodes,
+                        mut ref types_table,
+                        mut ref state,
+                        mut ref out,
+                        types_table.decl_node[type_id]
+                    )
+                }
+            }
+        }
+    }
+
+    if (kind == types.TypeKind.ArrayType) {
+        val elem_name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[type_id]
+        )
+        val name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            type_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref "typedef struct { ")
+        append_bytes(mut ref mem, mut ref out, ref elem_name)
+        append_bytes(mut ref mem, mut ref out, ref " data[")
+        append_i64(mut ref mem, mut ref out, types_table.data1[type_id])
+        append_bytes(mut ref mem, mut ref out, ref "]; } ")
+        append_bytes(mut ref mem, mut ref out, ref name)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+    } else {
+        if (kind == types.TypeKind.SliceType) {
+            val elem_name: str = type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                types_table.data0[type_id]
+            )
+            val name: str = type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                type_id
+            )
+            append_bytes(mut ref mem, mut ref out, ref "typedef struct { ")
+            append_bytes(mut ref mem, mut ref out, ref elem_name)
+            append_bytes(mut ref mem, mut ref out, ref " *data; int64_t len; } ")
+            append_bytes(mut ref mem, mut ref out, ref name)
+            append_bytes(mut ref mem, mut ref out, ref ";\n")
+        } else {
+            if (kind == types.TypeKind.ValueType || kind == types.TypeKind.StructType) {
+                emit_record_typedef(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref types_table,
+                    type_id
+                )
+            } else {
+                if (kind == types.TypeKind.TableRowType) {
+                    emit_table_row_typedef(
+                        mut ref mem,
+                        mut ref out,
+                        ref sources,
+                        ref text_pool,
+                        ref tokens,
+                        ref nodes,
+                        ref types_table,
+                        types_table.data0[type_id]
+                    )
+                } else {
+                    if (kind == types.TypeKind.TableType) {
+                        val row_type_id: i64 = find_table_row_type(ref types_table, type_id)
+                        if (row_type_id < 0 || (row_type_id < state.len && state[row_type_id] != TYPE_STATE_EMITTED)) {
+                            emit_table_row_typedef(
+                                mut ref mem,
+                                mut ref out,
+                                ref sources,
+                                ref text_pool,
+                                ref tokens,
+                                ref nodes,
+                                ref types_table,
+                                type_id
+                            )
+                            if (row_type_id >= 0 && row_type_id < state.len) {
+                                state[row_type_id] = TYPE_STATE_EMITTED
+                            }
+                        }
+                        emit_table_typedef(
+                            mut ref mem,
+                            mut ref out,
+                            ref sources,
+                            ref text_pool,
+                            ref tokens,
+                            ref nodes,
+                            mut ref types_table,
+                            type_id
+                        )
+                    } else {
+                        if (kind == types.TypeKind.EnumType) {
+                            emit_enum_typedef(
+                                mut ref mem,
+                                mut ref out,
+                                ref sources,
+                                ref text_pool,
+                                ref tokens,
+                                ref nodes,
+                                ref types_table,
+                                type_id
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    state[type_id] = TYPE_STATE_EMITTED
+}
+
+// Tests and later codegen stages need one shared entry point for typedef emission.
+pub func type_defs_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    ref type_range: span.Range
+): [u8] = {
+    preintern_table_column_slices(mut ref types_table, ref nodes, ref type_range)
+
+    mut state: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
+    mut index: i64 = 0
+    while (index < state.len) {
+        state[index] = TYPE_STATE_UNSEEN
+        index += 1
+    }
+
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut type_id: i64 = type_range.start
+    val end: i64 = span.range_end(ref type_range)
+    while (type_id < end && type_id < table_len(ref types_table)) {
+        emit_type_recursive(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            mut ref state,
+            mut ref out,
+            type_id
+        )
+        type_id += 1
+    }
+
+    out.data[0..out.count]
+}

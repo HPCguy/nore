@@ -1,0 +1,9 @@
+value EmptyValue {}
+
+struct EmptyStruct {}
+
+table EmptyTable {}
+
+table BareTable {
+    count: i64
+}
