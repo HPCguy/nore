@@ -163,15 +163,18 @@ Current early codegen file scope:
   structs, tables, table rows, and enums only. It should not absorb expression,
   statement, runtime, or whole-file orchestration logic.
 
+- `compiler/codegen/c_emit_decl.nore`: emit stable module-prefixed C symbol
+  names plus user-function signatures and forward prototypes only. It owns
+  ref-parameter pointer lowering and the shared declaration spelling used by
+  later definition emitters, but not global initializers, expressions,
+  statements, runtime bodies, or whole-file orchestration.
+
 Remaining placeholder file scope:
 
 - `compiler/codegen/c_emit_expr.nore`: C emission for expressions only.
 
 - `compiler/codegen/c_emit_stmt.nore`: C emission for statements and control
   flow only.
-
-- `compiler/codegen/c_emit_decl.nore`: C emission for declarations, globals,
-  and function prototypes only.
 
 - `compiler/codegen/c_runtime.nore`: runtime helper snippets required by
   generated C only.

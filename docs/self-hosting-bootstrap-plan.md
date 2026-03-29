@@ -518,9 +518,12 @@ Do not try to reach full parity here. Reach "enough to compile the compiler sour
 
 **Status:** In progress
 
-Started in `compiler/codegen/c_types.nore` and `tests/bootstrap/codegen/`.
-The current committed slice lowers sema types to stable C names and emits
-typedefs for arrays, slices, values, structs, tables, table rows, and enums.
+Started in `compiler/codegen/c_types.nore`, `compiler/codegen/c_emit_decl.nore`,
+and `tests/bootstrap/codegen/`. The current committed slice lowers sema types
+to stable C names, emits typedefs for arrays, slices, values, structs, tables,
+table rows, and enums, and now emits stable user-function prototypes in module
+order with ref-parameter pointer lowering while leaving native runtime hooks to
+the later runtime emitter.
 
 ### Gaps to close before starting
 

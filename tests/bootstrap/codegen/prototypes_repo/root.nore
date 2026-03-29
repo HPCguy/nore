@@ -1,0 +1,11 @@
+import helper "helper.nore"
+
+func ping(): i64 = {
+    return helper.ping()
+}
+
+func use_pair(ref pair: helper.Pair): void = {
+}
+
+func touch(ref data: [u8], mut ref count: i64): void = {
+}

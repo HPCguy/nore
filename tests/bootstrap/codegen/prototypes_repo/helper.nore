@@ -1,0 +1,12 @@
+pub value Pair {
+    left: i64
+}
+
+native func mem_copy(mut ref dst: [u8], ref src: [u8]): i64
+
+pub func ping(): i64 = {
+    return 1
+}
+
+func copy(mut ref dst: [u8], ref src: [u8]): void = {
+}

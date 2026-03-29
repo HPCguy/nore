@@ -1,3 +1,232 @@
-// Bootstrap compiler codegen module placeholder.
-// Responsibility: emit C for declarations and prototypes.
-// Implement in Milestone 8.
+// Bootstrap compiler C declaration emission.
+// Responsibility: emit stable C names plus declaration-level codegen for checked modules.
+// Owns: user-function signatures, prototypes, and shared declaration naming helpers.
+// Does not own: expression lowering, statement lowering, runtime bodies, or whole-file orchestration.
+
+import bbuf "../support/byte_buf.nore"
+import ctypes "c_types.nore"
+import loader "../frontend/loader.nore"
+import node "../frontend/node.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import symbols "../sema/symbols.nore"
+import token "../frontend/token.nore"
+import types "../sema/types.nore"
+import string "std/string.nore"
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+// Function and global C names stay module-prefixed so one generated translation unit avoids collisions.
+pub func decl_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    module_id: i64,
+    name_token: i64
+): str = {
+    val module_text: str = string.i64_to_str(mut ref mem, module_id)
+    val prefix: str = string.str_concat3(mut ref mem, ref "ni_m", ref module_text, ref "_")
+    val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
+    string.str_concat(mut ref mem, ref prefix, ref name)
+}
+
+// Local C names only need the standard ni_ prefix because their scope stays inside one function.
+func local_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    name_token: i64
+): str = {
+    val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
+    string.str_concat(mut ref mem, ref "ni_", ref name)
+}
+
+// Runtime-provided native hooks are emitted later by c_runtime, not as user prototypes here.
+func decl_is_native(ref nodes: node.Nodes, ref symbols_table: symbols.Symbols, decl_id: i64): bool = {
+    if (nodes.kind[decl_id] == node.NodeKind.NativeFuncDecl) {
+        return true
+    }
+
+    val symbol_id: i64 = nodes.symbol_id[decl_id]
+    if (symbol_id < 0) {
+        return false
+    }
+    symbols.symbol_is_native(ref symbols_table, symbol_id)
+}
+
+// Ref parameters lower to pointers, keeping immutable refs const-qualified in C.
+func append_param_decl(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    param_id: i64
+): void = {
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[param_id]
+    )
+    val name_text: str = local_name(mut ref mem, ref sources, ref text_pool, ref tokens, nodes.data0[param_id])
+    val symbol_id: i64 = nodes.symbol_id[param_id]
+    val is_ref: bool = symbol_id >= 0 && symbols.symbol_is_ref(ref symbols_table, symbol_id)
+    val is_mut_ref: bool = is_ref && symbols.symbol_is_mut(ref symbols_table, symbol_id)
+
+    if (is_ref && !is_mut_ref) {
+        append_bytes(mut ref mem, mut ref out, ref "const ")
+    }
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    if (is_ref) {
+        append_bytes(mut ref mem, mut ref out, ref " *")
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref " ")
+    }
+    append_bytes(mut ref mem, mut ref out, ref name_text)
+}
+
+// Later declaration and definition emitters share one signature writer so prototypes stay identical.
+pub func append_function_signature(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    module_id: i64,
+    decl_id: i64
+): void = {
+    val return_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[decl_id]
+    )
+    val name_text: str = decl_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        module_id,
+        nodes.data0[decl_id]
+    )
+    val param_count: i64 = nodes.data2[decl_id]
+
+    append_bytes(mut ref mem, mut ref out, ref return_text)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref name_text)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+
+    if (param_count <= 0) {
+        append_bytes(mut ref mem, mut ref out, ref "void")
+    } else {
+        mut param_id: i64 = nodes.first_child[decl_id]
+        mut index: i64 = 0
+        while (param_id >= 0 && index < param_count) {
+            if (index > 0) {
+                append_bytes(mut ref mem, mut ref out, ref ", ")
+            }
+            append_param_decl(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                param_id
+            )
+            param_id = nodes.next_sibling[param_id]
+            index += 1
+        }
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref ")")
+}
+
+// Forward declarations keep later body emission free to follow source order.
+pub func append_function_prototype(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    module_id: i64,
+    decl_id: i64
+): void = {
+    append_function_signature(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        module_id,
+        decl_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Tests and later c_main orchestration need one stable prototype dump entry point.
+pub func function_prototypes_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    ref module_range: span.Range
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        val root_id: i64 = modules.root_node[module_id]
+        mut decl_id: i64 = nodes.first_child[root_id]
+        while (decl_id >= 0) {
+            if (nodes.kind[decl_id] == node.NodeKind.FuncDecl &&
+                !decl_is_native(ref nodes, ref symbols_table, decl_id)) {
+                append_function_prototype(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    module_id,
+                    decl_id
+                )
+            }
+            decl_id = nodes.next_sibling[decl_id]
+        }
+        module_id += 1
+    }
+
+    out.data[0..out.count]
+}
