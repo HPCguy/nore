@@ -175,16 +175,21 @@ Current early codegen file scope:
   hook bodies, or orchestration.
 
 - `compiler/codegen/c_main.nore`: assemble the current whole-file C skeleton
-  only. It owns section ordering for prelude, typedefs, and user prototypes,
-  but not expression lowering, statement lowering, runtime helper bodies, or
-  driver behavior.
+  only. It owns section ordering for prelude, typedefs, user prototypes, and
+  the first function-definition slice, but not runtime helper bodies or driver
+  behavior.
+
+- `compiler/codegen/c_emit_expr.nore`: emit the first checked expression slice
+  only. It owns literals, identifiers, field access, constructors, and plain
+  user-function calls, including ref-aware identifier/field lowering, but not
+  statements, control flow, globals, or helper runtimes.
+
+- `compiler/codegen/c_emit_stmt.nore`: emit the first checked statement/body
+  slice only. It owns empty blocks, explicit `return`, expr statements, and
+  tail-value blocks lowered as implicit returns, but not expression spelling,
+  globals, loops, `if`, `match`, or whole-file orchestration.
 
 Remaining placeholder file scope:
-
-- `compiler/codegen/c_emit_expr.nore`: C emission for expressions only.
-
-- `compiler/codegen/c_emit_stmt.nore`: C emission for statements and control
-  flow only.
 
 - `compiler/driver/cli.nore`: CLI parsing and stage orchestration at the driver
   boundary only. It should not absorb frontend or codegen internals.

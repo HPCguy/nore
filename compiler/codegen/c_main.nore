@@ -5,6 +5,7 @@
 
 import bbuf "../support/byte_buf.nore"
 import cdecl "c_emit_decl.nore"
+import cstmt "c_emit_stmt.nore"
 import cruntime "c_runtime.nore"
 import ctypes "c_types.nore"
 import loader "../frontend/loader.nore"
@@ -31,6 +32,64 @@ func append_section(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8
 }
 
 // The current whole-file dump is intentionally narrow: prelude first, then typedefs, then user prototypes.
+func function_definitions_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    ref module_range: span.Range
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
+    mut wrote_any: bool = false
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        val root_id: i64 = modules.root_node[module_id]
+        mut decl_id: i64 = nodes.first_child[root_id]
+        while (decl_id >= 0) {
+            if (nodes.kind[decl_id] == node.NodeKind.FuncDecl) {
+                if (wrote_any) {
+                    append_bytes(mut ref mem, mut ref out, ref "\n")
+                }
+                cdecl.append_function_signature(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    module_id,
+                    decl_id
+                )
+                append_bytes(mut ref mem, mut ref out, ref " ")
+                cstmt.append_function_body(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    decl_id
+                )
+                wrote_any = true
+            }
+            decl_id = nodes.next_sibling[decl_id]
+        }
+        module_id += 1
+    }
+
+    out.data[0..out.count]
+}
+
+// The current whole-file dump now assembles prelude, typedefs, user prototypes, and the first body-emission slice.
 pub func c_file_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -71,6 +130,19 @@ pub func c_file_dump(
         ref module_range
     )
     append_section(mut ref mem, mut ref out, ref prototypes)
+
+    val definitions: [u8] = function_definitions_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        ref types_table,
+        ref module_range
+    )
+    append_section(mut ref mem, mut ref out, ref definitions)
 
     out.data[0..out.count]
 }

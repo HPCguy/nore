@@ -36,3 +36,47 @@ func inspect_os(os: OS): void = {
 
 func take_mem(mut ref mem: Arena): void = {
 }
+
+func call_id(n: i64): i64 = {
+    id(n)
+}
+
+func id(n: i64): i64 = {
+    return n
+}
+
+func pair_left(pair: Pair): i64 = {
+    return pair.left
+}
+
+func pair_left_ref(ref pair: Pair): i64 = {
+    pair.left
+}
+
+func passthrough_ref(ref n: i64): i64 = {
+    n
+}
+
+func always_true(): bool = {
+    true
+}
+
+func color_red(): Color = {
+    Color.Red
+}
+
+func maybe_none(): MaybeNum = {
+    MaybeNum.None
+}
+
+func maybe_some(n: i64): MaybeNum = {
+    MaybeNum.Some(n)
+}
+
+func take_name(ref name: str): i64 = {
+    name.len
+}
+
+func call_take_name(): i64 = {
+    take_name(ref "hi")
+}

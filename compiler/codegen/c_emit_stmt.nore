@@ -1,3 +1,153 @@
-// Bootstrap compiler codegen module placeholder.
-// Responsibility: emit C for statements and control flow.
-// Implement in Milestone 8.
+// Bootstrap compiler C statement emission.
+// Responsibility: emit C for the first checked bootstrap statement/body subset.
+// Owns: function-body blocks, return statements, and expr-statement lowering.
+// Does not own: declaration signatures, runtime bodies, or whole-file orchestration.
+
+import bbuf "../support/byte_buf.nore"
+import cexpr "c_emit_expr.nore"
+import node "../frontend/node.nore"
+import source "../support/source.nore"
+import symbols "../sema/symbols.nore"
+import token "../frontend/token.nore"
+import types "../sema/types.nore"
+
+val NODE_FLAG_HAS_VALUE: i64 = 32
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+// The bootstrap C style uses fixed four-space indentation inside compound statements.
+func append_indent(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, depth: i64): void = {
+    mut index: i64 = 0
+    while (index < depth) {
+        append_bytes(mut ref mem, mut ref out, ref "    ")
+        index += 1
+    }
+}
+
+// Parser/sema share the block value bit, so codegen can lower trailing expressions as implicit returns.
+func block_has_value(ref nodes: node.Nodes, block_id: i64): bool = {
+    block_id >= 0 &&
+    nodes.kind[block_id] == node.NodeKind.Block &&
+    (nodes.data1[block_id] & NODE_FLAG_HAS_VALUE) != 0 &&
+    nodes.last_child[block_id] >= 0
+}
+
+// Only a small statement subset is live in the first body-emission slice.
+func append_statement(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    stmt_id: i64,
+    depth: i64
+): void = {
+    if (stmt_id < 0) {
+        return
+    }
+
+    val kind: node.NodeKind = nodes.kind[stmt_id]
+    if (kind == node.NodeKind.ReturnStmt) {
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref "return")
+        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+        if (value_id >= 0) {
+            append_bytes(mut ref mem, mut ref out, ref " ")
+            cexpr.append_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                value_id
+            )
+        }
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
+    }
+
+    if (kind == node.NodeKind.ExprStmt) {
+        append_indent(mut ref mem, mut ref out, depth)
+        cexpr.append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, stmt_id, 0)
+        )
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
+    }
+
+    assert false
+}
+
+// Function bodies reuse block lowering, treating trailing block values as implicit returns.
+pub func append_function_body(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    decl_id: i64
+): void = {
+    append_bytes(mut ref mem, mut ref out, ref "{\n")
+
+    val body_id: i64 = nodes.last_child[decl_id]
+    if (body_id >= 0) {
+        mut child_id: i64 = nodes.first_child[body_id]
+        while (child_id >= 0) {
+            if (block_has_value(ref nodes, body_id) &&
+                child_id == nodes.last_child[body_id]) {
+                append_indent(mut ref mem, mut ref out, 1)
+                if (nodes.type_id[decl_id] == types.invalid_type_id() ||
+                    types_table.kind[nodes.type_id[decl_id]] != types.TypeKind.VoidType) {
+                    append_bytes(mut ref mem, mut ref out, ref "return ")
+                }
+                cexpr.append_expr(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    child_id
+                )
+                append_bytes(mut ref mem, mut ref out, ref ";\n")
+            } else {
+                append_statement(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    child_id,
+                    1
+                )
+            }
+            child_id = nodes.next_sibling[child_id]
+        }
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}

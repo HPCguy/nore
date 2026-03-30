@@ -1,3 +1,895 @@
-// Bootstrap compiler codegen module placeholder.
-// Responsibility: emit C for expressions.
-// Implement in Milestone 8.
+// Bootstrap compiler C expression emission.
+// Responsibility: emit C for the first checked bootstrap expression subset.
+// Owns: literals, identifiers, field access, constructors, and plain call emission.
+// Does not own: statement/control-flow lowering, runtime helper bodies, or whole-file orchestration.
+
+import bbuf "../support/byte_buf.nore"
+import cdecl "c_emit_decl.nore"
+import ctypes "c_types.nore"
+import node "../frontend/node.nore"
+import source "../support/source.nore"
+import symbols "../sema/symbols.nore"
+import token "../frontend/token.nore"
+import types "../sema/types.nore"
+import string "std/string.nore"
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+// Integer fragments stay centralized so enum tags and string lengths render consistently.
+func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
+    val text: str = string.i64_to_str(mut ref mem, n)
+    append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// Local identifiers keep the short ni_ prefix because their scope stays inside one function.
+func append_local_name(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    name_token: i64
+): void = {
+    append_bytes(mut ref mem, mut ref out, ref "ni_")
+    val name_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
+    append_bytes(mut ref mem, mut ref out, ref name_text)
+}
+
+// Expression lowering needs the undereferenced storage spelling for ref arguments and field bases.
+func append_symbol_storage_name(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref symbols_table: symbols.Symbols,
+    symbol_id: i64
+): void = {
+    if (symbol_id < 0) {
+        return
+    }
+
+    val kind: symbols.SymbolKind = symbols_table.kind[symbol_id]
+    if (kind == symbols.SymbolKind.LocalSymbol ||
+        kind == symbols.SymbolKind.ParamSymbol) {
+        append_local_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            symbols_table.name_token[symbol_id]
+        )
+        return
+    }
+
+    if (kind == symbols.SymbolKind.GlobalSymbol) {
+        val name_text: str = cdecl.decl_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            symbols_table.module_id[symbol_id],
+            symbols_table.name_token[symbol_id]
+        )
+        append_bytes(mut ref mem, mut ref out, ref name_text)
+        return
+    }
+
+    if (kind == symbols.SymbolKind.FunctionSymbol) {
+        if (symbols.symbol_is_native(ref symbols_table, symbol_id)) {
+            append_local_name(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                symbols_table.name_token[symbol_id]
+            )
+        } else {
+            val name_text: str = cdecl.decl_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                symbols_table.module_id[symbol_id],
+                symbols_table.name_token[symbol_id]
+            )
+            append_bytes(mut ref mem, mut ref out, ref name_text)
+        }
+    }
+}
+
+// Plain identifiers need one shared ref-aware spelling so value and call emission stay aligned.
+func append_identifier_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    node_id: i64
+): void = {
+    val symbol_id: i64 = nodes.symbol_id[node_id]
+    if (symbol_id < 0) {
+        append_local_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            nodes.data0[node_id]
+        )
+        return
+    }
+
+    if (symbols_table.kind[symbol_id] == symbols.SymbolKind.ParamSymbol &&
+        symbols.symbol_is_ref(ref symbols_table, symbol_id)) {
+        append_bytes(mut ref mem, mut ref out, ref "(*")
+        append_symbol_storage_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref symbols_table,
+            symbol_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    append_symbol_storage_name(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref symbols_table,
+        symbol_id
+    )
+}
+
+// Ref parameters use pointer syntax when they become field-access bases.
+func expr_uses_arrow(ref nodes: node.Nodes, ref symbols_table: symbols.Symbols, node_id: i64): bool = {
+    if (node_id < 0 ||
+        nodes.kind[node_id] != node.NodeKind.Identifier ||
+        nodes.symbol_id[node_id] < 0) {
+        return false
+    }
+
+    val symbol_id: i64 = nodes.symbol_id[node_id]
+    symbols_table.kind[symbol_id] == symbols.SymbolKind.ParamSymbol &&
+    symbols.symbol_is_ref(ref symbols_table, symbol_id)
+}
+
+// Slice/string len keeps the raw C field name while record/table fields stay ni_-prefixed.
+func field_is_len(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    field_token: i64
+): bool = {
+    val field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, field_token)
+    string.str_eq(ref field_name, ref "len")
+}
+
+// Enum-variant access only applies when the left side resolved to a type symbol, never a value expression.
+func expr_is_type_path(ref nodes: node.Nodes, ref symbols_table: symbols.Symbols, node_id: i64): bool = {
+    node_id >= 0 &&
+    nodes.symbol_id[node_id] >= 0 &&
+    symbols_table.kind[nodes.symbol_id[node_id]] == symbols.SymbolKind.TypeSymbol
+}
+
+// Type-qualified field access is the only sema-valid surface form for enum variants.
+func field_access_enum_type(
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    field_access_id: i64
+): i64 = {
+    if (field_access_id < 0 || nodes.kind[field_access_id] != node.NodeKind.FieldAccess) {
+        return types.invalid_type_id()
+    }
+
+    val left_id: i64 = node.node_child_at(ref nodes, field_access_id, 0)
+    if (!expr_is_type_path(ref nodes, ref symbols_table, left_id) ||
+        nodes.type_id[left_id] < 0 ||
+        types_table.kind[nodes.type_id[left_id]] != types.TypeKind.EnumType) {
+        return types.invalid_type_id()
+    }
+
+    nodes.type_id[left_id]
+}
+
+// Bootstrap enums are small enough that a linear variant lookup keeps the emitter simple.
+func enum_find_variant(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    enum_type: i64,
+    variant_token: i64
+): i64 = {
+    if (enum_type < 0 || types_table.kind[enum_type] != types.TypeKind.EnumType) {
+        return node.invalid_node_id()
+    }
+
+    val wanted_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, variant_token)
+    val enum_decl: i64 = types_table.decl_node[enum_type]
+    mut variant_id: i64 = nodes.first_child[enum_decl]
+    while (variant_id >= 0) {
+        if (nodes.kind[variant_id] == node.NodeKind.VariantDecl) {
+            val variant_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[variant_id])
+            if (string.str_eq(ref variant_name, ref wanted_name)) {
+                return variant_id
+            }
+        }
+        variant_id = nodes.next_sibling[variant_id]
+    }
+    node.invalid_node_id()
+}
+
+// Tags follow source-order enum variant numbering so C and sema stay aligned.
+func enum_variant_tag(ref nodes: node.Nodes, ref types_table: types.Types, enum_type: i64, wanted_variant: i64): i64 = {
+    if (enum_type < 0 || types_table.kind[enum_type] != types.TypeKind.EnumType) {
+        return -1
+    }
+
+    val enum_decl: i64 = types_table.decl_node[enum_type]
+    mut tag: i64 = 0
+    mut variant_id: i64 = nodes.first_child[enum_decl]
+    while (variant_id >= 0) {
+        if (nodes.kind[variant_id] == node.NodeKind.VariantDecl) {
+            if (variant_id == wanted_variant) {
+                return tag
+            }
+            tag = tag + 1
+        }
+        variant_id = nodes.next_sibling[variant_id]
+    }
+    -1
+}
+
+// Tagged-enum detection mirrors the typedef emitter so value lowering matches the C layout.
+func enum_has_payload_variant(ref nodes: node.Nodes, ref types_table: types.Types, enum_type: i64): bool = {
+    if (enum_type < 0 || types_table.kind[enum_type] != types.TypeKind.EnumType) {
+        return false
+    }
+
+    val enum_decl: i64 = types_table.decl_node[enum_type]
+    mut variant_id: i64 = nodes.first_child[enum_decl]
+    while (variant_id >= 0) {
+        if (nodes.kind[variant_id] == node.NodeKind.VariantDecl && nodes.type_id[variant_id] >= 0) {
+            return true
+        }
+        variant_id = nodes.next_sibling[variant_id]
+    }
+    false
+}
+
+// C enum tags are always emitted as int64_t literals to match the typedefs.
+func append_enum_tag(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, tag: i64): void = {
+    append_i64(mut ref mem, mut ref out, tag)
+    append_bytes(mut ref mem, mut ref out, ref "L")
+}
+
+// String refs need the post-unescape byte length even though the raw token keeps source escapes.
+func string_literal_len(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    token_id: i64
+): i64 = {
+    val payload: [u8] = token.token_payload_text(ref sources, ref text_pool, ref tokens, token_id)
+    mut count: i64 = 0
+    mut i: i64 = 0
+    while (i < payload.len) {
+        if (payload[i] == '\\' && i + 1 < payload.len) {
+            i = i + 2
+        } else {
+            i = i + 1
+        }
+        count = count + 1
+    }
+    count
+}
+
+// Strings lower to the shared ni_str value shape so both value and ref calls can reuse one path.
+func append_string_lit_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64
+): void = {
+    val token_id: i64 = nodes.data0[node_id]
+    val literal_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, token_id)
+    append_bytes(mut ref mem, mut ref out, ref "(ni_str){.data = (uint8_t *)")
+    append_bytes(mut ref mem, mut ref out, ref literal_text)
+    append_bytes(mut ref mem, mut ref out, ref ", .len = ")
+    append_i64(mut ref mem, mut ref out, string_literal_len(ref sources, ref text_pool, ref tokens, token_id))
+    append_bytes(mut ref mem, mut ref out, ref "L}")
+}
+
+// Addressable expressions share one lvalue-like spelling path for ref arguments.
+func append_place_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val kind: node.NodeKind = nodes.kind[node_id]
+    if (kind == node.NodeKind.Identifier) {
+        val symbol_id: i64 = nodes.symbol_id[node_id]
+        if (symbol_id >= 0) {
+            append_symbol_storage_name(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref symbols_table,
+                symbol_id
+            )
+        } else {
+            append_local_name(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                nodes.data0[node_id]
+            )
+        }
+        return
+    }
+
+    if (kind == node.NodeKind.FieldAccess) {
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val is_len: bool = field_is_len(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]) &&
+            left_id >= 0 &&
+            nodes.type_id[left_id] >= 0 &&
+            (types_table.kind[nodes.type_id[left_id]] == types.TypeKind.SliceType ||
+             types_table.kind[nodes.type_id[left_id]] == types.TypeKind.StrType)
+        val field_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+
+        if (expr_uses_arrow(ref nodes, ref symbols_table, left_id)) {
+            append_symbol_storage_name(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref symbols_table,
+                nodes.symbol_id[left_id]
+            )
+            if (is_len) {
+                append_bytes(mut ref mem, mut ref out, ref "->len")
+            } else {
+                append_bytes(mut ref mem, mut ref out, ref "->ni_")
+                append_bytes(mut ref mem, mut ref out, ref field_text)
+            }
+        } else {
+            append_place_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                left_id
+            )
+            if (is_len) {
+                append_bytes(mut ref mem, mut ref out, ref ".len")
+            } else {
+                append_bytes(mut ref mem, mut ref out, ref ".ni_")
+                append_bytes(mut ref mem, mut ref out, ref field_text)
+            }
+        }
+        return
+    }
+
+    assert false
+}
+
+// Ref arguments lower to pointers, reusing an existing pointer when the source is already a ref binding.
+func append_ref_arg_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    ref_expr_id: i64
+): void = {
+    val value_id: i64 = node.node_child_at(ref nodes, ref_expr_id, 0)
+    if (value_id >= 0 &&
+        nodes.kind[value_id] == node.NodeKind.Identifier &&
+        nodes.symbol_id[value_id] >= 0 &&
+        symbols_table.kind[nodes.symbol_id[value_id]] == symbols.SymbolKind.ParamSymbol &&
+        symbols.symbol_is_ref(ref symbols_table, nodes.symbol_id[value_id])) {
+        append_symbol_storage_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref symbols_table,
+            nodes.symbol_id[value_id]
+        )
+        return
+    }
+
+    if (value_id >= 0 && nodes.kind[value_id] == node.NodeKind.StringLit) {
+        append_bytes(mut ref mem, mut ref out, ref "&(")
+        append_string_lit_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            value_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "&")
+    append_place_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        value_id
+    )
+}
+
+// Call targets use symbol resolution rather than value-expression spelling.
+func append_call_target(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    callee_id: i64
+): void = {
+    if (callee_id < 0) {
+        return
+    }
+
+    val symbol_id: i64 = nodes.symbol_id[callee_id]
+    if (symbol_id >= 0 && symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol) {
+        append_symbol_storage_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref symbols_table,
+            symbol_id
+        )
+        return
+    }
+
+    if (nodes.kind[callee_id] == node.NodeKind.Identifier) {
+        val callee_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id])
+        append_bytes(mut ref mem, mut ref out, ref callee_text)
+        return
+    }
+
+    assert false
+}
+
+// Type-qualified enum variant values lower directly to their tag or tagged-enum literal.
+func append_enum_variant_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, node_id)
+    val variant_id: i64 = enum_find_variant(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        enum_type,
+        nodes.data0[node_id]
+    )
+    val tag: i64 = enum_variant_tag(ref nodes, ref types_table, enum_type, variant_id)
+
+    if (!enum_has_payload_variant(ref nodes, ref types_table, enum_type)) {
+        append_enum_tag(mut ref mem, mut ref out, tag)
+        return
+    }
+
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        enum_type
+    )
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref "){.tag = ")
+    append_enum_tag(mut ref mem, mut ref out, tag)
+    append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Tagged-enum constructor calls reuse the same compound-literal shape as the typedef emitter.
+func append_enum_variant_call_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    val enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, callee_id)
+    val variant_id: i64 = enum_find_variant(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        enum_type,
+        nodes.data0[callee_id]
+    )
+    val tag: i64 = enum_variant_tag(ref nodes, ref types_table, enum_type, variant_id)
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        enum_type
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref "){.tag = ")
+    append_enum_tag(mut ref mem, mut ref out, tag)
+
+    if (nodes.type_id[variant_id] >= 0) {
+        val arg_id: i64 = nodes.next_sibling[callee_id]
+        val variant_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[variant_id])
+        append_bytes(mut ref mem, mut ref out, ref ", .data = {.ni_")
+        append_bytes(mut ref mem, mut ref out, ref variant_name)
+        append_bytes(mut ref mem, mut ref out, ref " = ")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            arg_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref "}")
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Constructor expressions lower to C99 compound literals with designated field initializers.
+func append_constructor_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[node_id]
+    )
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref "){")
+
+    val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    mut init_id: i64 = if (callee_id >= 0) {
+        nodes.next_sibling[callee_id]
+    } else {
+        node.invalid_node_id()
+    }
+    if (init_id < 0) {
+        append_bytes(mut ref mem, mut ref out, ref "0")
+        append_bytes(mut ref mem, mut ref out, ref "}")
+        return
+    }
+
+    mut first: bool = true
+    while (init_id >= 0) {
+        if (!first) {
+            append_bytes(mut ref mem, mut ref out, ref ", ")
+        }
+        append_bytes(mut ref mem, mut ref out, ref ".ni_")
+        val field_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[init_id])
+        append_bytes(mut ref mem, mut ref out, ref field_text)
+        append_bytes(mut ref mem, mut ref out, ref " = ")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, init_id, 0)
+        )
+        first = false
+        init_id = nodes.next_sibling[init_id]
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// The first integer-literal slice only needs stable suffixes for i64 and enum-typed values.
+func append_number_lit(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val literal_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+    append_bytes(mut ref mem, mut ref out, ref literal_text)
+    val type_id: i64 = nodes.type_id[node_id]
+    if (type_id >= 0 &&
+        (types_table.kind[type_id] == types.TypeKind.I64Type ||
+         types_table.kind[type_id] == types.TypeKind.EnumType)) {
+        append_bytes(mut ref mem, mut ref out, ref "L")
+    }
+}
+
+// Later statement/codegen layers share one expression entry point for the currently supported subset.
+pub func append_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    val kind: node.NodeKind = nodes.kind[node_id]
+    if (kind == node.NodeKind.NumberLit) {
+        append_number_lit(mut ref mem, mut ref out, ref sources, ref text_pool, ref tokens, ref nodes, ref types_table, node_id)
+        return
+    }
+    if (kind == node.NodeKind.BoolLit) {
+        if (tokens.kind[nodes.data0[node_id]] == token.TokenKind.True) {
+            append_bytes(mut ref mem, mut ref out, ref "1")
+        } else {
+            append_bytes(mut ref mem, mut ref out, ref "0")
+        }
+        return
+    }
+    if (kind == node.NodeKind.StringLit) {
+        append_string_lit_expr(mut ref mem, mut ref out, ref sources, ref text_pool, ref tokens, ref nodes, node_id)
+        return
+    }
+    if (kind == node.NodeKind.Identifier) {
+        append_identifier_expr(mut ref mem, mut ref out, ref sources, ref text_pool, ref tokens, ref nodes, ref symbols_table, node_id)
+        return
+    }
+    if (kind == node.NodeKind.FieldAccess) {
+        if (field_access_enum_type(ref nodes, ref symbols_table, ref types_table, node_id) >= 0) {
+            append_enum_variant_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                node_id
+            )
+            return
+        }
+
+        val symbol_id: i64 = nodes.symbol_id[node_id]
+        if (symbol_id >= 0 &&
+            symbols_table.kind[symbol_id] == symbols.SymbolKind.GlobalSymbol) {
+            append_symbol_storage_name(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref symbols_table,
+                symbol_id
+            )
+            return
+        }
+
+        val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val field_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        val is_len: bool = field_is_len(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]) &&
+            left_id >= 0 &&
+            nodes.type_id[left_id] >= 0 &&
+            (types_table.kind[nodes.type_id[left_id]] == types.TypeKind.SliceType ||
+             types_table.kind[nodes.type_id[left_id]] == types.TypeKind.StrType)
+
+        if (expr_uses_arrow(ref nodes, ref symbols_table, left_id)) {
+            append_symbol_storage_name(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref symbols_table,
+                nodes.symbol_id[left_id]
+            )
+            if (is_len) {
+                append_bytes(mut ref mem, mut ref out, ref "->len")
+            } else {
+                append_bytes(mut ref mem, mut ref out, ref "->ni_")
+                append_bytes(mut ref mem, mut ref out, ref field_text)
+            }
+        } else {
+            append_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                left_id
+            )
+            if (is_len) {
+                append_bytes(mut ref mem, mut ref out, ref ".len")
+            } else {
+                append_bytes(mut ref mem, mut ref out, ref ".ni_")
+                append_bytes(mut ref mem, mut ref out, ref field_text)
+            }
+        }
+        return
+    }
+    if (kind == node.NodeKind.CallExpr) {
+        val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        if (field_access_enum_type(ref nodes, ref symbols_table, ref types_table, callee_id) >= 0) {
+            append_enum_variant_call_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                node_id
+            )
+            return
+        }
+        append_call_target(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            callee_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        mut arg_id: i64 = if (callee_id >= 0) {
+            nodes.next_sibling[callee_id]
+        } else {
+            node.invalid_node_id()
+        }
+        mut first: bool = true
+        while (arg_id >= 0) {
+            if (!first) {
+                append_bytes(mut ref mem, mut ref out, ref ", ")
+            }
+            if (nodes.kind[arg_id] == node.NodeKind.RefExpr) {
+                append_ref_arg_expr(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    arg_id
+                )
+            } else {
+                append_expr(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    arg_id
+                )
+            }
+            first = false
+            arg_id = nodes.next_sibling[arg_id]
+        }
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+    if (kind == node.NodeKind.ConstructorExpr) {
+        append_constructor_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        return
+    }
+
+    assert false
+}
