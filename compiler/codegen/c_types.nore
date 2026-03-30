@@ -646,67 +646,61 @@ func emit_type_recursive(
             mut ref out,
             types_table.data0[type_id]
         )
-    } else {
-        if (kind == types.TypeKind.ValueType ||
-            kind == types.TypeKind.StructType ||
-            kind == types.TypeKind.TableRowType) {
-            val decl_id: i64 = if (kind == types.TypeKind.TableRowType) {
-                types_table.decl_node[types_table.data0[type_id]]
-            } else {
-                types_table.decl_node[type_id]
-            }
-            emit_record_deps(
-                mut ref mem,
-                ref sources,
-                ref text_pool,
-                ref tokens,
-                ref nodes,
-                mut ref types_table,
-                mut ref state,
-                mut ref out,
-                decl_id
-            )
+    } else if (kind == types.TypeKind.ValueType ||
+               kind == types.TypeKind.StructType ||
+               kind == types.TypeKind.TableRowType) {
+        val decl_id: i64 = if (kind == types.TypeKind.TableRowType) {
+            types_table.decl_node[types_table.data0[type_id]]
         } else {
-            if (kind == types.TypeKind.TableType) {
-                val decl_id: i64 = types_table.decl_node[type_id]
-                emit_record_deps(
-                    mut ref mem,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    mut ref types_table,
-                    mut ref state,
-                    mut ref out,
-                    decl_id
-                )
-                emit_table_column_deps(
-                    mut ref mem,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    mut ref types_table,
-                    mut ref state,
-                    mut ref out,
-                    decl_id
-                )
-            } else {
-                if (kind == types.TypeKind.EnumType) {
-                    emit_enum_deps(
-                        mut ref mem,
-                        ref sources,
-                        ref text_pool,
-                        ref tokens,
-                        ref nodes,
-                        mut ref types_table,
-                        mut ref state,
-                        mut ref out,
-                        types_table.decl_node[type_id]
-                    )
-                }
-            }
+            types_table.decl_node[type_id]
         }
+        emit_record_deps(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            mut ref state,
+            mut ref out,
+            decl_id
+        )
+    } else if (kind == types.TypeKind.TableType) {
+        val decl_id: i64 = types_table.decl_node[type_id]
+        emit_record_deps(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            mut ref state,
+            mut ref out,
+            decl_id
+        )
+        emit_table_column_deps(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            mut ref state,
+            mut ref out,
+            decl_id
+        )
+    } else if (kind == types.TypeKind.EnumType) {
+        emit_enum_deps(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            mut ref state,
+            mut ref out,
+            types_table.decl_node[type_id]
+        )
     }
 
     if (kind == types.TypeKind.ArrayType) {
@@ -735,19 +729,58 @@ func emit_type_recursive(
         append_bytes(mut ref mem, mut ref out, ref "]; } ")
         append_bytes(mut ref mem, mut ref out, ref name)
         append_bytes(mut ref mem, mut ref out, ref ";\n")
-    } else {
-        if (kind == types.TypeKind.SliceType) {
-            val elem_name: str = type_name(
+    } else if (kind == types.TypeKind.SliceType) {
+        val elem_name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[type_id]
+        )
+        val name: str = type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            type_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref "typedef struct { ")
+        append_bytes(mut ref mem, mut ref out, ref elem_name)
+        append_bytes(mut ref mem, mut ref out, ref " *data; int64_t len; } ")
+        append_bytes(mut ref mem, mut ref out, ref name)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+    } else if (kind == types.TypeKind.ValueType || kind == types.TypeKind.StructType) {
+        emit_record_typedef(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            type_id
+        )
+    } else if (kind == types.TypeKind.TableRowType) {
+        emit_table_row_typedef(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[type_id]
+        )
+    } else if (kind == types.TypeKind.TableType) {
+        val row_type_id: i64 = find_table_row_type(ref types_table, type_id)
+        if (row_type_id < 0 || (row_type_id < state.len && state[row_type_id] != TYPE_STATE_EMITTED)) {
+            emit_table_row_typedef(
                 mut ref mem,
-                ref sources,
-                ref text_pool,
-                ref tokens,
-                ref nodes,
-                ref types_table,
-                types_table.data0[type_id]
-            )
-            val name: str = type_name(
-                mut ref mem,
+                mut ref out,
                 ref sources,
                 ref text_pool,
                 ref tokens,
@@ -755,80 +788,31 @@ func emit_type_recursive(
                 ref types_table,
                 type_id
             )
-            append_bytes(mut ref mem, mut ref out, ref "typedef struct { ")
-            append_bytes(mut ref mem, mut ref out, ref elem_name)
-            append_bytes(mut ref mem, mut ref out, ref " *data; int64_t len; } ")
-            append_bytes(mut ref mem, mut ref out, ref name)
-            append_bytes(mut ref mem, mut ref out, ref ";\n")
-        } else {
-            if (kind == types.TypeKind.ValueType || kind == types.TypeKind.StructType) {
-                emit_record_typedef(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref types_table,
-                    type_id
-                )
-            } else {
-                if (kind == types.TypeKind.TableRowType) {
-                    emit_table_row_typedef(
-                        mut ref mem,
-                        mut ref out,
-                        ref sources,
-                        ref text_pool,
-                        ref tokens,
-                        ref nodes,
-                        ref types_table,
-                        types_table.data0[type_id]
-                    )
-                } else {
-                    if (kind == types.TypeKind.TableType) {
-                        val row_type_id: i64 = find_table_row_type(ref types_table, type_id)
-                        if (row_type_id < 0 || (row_type_id < state.len && state[row_type_id] != TYPE_STATE_EMITTED)) {
-                            emit_table_row_typedef(
-                                mut ref mem,
-                                mut ref out,
-                                ref sources,
-                                ref text_pool,
-                                ref tokens,
-                                ref nodes,
-                                ref types_table,
-                                type_id
-                            )
-                            if (row_type_id >= 0 && row_type_id < state.len) {
-                                state[row_type_id] = TYPE_STATE_EMITTED
-                            }
-                        }
-                        emit_table_typedef(
-                            mut ref mem,
-                            mut ref out,
-                            ref sources,
-                            ref text_pool,
-                            ref tokens,
-                            ref nodes,
-                            mut ref types_table,
-                            type_id
-                        )
-                    } else {
-                        if (kind == types.TypeKind.EnumType) {
-                            emit_enum_typedef(
-                                mut ref mem,
-                                mut ref out,
-                                ref sources,
-                                ref text_pool,
-                                ref tokens,
-                                ref nodes,
-                                ref types_table,
-                                type_id
-                            )
-                        }
-                    }
-                }
+            if (row_type_id >= 0 && row_type_id < state.len) {
+                state[row_type_id] = TYPE_STATE_EMITTED
             }
         }
+        emit_table_typedef(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            type_id
+        )
+    } else if (kind == types.TypeKind.EnumType) {
+        emit_enum_typedef(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            type_id
+        )
     }
 
     state[type_id] = TYPE_STATE_EMITTED

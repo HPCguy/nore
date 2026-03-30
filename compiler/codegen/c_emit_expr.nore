@@ -177,6 +177,30 @@ func field_is_len(
     string.str_eq(ref field_name, ref "len")
 }
 
+// Field access suffix shared by place-expr and value-expr paths so the arrow/dot logic stays in one place.
+func append_field_suffix(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    use_arrow: bool,
+    is_len: bool,
+    ref field_text: [u8]
+): void = {
+    if (is_len) {
+        if (use_arrow) {
+            append_bytes(mut ref mem, mut ref out, ref "->len")
+        } else {
+            append_bytes(mut ref mem, mut ref out, ref ".len")
+        }
+    } else {
+        if (use_arrow) {
+            append_bytes(mut ref mem, mut ref out, ref "->ni_")
+        } else {
+            append_bytes(mut ref mem, mut ref out, ref ".ni_")
+        }
+        append_bytes(mut ref mem, mut ref out, ref field_text)
+    }
+}
+
 // Enum-variant access only applies when the left side resolved to a type symbol, never a value expression.
 func expr_is_type_path(ref nodes: node.Nodes, ref symbols_table: symbols.Symbols, node_id: i64): bool = {
     node_id >= 0 &&
@@ -358,14 +382,15 @@ func append_place_expr(
 
     if (kind == node.NodeKind.FieldAccess) {
         val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val left_type: i64 = if (left_id >= 0) { nodes.type_id[left_id] } else { -1 }
         val is_len: bool = field_is_len(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]) &&
-            left_id >= 0 &&
-            nodes.type_id[left_id] >= 0 &&
-            (types_table.kind[nodes.type_id[left_id]] == types.TypeKind.SliceType ||
-             types_table.kind[nodes.type_id[left_id]] == types.TypeKind.StrType)
+            left_type >= 0 &&
+            (types_table.kind[left_type] == types.TypeKind.SliceType ||
+             types_table.kind[left_type] == types.TypeKind.StrType)
         val field_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        val use_arrow: bool = expr_uses_arrow(ref nodes, ref symbols_table, left_id)
 
-        if (expr_uses_arrow(ref nodes, ref symbols_table, left_id)) {
+        if (use_arrow) {
             append_symbol_storage_name(
                 mut ref mem,
                 mut ref out,
@@ -375,12 +400,6 @@ func append_place_expr(
                 ref symbols_table,
                 nodes.symbol_id[left_id]
             )
-            if (is_len) {
-                append_bytes(mut ref mem, mut ref out, ref "->len")
-            } else {
-                append_bytes(mut ref mem, mut ref out, ref "->ni_")
-                append_bytes(mut ref mem, mut ref out, ref field_text)
-            }
         } else {
             append_place_expr(
                 mut ref mem,
@@ -393,13 +412,8 @@ func append_place_expr(
                 ref types_table,
                 left_id
             )
-            if (is_len) {
-                append_bytes(mut ref mem, mut ref out, ref ".len")
-            } else {
-                append_bytes(mut ref mem, mut ref out, ref ".ni_")
-                append_bytes(mut ref mem, mut ref out, ref field_text)
-            }
         }
+        append_field_suffix(mut ref mem, mut ref out, use_arrow, is_len, ref field_text)
         return
     }
 
@@ -511,11 +525,10 @@ func append_enum_variant_expr(
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
-    ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
+    enum_type: i64,
     node_id: i64
 ): void = {
-    val enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, node_id)
     val variant_id: i64 = enum_find_variant(
         ref sources,
         ref text_pool,
@@ -558,10 +571,10 @@ func append_enum_variant_call_expr(
     ref nodes: node.Nodes,
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
+    enum_type: i64,
     node_id: i64
 ): void = {
     val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
-    val enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, callee_id)
     val variant_id: i64 = enum_find_variant(
         ref sources,
         ref text_pool,
@@ -733,7 +746,8 @@ pub func append_expr(
         return
     }
     if (kind == node.NodeKind.FieldAccess) {
-        if (field_access_enum_type(ref nodes, ref symbols_table, ref types_table, node_id) >= 0) {
+        val enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, node_id)
+        if (enum_type >= 0) {
             append_enum_variant_expr(
                 mut ref mem,
                 mut ref out,
@@ -741,8 +755,8 @@ pub func append_expr(
                 ref text_pool,
                 ref tokens,
                 ref nodes,
-                ref symbols_table,
                 ref types_table,
+                enum_type,
                 node_id
             )
             return
@@ -764,14 +778,15 @@ pub func append_expr(
         }
 
         val left_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val left_type: i64 = if (left_id >= 0) { nodes.type_id[left_id] } else { -1 }
         val field_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
         val is_len: bool = field_is_len(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]) &&
-            left_id >= 0 &&
-            nodes.type_id[left_id] >= 0 &&
-            (types_table.kind[nodes.type_id[left_id]] == types.TypeKind.SliceType ||
-             types_table.kind[nodes.type_id[left_id]] == types.TypeKind.StrType)
+            left_type >= 0 &&
+            (types_table.kind[left_type] == types.TypeKind.SliceType ||
+             types_table.kind[left_type] == types.TypeKind.StrType)
+        val use_arrow: bool = expr_uses_arrow(ref nodes, ref symbols_table, left_id)
 
-        if (expr_uses_arrow(ref nodes, ref symbols_table, left_id)) {
+        if (use_arrow) {
             append_symbol_storage_name(
                 mut ref mem,
                 mut ref out,
@@ -781,12 +796,6 @@ pub func append_expr(
                 ref symbols_table,
                 nodes.symbol_id[left_id]
             )
-            if (is_len) {
-                append_bytes(mut ref mem, mut ref out, ref "->len")
-            } else {
-                append_bytes(mut ref mem, mut ref out, ref "->ni_")
-                append_bytes(mut ref mem, mut ref out, ref field_text)
-            }
         } else {
             append_expr(
                 mut ref mem,
@@ -799,18 +808,14 @@ pub func append_expr(
                 ref types_table,
                 left_id
             )
-            if (is_len) {
-                append_bytes(mut ref mem, mut ref out, ref ".len")
-            } else {
-                append_bytes(mut ref mem, mut ref out, ref ".ni_")
-                append_bytes(mut ref mem, mut ref out, ref field_text)
-            }
         }
+        append_field_suffix(mut ref mem, mut ref out, use_arrow, is_len, ref field_text)
         return
     }
     if (kind == node.NodeKind.CallExpr) {
         val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
-        if (field_access_enum_type(ref nodes, ref symbols_table, ref types_table, callee_id) >= 0) {
+        val callee_enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, callee_id)
+        if (callee_enum_type >= 0) {
             append_enum_variant_call_expr(
                 mut ref mem,
                 mut ref out,
@@ -820,6 +825,7 @@ pub func append_expr(
                 ref nodes,
                 ref symbols_table,
                 ref types_table,
+                callee_enum_type,
                 node_id
             )
             return

@@ -19,10 +19,10 @@ func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8])
 
 // The bootstrap C style uses fixed four-space indentation inside compound statements.
 func append_indent(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, depth: i64): void = {
-    mut index: i64 = 0
-    while (index < depth) {
+    mut i: i64 = 0
+    while (i < depth) {
         append_bytes(mut ref mem, mut ref out, ref "    ")
-        index += 1
+        i += 1
     }
 }
 
