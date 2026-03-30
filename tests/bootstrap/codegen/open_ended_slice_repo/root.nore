@@ -1,0 +1,15 @@
+func get_bytes(): [u8] = {
+    "abc"[0..3]
+}
+
+func tail_bytes(): [u8] = {
+    get_bytes()[1..]
+}
+
+func full_bytes(): [u8] = {
+    get_bytes()[..]
+}
+
+func tail_name(): [u8] = {
+    "abc"[1..]
+}

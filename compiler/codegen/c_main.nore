@@ -1,10 +1,11 @@
 // Bootstrap compiler whole-file C orchestration.
 // Responsibility: assemble the current generated-C skeleton for a checked module graph.
-// Owns: section ordering for prelude, typedefs, and user-function prototypes.
+// Owns: section ordering for prelude, typedefs, helper functions, and user-function prototypes.
 // Does not own: expression lowering, statement lowering, runtime helper bodies, or CLI behavior.
 
 import bbuf "../support/byte_buf.nore"
 import cdecl "c_emit_decl.nore"
+import cexpr "c_emit_expr.nore"
 import cstmt "c_emit_stmt.nore"
 import cruntime "c_runtime.nore"
 import ctypes "c_types.nore"
@@ -31,7 +32,181 @@ func append_section(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8
     append_bytes(mut ref mem, mut ref out, ref data)
 }
 
-// The current whole-file dump is intentionally narrow: prelude first, then typedefs, then user prototypes.
+// The helper body is tiny but centralizes the single-evaluation contract for open-ended sub-slices.
+func append_slice_tail_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    source_type: i64,
+    result_type: i64
+): void = {
+    val source_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+    val result_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        result_type
+    )
+    val helper_name: str = cexpr.slice_tail_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "static inline ")
+    append_bytes(mut ref mem, mut ref out, ref result_name)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref source_name)
+    append_bytes(mut ref mem, mut ref out, ref " ni_value, int64_t ni_start) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (")
+    append_bytes(mut ref mem, mut ref out, ref result_name)
+    append_bytes(mut ref mem, mut ref out, ref "){.data = ni_value.data + ni_start, .len = (ni_value.len - ni_start)};\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Helper emission only scans the modules that will actually be lowered into the current C file.
+func collect_slice_tail_helpers(
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    node_id: i64,
+    mut ref slice_helper_results: [i64],
+    mut ref str_helper_source_type: i64,
+    mut ref str_helper_result_type: i64
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.SliceExpr &&
+        (nodes.data0[node_id] & cexpr.SLICE_FLAG_HAS_END) == 0) {
+        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val object_type: i64 = if (object_id >= 0) { nodes.type_id[object_id] } else { -1 }
+        if (object_type >= 0 && types_table.kind[object_type] == types.TypeKind.SliceType) {
+            if (object_type < slice_helper_results.len && slice_helper_results[object_type] < 0) {
+                slice_helper_results[object_type] = nodes.type_id[node_id]
+            }
+        } else if (object_type >= 0 &&
+                   types_table.kind[object_type] == types.TypeKind.StrType &&
+                   str_helper_result_type < 0) {
+            str_helper_source_type = object_type
+            str_helper_result_type = nodes.type_id[node_id]
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        collect_slice_tail_helpers(
+            ref nodes,
+            ref types_table,
+            child_id,
+            mut ref slice_helper_results,
+            mut ref str_helper_source_type,
+            mut ref str_helper_result_type
+        )
+        child_id = nodes.next_sibling[child_id]
+    }
+}
+
+// Open-ended slice helpers live beside typedefs/prototypes because they are generated support code.
+func slice_helpers_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref types_table: types.Types,
+    ref module_range: span.Range
+): [u8] = {
+    mut slice_helper_results: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
+    mut index: i64 = 0
+    while (index < slice_helper_results.len) {
+        slice_helper_results[index] = -1
+        index += 1
+    }
+
+    mut str_helper_source_type: i64 = -1
+    mut str_helper_result_type: i64 = -1
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        collect_slice_tail_helpers(
+            ref nodes,
+            ref types_table,
+            modules.root_node[module_id],
+            mut ref slice_helper_results,
+            mut ref str_helper_source_type,
+            mut ref str_helper_result_type
+        )
+        module_id += 1
+    }
+
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut wrote_any: bool = false
+    index = 0
+    while (index < slice_helper_results.len) {
+        if (slice_helper_results[index] >= 0) {
+            if (wrote_any) {
+                append_bytes(mut ref mem, mut ref out, ref "\n")
+            }
+            append_slice_tail_helper(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                index,
+                slice_helper_results[index]
+            )
+            wrote_any = true
+        }
+        index += 1
+    }
+
+    if (str_helper_result_type >= 0) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_slice_tail_helper(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            str_helper_source_type,
+            str_helper_result_type
+        )
+    }
+
+    out.data[0..out.count]
+}
+
+// Definitions still emit in module order, but now cover the broader statement/expression slice.
 func function_definitions_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -89,7 +264,7 @@ func function_definitions_dump(
     out.data[0..out.count]
 }
 
-// The current whole-file dump now assembles prelude, typedefs, user prototypes, and the first body-emission slice.
+// The current whole-file dump now assembles prelude, typedefs, user prototypes, and the broader early body-emission slice.
 pub func c_file_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -117,6 +292,18 @@ pub func c_file_dump(
         ref type_range
     )
     append_section(mut ref mem, mut ref out, ref type_defs)
+
+    val helpers: [u8] = slice_helpers_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref types_table,
+        ref module_range
+    )
+    append_section(mut ref mem, mut ref out, ref helpers)
 
     val prototypes: [u8] = cdecl.function_prototypes_dump(
         mut ref mem,

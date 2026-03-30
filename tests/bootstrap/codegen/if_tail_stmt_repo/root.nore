@@ -1,0 +1,12 @@
+func ping(): void = {
+}
+
+func f(x: bool): void = {
+    while (x) {
+        if (x) {
+            ping()
+        } else {
+            ping()
+        }
+    }
+}
