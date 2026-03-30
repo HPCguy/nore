@@ -152,6 +152,9 @@ pub func type_name(
         )
         return string.str_concat(mut ref mem, ref base_name, ref "_Row")
     }
+    if (kind == types.TypeKind.EnumType && types_table.module_id[type_id] < 0) {
+        return "ni_OS"
+    }
     if (kind == types.TypeKind.ValueType ||
         kind == types.TypeKind.StructType ||
         kind == types.TypeKind.TableType ||

@@ -30,3 +30,9 @@ func make_row(): Scores.Row = {
         ok: true
     }
 }
+
+func inspect_os(os: OS): void = {
+}
+
+func take_mem(mut ref mem: Arena): void = {
+}

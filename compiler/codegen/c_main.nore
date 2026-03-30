@@ -1,3 +1,76 @@
-// Bootstrap compiler codegen module placeholder.
-// Responsibility: orchestrate C emission for a checked module graph.
-// Implement in Milestone 8.
+// Bootstrap compiler whole-file C orchestration.
+// Responsibility: assemble the current generated-C skeleton for a checked module graph.
+// Owns: section ordering for prelude, typedefs, and user-function prototypes.
+// Does not own: expression lowering, statement lowering, runtime helper bodies, or CLI behavior.
+
+import bbuf "../support/byte_buf.nore"
+import cdecl "c_emit_decl.nore"
+import cruntime "c_runtime.nore"
+import ctypes "c_types.nore"
+import loader "../frontend/loader.nore"
+import node "../frontend/node.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import symbols "../sema/symbols.nore"
+import token "../frontend/token.nore"
+import types "../sema/types.nore"
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+// Keep section spacing centralized so later codegen slices can extend the file layout without churn.
+func append_section(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    if (data.len == 0) {
+        return
+    }
+    if (out.count > 0) {
+        append_bytes(mut ref mem, mut ref out, ref "\n")
+    }
+    append_bytes(mut ref mem, mut ref out, ref data)
+}
+
+// The current whole-file dump is intentionally narrow: prelude first, then typedefs, then user prototypes.
+pub func c_file_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    mut ref types_table: types.Types,
+    ref type_range: span.Range,
+    ref module_range: span.Range
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+
+    val prelude: [u8] = cruntime.core_prelude_dump(mut ref mem)
+    append_section(mut ref mem, mut ref out, ref prelude)
+
+    val type_defs: [u8] = ctypes.type_defs_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        mut ref types_table,
+        ref type_range
+    )
+    append_section(mut ref mem, mut ref out, ref type_defs)
+
+    val prototypes: [u8] = cdecl.function_prototypes_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        ref types_table,
+        ref module_range
+    )
+    append_section(mut ref mem, mut ref out, ref prototypes)
+
+    out.data[0..out.count]
+}

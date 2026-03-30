@@ -11,7 +11,7 @@ Current status:
 - parser bootstrap tests now cover a stable AST golden dump, targeted parser regressions, and one real compiler support module
 - import-graph bootstrap tests now cover local imports, lexical `.`/`..` path deduplication, diamond deduplication, `std/` resolution, and missing-import diagnostics
 - sema bootstrap tests now cover binding, basic subset typing, arena/table built-in typing, arena escape/reset diagnostics, table-column access, `match` arm binding plus duplicate/exhaustiveness diagnostics, shape-declaration field diagnostics, enum-payload validation, compiler-injected names, native-name diagnostics, alias/ref/constant-initializer/string-literal/equality regressions, and one real compiler support module plus one real compiler sema module and four real std modules
-- codegen bootstrap tests now cover the first committed Milestone 8 slices: stable C typedef emission for arrays, slices, values, structs, tables, table rows, and enums, plus stable user-function prototype emission with module prefixes, ref lowering, and native-declaration skipping
+- codegen bootstrap tests now cover the first committed Milestone 8 slices: stable C typedef emission for arrays, slices, values, structs, tables, table rows, and enums, stable user-function prototype emission with module prefixes, ref lowering, and native-declaration skipping, plus the first assembled whole-file C skeleton with the minimal prelude including `ni_str`, `ni_Arena`, and `ni_OS`
 - bootstrap-specific tests continue to land here as each later milestone becomes executable
 
 Planned subdirectories:

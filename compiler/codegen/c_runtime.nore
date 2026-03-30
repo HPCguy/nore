@@ -1,3 +1,25 @@
-// Bootstrap compiler codegen module placeholder.
-// Responsibility: runtime helpers required by generated C.
-// Implement in Milestone 8.
+// Bootstrap compiler C runtime/prelude emission.
+// Responsibility: emit the core C prelude required by bootstrap-generated files.
+// Owns: standard includes and builtin typedefs shared by lowered bootstrap types.
+// Does not own: bounds/cast helpers, native hook bodies, or whole-file orchestration.
+
+import bbuf "../support/byte_buf.nore"
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+// Lowered bootstrap types currently rely on stdint plus the shared ni_str / ni_Arena / ni_OS spellings.
+pub func append_core_prelude(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t len; } ni_str;\n")
+    append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t capacity; int64_t offset; } ni_Arena;\n")
+    append_bytes(mut ref mem, mut ref out, ref "typedef int64_t ni_OS;\n")
+}
+
+// Tests and c_main both need one stable entry point for the minimal generated-C prelude.
+pub func core_prelude_dump(mut ref mem: Arena): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    append_core_prelude(mut ref mem, mut ref out)
+    out.data[0..out.count]
+}

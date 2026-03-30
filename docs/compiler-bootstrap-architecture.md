@@ -169,18 +169,22 @@ Current early codegen file scope:
   later definition emitters, but not global initializers, expressions,
   statements, runtime bodies, or whole-file orchestration.
 
+- `compiler/codegen/c_runtime.nore`: emit the minimal generated-C prelude only.
+  It owns required standard includes plus builtin runtime-facing typedefs such
+  as `ni_str`, `ni_Arena`, and `ni_OS`, but not bounds/cast helpers, native
+  hook bodies, or orchestration.
+
+- `compiler/codegen/c_main.nore`: assemble the current whole-file C skeleton
+  only. It owns section ordering for prelude, typedefs, and user prototypes,
+  but not expression lowering, statement lowering, runtime helper bodies, or
+  driver behavior.
+
 Remaining placeholder file scope:
 
 - `compiler/codegen/c_emit_expr.nore`: C emission for expressions only.
 
 - `compiler/codegen/c_emit_stmt.nore`: C emission for statements and control
   flow only.
-
-- `compiler/codegen/c_runtime.nore`: runtime helper snippets required by
-  generated C only.
-
-- `compiler/codegen/c_main.nore`: codegen orchestration across checked modules
-  only.
 
 - `compiler/driver/cli.nore`: CLI parsing and stage orchestration at the driver
   boundary only. It should not absorb frontend or codegen internals.
