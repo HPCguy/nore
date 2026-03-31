@@ -80,3 +80,69 @@ func take_name(ref name: str): i64 = {
 func call_take_name(): i64 = {
     take_name(ref "hi")
 }
+
+func count_up(limit: i64): i64 = {
+    mut x: i64 = 0
+    while (x < limit) {
+        x += 1
+    }
+    x
+}
+
+func choose_count(n: i64): i64 = {
+    mut x: i64 = n
+    if (x < 2) {
+        x = x + 10
+    } else {
+        x -= 1
+    }
+    x
+}
+
+func second_byte(bytes: [u8; 4]): u8 = {
+    bytes[1]
+}
+
+func mid_bytes(bytes: [u8; 4]): [u8] = {
+    bytes[1..3]
+}
+
+func invert(ok: bool): bool = {
+    !ok
+}
+
+func narrow(n: i64): i32 = {
+    i32(n)
+}
+
+func is_newline(c: u8): bool = {
+    c == '\n'
+}
+
+func pi(): f64 = {
+    3.5
+}
+
+func break_at(limit: i64): i64 = {
+    mut x: i64 = 0
+    while (x < limit) {
+        x += 1
+        if (x == 2) {
+            break
+        }
+    }
+    x
+}
+
+func skip_first(limit: i64): i64 = {
+    mut x: i64 = 0
+    mut seen: i64 = 0
+    while (x < limit) {
+        x += 1
+        if (x == 1) {
+            continue
+        }
+        seen += 1
+    }
+    seen
+}
