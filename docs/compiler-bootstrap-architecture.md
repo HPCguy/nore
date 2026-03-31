@@ -175,19 +175,22 @@ Current early codegen file scope:
   hook bodies, or orchestration.
 
 - `compiler/codegen/c_main.nore`: assemble the current whole-file C skeleton
-  only. It owns section ordering for prelude, typedefs, user prototypes, and
-  the first function-definition slice, but not runtime helper bodies or driver
-  behavior.
+  only. It owns section ordering for prelude, typedefs, module-global
+  definitions, generated helper functions, user prototypes, and the current
+  function-definition slice, but not runtime helper bodies or driver behavior.
 
-- `compiler/codegen/c_emit_expr.nore`: emit the first checked expression slice
-  only. It owns literals, identifiers, field access, constructors, and plain
-  user-function calls, including ref-aware identifier/field lowering, but not
-  statements, control flow, globals, or helper runtimes.
+- `compiler/codegen/c_emit_expr.nore`: emit the current checked expression
+  slice only. It owns literals, unary/binary operators, casts, identifiers,
+  field/index/slice access, constructors, and plain user-function calls,
+  including ref-aware identifier/field lowering, but not statements, globals,
+  `if` / `match` expression lowering, or helper runtimes.
 
-- `compiler/codegen/c_emit_stmt.nore`: emit the first checked statement/body
-  slice only. It owns empty blocks, explicit `return`, expr statements, and
-  tail-value blocks lowered as implicit returns, but not expression spelling,
-  globals, loops, `if`, `match`, or whole-file orchestration.
+- `compiler/codegen/c_emit_stmt.nore`: emit the current checked statement/body
+  slice only. It owns blocks, local declarations, assignments, explicit
+  `return`, expr statements, tail-value blocks lowered as implicit returns, and
+  the early statement-control-flow subset (`if`, `while`, `break`,
+  `continue`), but not expression spelling, globals, `match`, or whole-file
+  orchestration.
 
 Remaining placeholder file scope:
 

@@ -1,6 +1,6 @@
 // Bootstrap compiler whole-file C orchestration.
 // Responsibility: assemble the current generated-C skeleton for a checked module graph.
-// Owns: section ordering for prelude, typedefs, helper functions, and user-function prototypes.
+// Owns: section ordering for prelude, typedefs, module globals, helper functions, and user-function prototypes.
 // Does not own: expression lowering, statement lowering, runtime helper bodies, or CLI behavior.
 
 import bbuf "../support/byte_buf.nore"
@@ -16,6 +16,13 @@ import span "../support/span.nore"
 import symbols "../sema/symbols.nore"
 import token "../frontend/token.nore"
 import types "../sema/types.nore"
+import string "std/string.nore"
+
+val GLOBAL_MUT_FLAG: i64 = 1
+val GLOBAL_TYPED_FLAG: i64 = 16
+val EMIT_STATE_UNSEEN: i64 = 0
+val EMIT_STATE_VISITING: i64 = 1
+val EMIT_STATE_EMITTED: i64 = 2
 
 func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
@@ -30,6 +37,463 @@ func append_section(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8
         append_bytes(mut ref mem, mut ref out, ref "\n")
     }
     append_bytes(mut ref mem, mut ref out, ref data)
+}
+
+// Parser and later passes share the same declaration flag bits for mutability and type annotations.
+func flag_has(flags: i64, bit: i64): bool = {
+    (flags & bit) != 0
+}
+
+// Global definitions only need mutability and initializer-child recovery from the checked declaration row.
+func decl_init_node(ref nodes: node.Nodes, decl_id: i64): i64 = {
+    if (flag_has(nodes.data1[decl_id], GLOBAL_TYPED_FLAG)) {
+        return node.node_child_at(ref nodes, decl_id, 1)
+    }
+    node.node_child_at(ref nodes, decl_id, 0)
+}
+
+// Builtin calls still spell their source name in the callee identifier child.
+func identifier_token_is(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64,
+    ref wanted: [u8]
+): bool = {
+    node_id >= 0 &&
+    nodes.kind[node_id] == node.NodeKind.Identifier &&
+    string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]), ref wanted)
+}
+
+// Arena globals still need a special lowering path until runtime init/free hooks are wired through main.
+func decl_is_arena_global_init(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    decl_id: i64
+): bool = {
+    if (decl_id < 0 || nodes.type_id[decl_id] < 0) {
+        return false
+    }
+    if (types_table.kind[nodes.type_id[decl_id]] != types.TypeKind.ArenaType) {
+        return false
+    }
+    val init_id: i64 = decl_init_node(ref nodes, decl_id)
+    if (init_id < 0 || nodes.kind[init_id] != node.NodeKind.CallExpr) {
+        return false
+    }
+    identifier_token_is(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        node.node_child_at(ref nodes, init_id, 0),
+        ref "arena"
+    )
+}
+
+// Global initializers cover a slightly broader subset than the current general expression emitter.
+func append_global_initializer_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.ArrayLit) {
+        val type_text: str = ctypes.type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            nodes.type_id[node_id]
+        )
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref "){{")
+        mut elem_id: i64 = nodes.first_child[node_id]
+        mut first: bool = true
+        while (elem_id >= 0) {
+            if (!first) {
+                append_bytes(mut ref mem, mut ref out, ref ", ")
+            }
+            append_global_initializer_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                elem_id
+            )
+            first = false
+            elem_id = nodes.next_sibling[elem_id]
+        }
+        append_bytes(mut ref mem, mut ref out, ref "}}")
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.IfStmt) {
+        val then_value: i64 = cstmt.block_value_expr(ref nodes, node.node_child_at(ref nodes, node_id, 1))
+        val else_id: i64 = node.node_child_at(ref nodes, node_id, 2)
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_global_initializer_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, node_id, 0)
+        )
+        append_bytes(mut ref mem, mut ref out, ref " ? ")
+        append_global_initializer_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            then_value
+        )
+        append_bytes(mut ref mem, mut ref out, ref " : ")
+        if (else_id >= 0 && nodes.kind[else_id] == node.NodeKind.Block) {
+            append_global_initializer_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                cstmt.block_value_expr(ref nodes, else_id)
+            )
+        } else {
+            append_global_initializer_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                else_id
+            )
+        }
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    cexpr.append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        node_id
+    )
+}
+
+// Arena globals keep a static declaration plus a separately lowered capacity constant.
+func append_arena_global_definition(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    module_id: i64,
+    decl_id: i64
+): void = {
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[decl_id]
+    )
+    val name_text: str = cdecl.decl_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        module_id,
+        nodes.data0[decl_id]
+    )
+    val init_id: i64 = decl_init_node(ref nodes, decl_id)
+
+    append_bytes(mut ref mem, mut ref out, ref "static ")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref name_text)
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+    append_bytes(mut ref mem, mut ref out, ref "static const int64_t ")
+    append_bytes(mut ref mem, mut ref out, ref name_text)
+    append_bytes(mut ref mem, mut ref out, ref "_cap = ")
+    append_global_initializer_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        node.node_child_at(ref nodes, init_id, 1)
+    )
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Bootstrap whole-file C still emits one translation unit, so globals can keep internal linkage.
+func append_global_definition(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    module_id: i64,
+    decl_id: i64
+): void = {
+    if (decl_is_arena_global_init(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            decl_id
+        )) {
+        append_arena_global_definition(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            module_id,
+            decl_id
+        )
+        return
+    }
+
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[decl_id]
+    )
+    val name_text: str = cdecl.decl_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        module_id,
+        nodes.data0[decl_id]
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "static ")
+    if (!flag_has(nodes.data1[decl_id], GLOBAL_MUT_FLAG)) {
+        append_bytes(mut ref mem, mut ref out, ref "const ")
+    }
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref name_text)
+    append_bytes(mut ref mem, mut ref out, ref " = ")
+    append_global_initializer_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        decl_init_node(ref nodes, decl_id)
+    )
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Global initializer references must emit dependency-first so later constant aliases compile as C.
+func global_dep_decl_id(ref nodes: node.Nodes, ref symbols_table: symbols.Symbols, node_id: i64): i64 = {
+    if (node_id < 0 ||
+        nodes.kind[node_id] != node.NodeKind.Identifier ||
+        nodes.symbol_id[node_id] < 0) {
+        return node.invalid_node_id()
+    }
+    val symbol_id: i64 = nodes.symbol_id[node_id]
+    if (symbols_table.kind[symbol_id] != symbols.SymbolKind.GlobalSymbol) {
+        return node.invalid_node_id()
+    }
+    val decl_id: i64 = symbols_table.decl_node[symbol_id]
+    if (decl_id < 0 || nodes.kind[decl_id] != node.NodeKind.VarDecl) {
+        return node.invalid_node_id()
+    }
+    decl_id
+}
+
+// Dependency discovery walks the initializer tree directly so ordering stays correct without a separate graph table.
+func emit_global_decl_recursive(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    decl_id: i64,
+    mut ref states: [i64],
+    mut ref dep_walk: [i64]
+): void = {
+    if (decl_id < 0 || decl_id >= states.len) {
+        return
+    }
+    if (states[decl_id] == EMIT_STATE_EMITTED || states[decl_id] == EMIT_STATE_VISITING) {
+        return
+    }
+
+    states[decl_id] = EMIT_STATE_VISITING
+    val init_id: i64 = decl_init_node(ref nodes, decl_id)
+    dep_walk[0] = init_id
+    mut dep_count: i64 = 1
+    mut dep_index: i64 = 0
+    while (dep_index < dep_count) {
+        val node_id: i64 = dep_walk[dep_index]
+        dep_index += 1
+        if (node_id < 0) {
+            continue
+        }
+        val dep_decl: i64 = global_dep_decl_id(ref nodes, ref symbols_table, node_id)
+        if (dep_decl >= 0 && dep_decl != decl_id) {
+            emit_global_decl_recursive(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref modules,
+                ref symbols_table,
+                ref types_table,
+                dep_decl,
+                mut ref states,
+                mut ref dep_walk
+            )
+        }
+
+        mut child_id: i64 = nodes.first_child[node_id]
+        while (child_id >= 0) {
+            dep_walk[dep_count] = child_id
+            dep_count += 1
+            child_id = nodes.next_sibling[child_id]
+        }
+    }
+
+    val symbol_id: i64 = nodes.symbol_id[decl_id]
+    val module_id: i64 = if (symbol_id >= 0) {
+        symbols_table.module_id[symbol_id]
+    } else {
+        0
+    }
+    append_global_definition(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        module_id,
+        decl_id
+    )
+    states[decl_id] = EMIT_STATE_EMITTED
+}
+
+// Tests and whole-file assembly both need one stable entry point for module-global definitions.
+pub func global_definitions_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    ref module_range: span.Range
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut states: [i64] = arena_alloc(mut ref mem, table_len(ref nodes))
+    mut dep_walk: [i64] = arena_alloc(mut ref mem, table_len(ref nodes))
+    mut state_id: i64 = 0
+    while (state_id < states.len) {
+        states[state_id] = EMIT_STATE_UNSEEN
+        state_id += 1
+    }
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        val root_id: i64 = modules.root_node[module_id]
+        mut decl_id: i64 = nodes.first_child[root_id]
+        while (decl_id >= 0) {
+            if (nodes.kind[decl_id] == node.NodeKind.VarDecl) {
+                emit_global_decl_recursive(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref modules,
+                    ref symbols_table,
+                    ref types_table,
+                    decl_id,
+                    mut ref states,
+                    mut ref dep_walk
+                )
+            }
+            decl_id = nodes.next_sibling[decl_id]
+        }
+        module_id += 1
+    }
+
+    out.data[0..out.count]
 }
 
 // The helper body is tiny but centralizes the single-evaluation contract for open-ended sub-slices.
@@ -264,7 +728,7 @@ func function_definitions_dump(
     out.data[0..out.count]
 }
 
-// The current whole-file dump now assembles prelude, typedefs, user prototypes, and the broader early body-emission slice.
+// The current whole-file dump now assembles prelude, typedefs, module globals, user prototypes, and the broader early body-emission slice.
 pub func c_file_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -292,6 +756,19 @@ pub func c_file_dump(
         ref type_range
     )
     append_section(mut ref mem, mut ref out, ref type_defs)
+
+    val globals: [u8] = global_definitions_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        ref types_table,
+        ref module_range
+    )
+    append_section(mut ref mem, mut ref out, ref globals)
 
     val helpers: [u8] = slice_helpers_dump(
         mut ref mem,

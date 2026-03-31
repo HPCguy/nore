@@ -524,11 +524,19 @@ Started in `compiler/codegen/c_types.nore`, `compiler/codegen/c_emit_decl.nore`,
 `tests/bootstrap/codegen/`. The current committed slice lowers sema types to
 stable C names, emits typedefs for arrays, slices, values, structs, tables,
 table rows, and enums, emits stable user-function prototypes in module order
-with ref-parameter pointer lowering, and now assembles the first whole-file C
+with ref-parameter pointer lowering, emits stable module-prefixed C definitions
+for the first top-level global slice (`val` / `mut` bindings with currently
+supported initializer expressions), and now assembles the first whole-file C
 file with a minimal core prelude (`stdint.h`, `ni_str`, `ni_Arena`, `ni_OS`)
-plus the first function-body subset: empty bodies, explicit returns, tail-value
-blocks, literals, identifiers, field access, constructors, and same-translation
-unit user-function calls.
+plus a broader early function-body subset: empty bodies, explicit returns,
+tail-value blocks, local declarations, assignments, literals, unary/binary/cast
+expressions, field/index/slice access, constructors, same-translation-unit
+user-function calls, and statement-form `if` / `while` with `break` /
+`continue`. Dedicated smoke tests now prove one real compiler support module
+(`compiler/support/byte_buf.nore`) lowers through the current whole-file slice
+without asserting and one real compiler parser module exposes stable emitted
+global definitions even before later body-expression gaps like `match` are
+closed.
 
 ### Gaps to close before starting
 

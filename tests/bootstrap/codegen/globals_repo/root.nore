@@ -1,0 +1,18 @@
+val HEAD = TAIL
+
+val TAIL = 2
+
+val DATA: [i64; 2] = [TAIL, TAIL + 1]
+
+mut mem: Arena = arena(TAIL + 2)
+
+mut total: i64 = 0
+
+func add_head(): i64 = {
+    total += DATA[0]
+    total
+}
+
+func second_item(): i64 = {
+    DATA[1]
+}
