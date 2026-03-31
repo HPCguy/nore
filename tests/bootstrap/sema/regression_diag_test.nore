@@ -44,7 +44,7 @@ func count_diag_code(
     count
 }
 
-// Prove bare module aliases, invalid refs, untyped runtime locals, runtime globals, mutable string literals, and invalid equality stay rejected.
+// Prove bare module aliases, invalid refs, untyped runtime locals, runtime globals, mutable string literals, and non-bool invalid equality stay rejected.
 func main(): void = {
     mut mem: Arena = arena(8388608)
     mut sources: source.Sources = table_alloc(mut ref mem, 8)
@@ -93,13 +93,13 @@ func main(): void = {
         mut ref diag_pool
     )
 
-    assert checked.diags.count >= 10
+    assert checked.diags.count >= 9
     assert has_diag_code(ref diags, ref diag_pool, ref "S002")
     assert has_diag_code(ref diags, ref diag_pool, ref "S020")
     assert has_diag_code(ref diags, ref diag_pool, ref "S039")
     assert has_diag_code(ref diags, ref diag_pool, ref "S041")
     assert has_diag_code(ref diags, ref diag_pool, ref "S042")
     assert has_diag_code(ref diags, ref diag_pool, ref "S057")
-    assert count_diag_code(ref diags, ref diag_pool, ref "S006") >= 3
+    assert count_diag_code(ref diags, ref diag_pool, ref "S006") >= 2
     assert count_diag_code(ref diags, ref diag_pool, ref "S054") >= 2
 }

@@ -244,8 +244,8 @@ func native_param_matches(
     val has_mut: bool = decl_is_mut(ref nodes, param_id)
     param_id >= 0 &&
     nodes.type_id[param_id] == wanted_type &&
-    ((wants_ref && has_ref) || (!wants_ref && !has_ref)) &&
-    ((wants_mut && has_mut) || (!wants_mut && !has_mut))
+    wants_ref == has_ref &&
+    wants_mut == has_mut
 }
 
 // One shared message keeps native-signature diagnostics stable across all builtin hooks.
@@ -6747,7 +6747,7 @@ func check_expr(
 
             if (op_kind == token.TokenKind.EqualEqual || op_kind == token.TokenKind.BangEqual) {
                 if (left_is_enum || right_is_enum) {
-                    if (!(left_is_enum && right_is_enum)) {
+                    if (left_is_enum != right_is_enum) {
                         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S006", ref "Type mismatch")
                     } else {
                         if (nodes.type_id[left_id] != nodes.type_id[right_id]) {
@@ -6760,6 +6760,13 @@ func check_expr(
                             }
                         }
                     }
+                    return
+                }
+
+                // Bool equality follows stage-0 semantics; ordering stays numeric-only.
+                if (type_is_bool_builtin(ref types_table, nodes.type_id[left_id]) &&
+                    type_is_bool_builtin(ref types_table, nodes.type_id[right_id])) {
+                    nodes.type_id[node_id] = builtins.bool_type
                     return
                 }
 

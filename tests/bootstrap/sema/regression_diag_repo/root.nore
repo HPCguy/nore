@@ -13,7 +13,7 @@ func main(): void = {
     val alias_value = helper
     val local_runtime = helper.runtime()
     mut local_text: str = "hello"
-    val bad_bool_eq: bool = true == false
+    val good_bool_eq: bool = true == false
     val bad_str_eq: bool = "a" == "b"
     val bad_pair_eq: bool = helper.make_pair() == helper.make_pair()
     val point: helper.Point = helper.Point { x: 7 }
