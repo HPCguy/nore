@@ -187,10 +187,11 @@ Current early codegen file scope:
 
 - `compiler/codegen/c_emit_stmt.nore`: emit the current checked statement/body
   slice only. It owns blocks, local declarations, assignments, explicit
-  `return`, expr statements, tail-value blocks lowered as implicit returns, and
-  the early statement-control-flow subset (`if`, `while`, `break`,
-  `continue`), but not expression spelling, globals, `match`, or whole-file
-  orchestration.
+  `return`, expr statements, tail-value blocks lowered as implicit returns or
+  local assignments, and the early statement-control-flow subset (`if`,
+  `match`, `while`, `break`, `continue`), including value-position `if` /
+  `match` lowered through statement codegen, but not general expression
+  spelling, globals, or whole-file orchestration.
 
 Remaining placeholder file scope:
 

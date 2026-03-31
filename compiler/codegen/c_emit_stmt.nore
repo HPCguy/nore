@@ -1,6 +1,6 @@
 // Bootstrap compiler C statement emission.
 // Responsibility: emit the broader checked statement/body subset used by early compiler modules.
-// Owns: blocks, local declarations, assignments, loops, and statement control-flow lowering.
+// Owns: blocks, local declarations, assignments, loops, match lowering, and value-position control-flow lowered as statements.
 // Does not own: declaration signatures, runtime bodies, or whole-file orchestration.
 
 import bbuf "../support/byte_buf.nore"
@@ -11,11 +11,15 @@ import source "../support/source.nore"
 import symbols "../sema/symbols.nore"
 import token "../frontend/token.nore"
 import types "../sema/types.nore"
+import string "std/string.nore"
 
 val DECL_FLAG_HAS_TYPE: i64 = 16
 val NODE_FLAG_HAS_VALUE: i64 = 32
 val TAIL_MODE_STATEMENT: i64 = 0
 val TAIL_MODE_RETURN: i64 = 1
+val TAIL_MODE_ASSIGN_LOCAL: i64 = 2
+val TAIL_MODE_ASSIGN_TEMP: i64 = 3
+val STMT_MATCH_PATTERN_CATCH_ALL_ID: i64 = -6
 
 func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
@@ -33,6 +37,12 @@ func append_indent(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, depth: i64): v
 // Parser and codegen share a tiny bit-test helper for block/value metadata.
 func flag_has(flags: i64, bit: i64): bool = {
     (flags & bit) != 0
+}
+
+// Integer fragments stay centralized so generated temp names remain stable across tests.
+func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
+    val text: str = string.i64_to_str(mut ref mem, n)
+    append_bytes(mut ref mem, mut ref out, ref text)
 }
 
 // Range-for lowers the snapped upper bound as a sibling declarator in the same C for-init.
@@ -64,14 +74,73 @@ func block_has_value(ref nodes: node.Nodes, block_id: i64): bool = {
 }
 
 // The last child is the block value whenever the parser marked the block that way.
-func block_value_expr(ref nodes: node.Nodes, block_id: i64): i64 = {
+pub func block_value_expr(ref nodes: node.Nodes, block_id: i64): i64 = {
     if (block_has_value(ref nodes, block_id)) {
         return nodes.last_child[block_id]
     }
     node.invalid_node_id()
 }
 
-// Expression statements and discarded block-tail values share one small spelling path.
+// Value-position control flow still needs statement lowering because C has no direct if/match expression form.
+func tail_is_control_stmt(ref nodes: node.Nodes, node_id: i64): bool = {
+    node_id >= 0 &&
+    (nodes.kind[node_id] == node.NodeKind.IfStmt ||
+     nodes.kind[node_id] == node.NodeKind.MatchExpr)
+}
+
+// Unified dispatch for value-position if/match, used by local-decl, tail-value, and return lowering.
+func dispatch_control_stmt(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64,
+    depth: i64,
+    tail_mode: i64,
+    func_return_type: i64,
+    tail_assign_name_token: i64
+): void = {
+    if (nodes.kind[node_id] == node.NodeKind.IfStmt) {
+        append_if_stmt(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id,
+            depth,
+            tail_mode,
+            func_return_type,
+            tail_assign_name_token,
+            true
+        )
+    } else {
+        append_match_stmt(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id,
+            depth,
+            tail_mode,
+            func_return_type,
+            tail_assign_name_token
+        )
+    }
+}
+
+// Plain expression statements keep the direct spelling used by existing statement codegen.
 func append_expr_statement(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
@@ -97,6 +166,35 @@ func append_expr_statement(
         expr_id
     )
     append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Discarded tail values still need one side-effect-preserving spelling that avoids -Wunused-value.
+func append_discard_expr_statement(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    expr_id: i64,
+    depth: i64
+): void = {
+    append_indent(mut ref mem, mut ref out, depth)
+    append_bytes(mut ref mem, mut ref out, ref "(void)(")
+    cexpr.append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        expr_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ");\n")
 }
 
 // Equality conditions need exactly one wrapping pair to avoid clang's extraneous-parens warning.
@@ -168,14 +266,113 @@ func append_condition_expr(
     append_bytes(mut ref mem, mut ref out, ref ")")
 }
 
-// Trailing `if` values inside statement bodies still need statement lowering, not expression lowering.
-func block_tail_emits_as_statement(tail_mode: i64, ref nodes: node.Nodes, node_id: i64): bool = {
-    tail_mode == TAIL_MODE_STATEMENT &&
-    node_id >= 0 &&
-    nodes.kind[node_id] == node.NodeKind.IfStmt
+// Match patterns reuse binary `|` nodes, so codegen only needs a narrow recognizer here.
+func match_pattern_is_or(ref tokens: token.Tokens, ref nodes: node.Nodes, pattern_id: i64): bool = {
+    pattern_id >= 0 &&
+    nodes.kind[pattern_id] == node.NodeKind.BinaryExpr &&
+    tokens.kind[nodes.data0[pattern_id]] == token.TokenKind.Pipe
 }
 
-// Local declarations lower directly to one C local plus the checked initializer expression.
+// Sema marks both `else` and `_` with the same sentinel, so codegen only needs one catch-all check.
+func match_pattern_is_catch_all(ref nodes: node.Nodes, pattern_id: i64): bool = {
+    pattern_id >= 0 && nodes.data2[pattern_id] == STMT_MATCH_PATTERN_CATCH_ALL_ID
+}
+
+
+// Match scrutinees are evaluated once and rebound to a node-id-derived temp so arm conditions stay stable.
+func append_match_temp_name(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, match_id: i64): void = {
+    append_bytes(mut ref mem, mut ref out, ref "ni_match_")
+    append_i64(mut ref mem, mut ref out, match_id)
+}
+
+// Control-flow initializers store into a synthetic temp so inner shadowing never captures the outer local.
+func append_value_temp_name(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, owner_id: i64): void = {
+    append_bytes(mut ref mem, mut ref out, ref "ni_value_")
+    append_i64(mut ref mem, mut ref out, owner_id)
+}
+
+// Enum/scalar pattern conditions recurse over `|` groups so arm bodies never duplicate scrutinee evaluation.
+func append_match_condition(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    match_id: i64,
+    pattern_id: i64
+): void = {
+    if (match_pattern_is_or(ref tokens, ref nodes, pattern_id)) {
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_match_condition(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            match_id,
+            node.node_child_at(ref nodes, pattern_id, 0)
+        )
+        append_bytes(mut ref mem, mut ref out, ref " || ")
+        append_match_condition(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            match_id,
+            node.node_child_at(ref nodes, pattern_id, 1)
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    if (match_pattern_is_catch_all(ref nodes, pattern_id)) {
+        append_bytes(mut ref mem, mut ref out, ref "1")
+        return
+    }
+
+    if (nodes.type_id[pattern_id] >= 0 &&
+        types_table.kind[nodes.type_id[pattern_id]] == types.TypeKind.EnumType) {
+        val enum_type: i64 = nodes.type_id[pattern_id]
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_match_temp_name(mut ref mem, mut ref out, match_id)
+        if (cexpr.enum_has_payload_variant(ref nodes, ref types_table, enum_type)) {
+            append_bytes(mut ref mem, mut ref out, ref ".tag == ")
+        } else {
+            append_bytes(mut ref mem, mut ref out, ref " == ")
+        }
+        append_i64(mut ref mem, mut ref out, cexpr.enum_variant_tag(ref nodes, ref types_table, enum_type, nodes.data2[pattern_id]))
+        append_bytes(mut ref mem, mut ref out, ref "L)")
+        return
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_match_temp_name(mut ref mem, mut ref out, match_id)
+    append_bytes(mut ref mem, mut ref out, ref " == ")
+    cexpr.append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        pattern_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ")")
+}
+
+// Local declarations lower directly, but control-flow initializers first fill a temp so shadowed branch locals stay correct.
 func append_local_decl(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
@@ -201,6 +398,44 @@ func append_local_decl(
         node.node_child_at(ref nodes, decl_id, 1)
     } else {
         node.node_child_at(ref nodes, decl_id, 0)
+    }
+
+    if (tail_is_control_stmt(ref nodes, init_id)) {
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref " ")
+        append_value_temp_name(mut ref mem, mut ref out, decl_id)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        dispatch_control_stmt(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            init_id,
+            depth,
+            TAIL_MODE_ASSIGN_TEMP,
+            nodes.type_id[decl_id],
+            decl_id
+        )
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref " ")
+        cexpr.append_local_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            nodes.data0[decl_id]
+        )
+        append_bytes(mut ref mem, mut ref out, ref " = ")
+        append_value_temp_name(mut ref mem, mut ref out, decl_id)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
     }
 
     append_indent(mut ref mem, mut ref out, depth)
@@ -288,57 +523,28 @@ func append_block_contents(
     block_id: i64,
     depth: i64,
     tail_mode: i64,
-    func_return_type: i64
+    func_return_type: i64,
+    tail_assign_name_token: i64
 ): void = {
     mut child_id: i64 = nodes.first_child[block_id]
     val value_id: i64 = block_value_expr(ref nodes, block_id)
     while (child_id >= 0) {
         if (child_id == value_id) {
-            if (tail_mode == TAIL_MODE_RETURN &&
-                func_return_type >= 0 &&
-                types_table.kind[func_return_type] != types.TypeKind.VoidType) {
-                append_indent(mut ref mem, mut ref out, depth)
-                append_bytes(mut ref mem, mut ref out, ref "return ")
-                cexpr.append_expr(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref symbols_table,
-                    ref types_table,
-                    child_id
-                )
-                append_bytes(mut ref mem, mut ref out, ref ";\n")
-            } else if (block_tail_emits_as_statement(tail_mode, ref nodes, child_id)) {
-                append_statement(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref symbols_table,
-                    ref types_table,
-                    child_id,
-                    depth,
-                    func_return_type
-                )
-            } else {
-                append_expr_statement(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref symbols_table,
-                    ref types_table,
-                    child_id,
-                    depth
-                )
-            }
+            append_tail_value(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                child_id,
+                depth,
+                tail_mode,
+                func_return_type,
+                tail_assign_name_token
+            )
         } else {
             append_statement(
                 mut ref mem,
@@ -370,7 +576,9 @@ func append_braced_block(
     ref types_table: types.Types,
     block_id: i64,
     depth: i64,
-    func_return_type: i64
+    tail_mode: i64,
+    func_return_type: i64,
+    tail_assign_name_token: i64
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "{\n")
     append_block_contents(
@@ -384,11 +592,365 @@ func append_braced_block(
         ref types_table,
         block_id,
         depth + 1,
-        TAIL_MODE_STATEMENT,
-        func_return_type
+        tail_mode,
+        func_return_type,
+        tail_assign_name_token
     )
     append_indent(mut ref mem, mut ref out, depth)
     append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Tail assignment targets can be either the user local or a synthetic temp for control-flow initializers.
+func append_tail_assign_target(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    tail_mode: i64,
+    tail_assign_id: i64
+): void = {
+    if (tail_mode == TAIL_MODE_ASSIGN_LOCAL && tail_assign_id >= 0) {
+        cexpr.append_local_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            tail_assign_id
+        )
+        return
+    }
+
+    if (tail_mode == TAIL_MODE_ASSIGN_TEMP && tail_assign_id >= 0) {
+        append_value_temp_name(mut ref mem, mut ref out, tail_assign_id)
+    }
+}
+
+// Tail positions are the only places where value-form control flow needs special lowering.
+func append_tail_value(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64,
+    depth: i64,
+    tail_mode: i64,
+    func_return_type: i64,
+    tail_assign_name_token: i64
+): void = {
+    if (tail_is_control_stmt(ref nodes, node_id)) {
+        dispatch_control_stmt(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id,
+            depth,
+            tail_mode,
+            func_return_type,
+            tail_assign_name_token
+        )
+        return
+    }
+
+    if (tail_mode == TAIL_MODE_RETURN &&
+        func_return_type >= 0 &&
+        types_table.kind[func_return_type] != types.TypeKind.VoidType) {
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref "return ")
+        cexpr.append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
+    }
+
+    if ((tail_mode == TAIL_MODE_ASSIGN_LOCAL || tail_mode == TAIL_MODE_ASSIGN_TEMP) &&
+        tail_assign_name_token >= 0) {
+        append_indent(mut ref mem, mut ref out, depth)
+        append_tail_assign_target(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            tail_mode,
+            tail_assign_name_token
+        )
+        append_bytes(mut ref mem, mut ref out, ref " = ")
+        cexpr.append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
+    }
+
+    append_discard_expr_statement(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        node_id,
+        depth
+    )
+}
+
+// Tagged-enum payload bindings lower to a block-local copy from the already-tested match temp.
+func append_match_payload_binding(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    match_id: i64,
+    pattern_id: i64,
+    depth: i64
+): void = {
+    if (pattern_id < 0 || nodes.kind[pattern_id] != node.NodeKind.CallExpr) {
+        return
+    }
+
+    val binding_id: i64 = node.node_child_at(ref nodes, pattern_id, 1)
+    if (binding_id < 0 ||
+        nodes.kind[binding_id] != node.NodeKind.Identifier ||
+        nodes.symbol_id[binding_id] < 0 ||
+        nodes.type_id[binding_id] < 0) {
+        return
+    }
+
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[binding_id]
+    )
+    val variant_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[nodes.data2[pattern_id]])
+    append_indent(mut ref mem, mut ref out, depth)
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    cexpr.append_local_name(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        nodes.data0[binding_id]
+    )
+    append_bytes(mut ref mem, mut ref out, ref " = ")
+    append_match_temp_name(mut ref mem, mut ref out, match_id)
+    append_bytes(mut ref mem, mut ref out, ref ".data.ni_")
+    append_bytes(mut ref mem, mut ref out, ref variant_name)
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Match arm bodies reuse the normal block walker, with an optional payload binding prepended for tagged enums.
+func append_match_arm_block(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    match_id: i64,
+    pattern_id: i64,
+    body_id: i64,
+    depth: i64,
+    tail_mode: i64,
+    func_return_type: i64,
+    tail_assign_name_token: i64
+): void = {
+    append_bytes(mut ref mem, mut ref out, ref "{\n")
+    append_match_payload_binding(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        match_id,
+        pattern_id,
+        depth + 1
+    )
+    append_block_contents(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        body_id,
+        depth + 1,
+        tail_mode,
+        func_return_type,
+        tail_assign_name_token
+    )
+    append_indent(mut ref mem, mut ref out, depth)
+    append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Match lowering stays in statement codegen so value-position matches can reuse return and assignment tails.
+func append_match_stmt(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    stmt_id: i64,
+    depth: i64,
+    tail_mode: i64,
+    func_return_type: i64,
+    tail_assign_name_token: i64
+): void = {
+    val scrutinee_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+    val scrutinee_type: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[scrutinee_id]
+    )
+
+    append_indent(mut ref mem, mut ref out, depth)
+    append_bytes(mut ref mem, mut ref out, ref scrutinee_type)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_match_temp_name(mut ref mem, mut ref out, stmt_id)
+    append_bytes(mut ref mem, mut ref out, ref " = ")
+    cexpr.append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        scrutinee_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+
+    mut arm_id: i64 = nodes.next_sibling[scrutinee_id]
+    mut wrote_any: bool = false
+    while (arm_id >= 0) {
+        val pattern_id: i64 = node.node_child_at(ref nodes, arm_id, 0)
+        val body_id: i64 = node.node_child_at(ref nodes, arm_id, 1)
+        val catch_all: bool = match_pattern_is_catch_all(ref nodes, pattern_id)
+
+        if (!wrote_any) {
+            append_indent(mut ref mem, mut ref out, depth)
+            if (!catch_all) {
+                append_bytes(mut ref mem, mut ref out, ref "if ")
+                append_match_condition(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    stmt_id,
+                    pattern_id
+                )
+                append_bytes(mut ref mem, mut ref out, ref " ")
+            }
+        } else {
+            if (catch_all) {
+                append_bytes(mut ref mem, mut ref out, ref " else ")
+            } else {
+                append_bytes(mut ref mem, mut ref out, ref " else if ")
+                append_match_condition(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
+                    stmt_id,
+                    pattern_id
+                )
+                append_bytes(mut ref mem, mut ref out, ref " ")
+            }
+        }
+
+        append_match_arm_block(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            stmt_id,
+            pattern_id,
+            body_id,
+            depth,
+            tail_mode,
+            func_return_type,
+            tail_assign_name_token
+        )
+
+        wrote_any = true
+        if (catch_all) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+            return
+        }
+        arm_id = nodes.next_sibling[arm_id]
+    }
+
+    if (wrote_any) {
+        append_bytes(mut ref mem, mut ref out, ref " else {\n")
+        append_indent(mut ref mem, mut ref out, depth + 1)
+        append_bytes(mut ref mem, mut ref out, ref "__builtin_unreachable();\n")
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref "}\n")
+    }
 }
 
 // Statement-form `if` lowering reuses the same node as expression-form `if`, so the else arm may recurse.
@@ -403,7 +965,9 @@ func append_if_stmt(
     ref types_table: types.Types,
     stmt_id: i64,
     depth: i64,
+    tail_mode: i64,
     func_return_type: i64,
+    tail_assign_name_token: i64,
     leading_indent: bool
 ): void = {
     val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
@@ -437,7 +1001,9 @@ func append_if_stmt(
         ref types_table,
         then_id,
         depth,
-        func_return_type
+        tail_mode,
+        func_return_type,
+        tail_assign_name_token
     )
 
     if (else_id >= 0) {
@@ -454,7 +1020,9 @@ func append_if_stmt(
                 ref types_table,
                 else_id,
                 depth,
-                func_return_type
+                tail_mode,
+                func_return_type,
+                tail_assign_name_token
             )
             append_bytes(mut ref mem, mut ref out, ref "\n")
         } else {
@@ -469,7 +1037,9 @@ func append_if_stmt(
                 ref types_table,
                 else_id,
                 depth,
+                tail_mode,
                 func_return_type,
+                tail_assign_name_token,
                 false
             )
         }
@@ -518,7 +1088,9 @@ func append_while_stmt(
         ref types_table,
         node.node_child_at(ref nodes, stmt_id, 1),
         depth,
-        func_return_type
+        TAIL_MODE_STATEMENT,
+        func_return_type,
+        -1
     )
     append_bytes(mut ref mem, mut ref out, ref "\n")
 }
@@ -623,7 +1195,9 @@ func append_for_stmt(
         ref types_table,
         body_id,
         depth,
-        func_return_type
+        TAIL_MODE_STATEMENT,
+        func_return_type,
+        -1
     )
     append_bytes(mut ref mem, mut ref out, ref "\n")
 }
@@ -676,16 +1250,37 @@ func append_statement(
             ref types_table,
             stmt_id,
             depth,
-            func_return_type
+            TAIL_MODE_STATEMENT,
+            func_return_type,
+            -1
         )
         append_bytes(mut ref mem, mut ref out, ref "\n")
         return
     }
 
     if (kind == node.NodeKind.ReturnStmt) {
+        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+        if (value_id >= 0 && tail_is_control_stmt(ref nodes, value_id)) {
+            dispatch_control_stmt(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                value_id,
+                depth,
+                TAIL_MODE_RETURN,
+                func_return_type,
+                -1
+            )
+            return
+        }
+
         append_indent(mut ref mem, mut ref out, depth)
         append_bytes(mut ref mem, mut ref out, ref "return")
-        val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
         if (value_id >= 0) {
             append_bytes(mut ref mem, mut ref out, ref " ")
             cexpr.append_expr(
@@ -716,8 +1311,29 @@ func append_statement(
             ref types_table,
             stmt_id,
             depth,
+            TAIL_MODE_STATEMENT,
             func_return_type,
+            -1,
             true
+        )
+        return
+    }
+
+    if (kind == node.NodeKind.MatchExpr) {
+        append_match_stmt(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            stmt_id,
+            depth,
+            TAIL_MODE_STATEMENT,
+            func_return_type,
+            -1
         )
         return
     }
@@ -831,7 +1447,8 @@ pub func append_function_body(
             body_id,
             1,
             TAIL_MODE_RETURN,
-            nodes.type_id[decl_id]
+            nodes.type_id[decl_id],
+            -1
         )
     }
 

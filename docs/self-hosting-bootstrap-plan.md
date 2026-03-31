@@ -531,12 +531,13 @@ file with a minimal core prelude (`stdint.h`, `ni_str`, `ni_Arena`, `ni_OS`)
 plus a broader early function-body subset: empty bodies, explicit returns,
 tail-value blocks, local declarations, assignments, literals, unary/binary/cast
 expressions, field/index/slice access, constructors, same-translation-unit
-user-function calls, and statement-form `if` / `while` with `break` /
-`continue`. Dedicated smoke tests now prove one real compiler support module
-(`compiler/support/byte_buf.nore`) lowers through the current whole-file slice
-without asserting and one real compiler parser module exposes stable emitted
-global definitions even before later body-expression gaps like `match` are
-closed.
+user-function calls, statement-form `if` / `match` / `while` with `break` /
+`continue`, and value-position `if` / `match` lowered through statement codegen
+for returns and local initializers. Dedicated smoke tests now prove one real
+compiler support module (`compiler/support/byte_buf.nore`), one real compiler
+frontend module (`compiler/frontend/node.nore`), and one real compiler parser
+module globals slice lower through the current whole-file codegen without
+asserting.
 
 ### Gaps to close before starting
 

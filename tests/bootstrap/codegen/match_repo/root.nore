@@ -1,0 +1,57 @@
+enum Option { Some(i64), None }
+
+func unwrap(opt: Option): i64 = {
+    match (opt) {
+        Some(n) = { n }
+        None = { 0 }
+    }
+}
+
+func sum_if_some(opt: Option): i64 = {
+    mut out: i64 = 0
+    match (opt) {
+        Some(n) = { out = n }
+        None = { out = -1 }
+    }
+    out
+}
+
+func choose(flag: bool): i64 = {
+    val picked: i64 = match (flag) {
+        true = { 1 }
+        false = { 0 }
+    }
+    picked
+}
+
+func choose_if_shadow(flag: bool): i64 = {
+    val picked: i64 = if (flag) {
+        val picked: i64 = 1
+        picked
+    } else {
+        0
+    }
+    picked
+}
+
+func choose_payload_shadow(opt: Option): i64 = {
+    val n: i64 = match (opt) {
+        Some(n) = { n }
+        None = { 0 }
+    }
+    n
+}
+
+func discard_match_value(opt: Option): void = {
+    match (opt) {
+        Some(n) = { n }
+        None = { 0 }
+    }
+}
+
+func classify(c: u8): i64 = {
+    match (c) {
+        'a' | 'b' = { 1 }
+        else = { 0 }
+    }
+}
