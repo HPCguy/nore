@@ -232,6 +232,105 @@ func native_builtin_name_known(
     token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "args")
 }
 
+// Native hook signatures are fixed by the stage-0 runtime boundary and must stay consistent across modules.
+func native_param_matches(
+    ref nodes: node.Nodes,
+    param_id: i64,
+    wanted_type: i64,
+    wants_ref: bool,
+    wants_mut: bool
+): bool = {
+    val has_ref: bool = decl_is_ref(ref nodes, param_id)
+    val has_mut: bool = decl_is_mut(ref nodes, param_id)
+    param_id >= 0 &&
+    nodes.type_id[param_id] == wanted_type &&
+    ((wants_ref && has_ref) || (!wants_ref && !has_ref)) &&
+    ((wants_mut && has_mut) || (!wants_mut && !has_mut))
+}
+
+// One shared message keeps native-signature diagnostics stable across all builtin hooks.
+func native_signature_message(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    name_token: i64
+): str = {
+    val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
+    message_named(mut ref mem, ref "Native function '", ref name, ref "' must use the compiler-provided signature")
+}
+
+// Known native names still need one exact signature contract so multi-module graphs lower to one C hook declaration.
+func check_native_decl_signature(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    decl_id: i64
+): bool = {
+    val name_token: i64 = nodes.data0[decl_id]
+    if (!native_builtin_name_known(ref sources, ref text_pool, ref tokens, name_token)) {
+        return false
+    }
+
+    val byte_slice_type: i64 = types.type_slice(mut ref types_table, builtins.u8_type)
+    val str_slice_type: i64 = types.type_slice(mut ref types_table, builtins.str_type)
+    val param_count: i64 = nodes.data2[decl_id]
+    val return_type: i64 = nodes.type_id[decl_id]
+    mut valid: bool = false
+
+    if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write")) {
+        valid = param_count == 2 &&
+            return_type == builtins.i64_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.i32_type, false, false) &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 1), byte_slice_type, true, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read")) {
+        valid = param_count == 2 &&
+            return_type == builtins.i64_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.i32_type, false, false) &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 1), byte_slice_type, true, true)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_open")) {
+        valid = param_count == 2 &&
+            return_type == builtins.i32_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.str_type, true, false) &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 1), builtins.i32_type, false, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_close")) {
+        valid = param_count == 1 &&
+            return_type == builtins.void_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.i32_type, false, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_seek")) {
+        valid = param_count == 3 &&
+            return_type == builtins.i64_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.i32_type, false, false) &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 1), builtins.i64_type, false, false) &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 2), builtins.i32_type, false, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "mem_copy")) {
+        valid = param_count == 2 &&
+            return_type == builtins.i64_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), byte_slice_type, true, true) &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 1), byte_slice_type, true, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "exit")) {
+        valid = param_count == 1 &&
+            return_type == builtins.void_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.i32_type, false, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "args")) {
+        valid = param_count == 1 &&
+            return_type == str_slice_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.arena_type, true, true)
+    }
+
+    if (!valid) {
+        val message: str = native_signature_message(mut ref mem, ref sources, ref text_pool, ref tokens, name_token)
+        diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, name_token, ref "S090", ref message)
+    }
+    valid
+}
+
 // Keep short diagnostic string assembly out of the resolution loops.
 func message_named(mut ref mem: Arena, ref prefix: [u8], ref name: [u8], ref suffix: [u8]): str = {
     string.str_concat3(mut ref mem, ref prefix, ref name, ref suffix)
@@ -8115,7 +8214,25 @@ func check_func_decl(
         symbols_table.type_id[func_symbol] = return_type
     }
 
-    if (decl_is_native(ref nodes, decl_id) &&
+    val native_signature_valid: bool = if (decl_is_native(ref nodes, decl_id)) {
+        check_native_decl_signature(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            decl_id
+        )
+    } else {
+        true
+    }
+
+    if (native_signature_valid &&
+        decl_is_native(ref nodes, decl_id) &&
         func_symbol >= 0 &&
         token_name_is(ref sources, ref text_pool, ref tokens, nodes.data0[decl_id], ref "args")) {
         symbols_table.flags[func_symbol] |= symbols.SYM_FLAG_RETURNS_ARENA_SLICES

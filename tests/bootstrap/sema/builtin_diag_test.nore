@@ -27,7 +27,7 @@ func has_diag_code(
     false
 }
 
-// Prove builtin and native-name diagnostics land through the bootstrap checker.
+// Prove builtin and native-signature diagnostics land through the bootstrap checker.
 func main(): void = {
     mut mem: Arena = arena(8388608)
     mut sources: source.Sources = table_alloc(mut ref mem, 8)
@@ -76,9 +76,10 @@ func main(): void = {
         mut ref diag_pool
     )
 
-    assert checked.diags.count >= 4
+    assert checked.diags.count >= 5
     assert has_diag_code(ref diags, ref diag_pool, ref "S051")
     assert has_diag_code(ref diags, ref diag_pool, ref "S060")
     assert has_diag_code(ref diags, ref diag_pool, ref "S086")
     assert has_diag_code(ref diags, ref diag_pool, ref "S087")
+    assert has_diag_code(ref diags, ref diag_pool, ref "S090")
 }

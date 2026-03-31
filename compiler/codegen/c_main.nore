@@ -1,6 +1,6 @@
 // Bootstrap compiler whole-file C orchestration.
 // Responsibility: assemble the current generated-C skeleton for a checked module graph.
-// Owns: section ordering for prelude, typedefs, module globals, helper functions, and user-function prototypes.
+// Owns: section ordering for prelude, typedefs, module globals, native/user prototypes, and helper/function bodies.
 // Does not own: expression lowering, statement lowering, runtime helper bodies, or CLI behavior.
 
 import bbuf "../support/byte_buf.nore"
@@ -728,7 +728,7 @@ func function_definitions_dump(
     out.data[0..out.count]
 }
 
-// The current whole-file dump now assembles prelude, typedefs, module globals, user prototypes, and the broader early body-emission slice.
+// The current whole-file dump now assembles prelude, typedefs, module globals, native/user prototypes, and the broader early body-emission slice.
 pub func c_file_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
@@ -769,6 +769,19 @@ pub func c_file_dump(
         ref module_range
     )
     append_section(mut ref mem, mut ref out, ref globals)
+
+    val native_prototypes: [u8] = cdecl.native_function_prototypes_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        ref types_table,
+        ref module_range
+    )
+    append_section(mut ref mem, mut ref out, ref native_prototypes)
 
     val helpers: [u8] = slice_helpers_dump(
         mut ref mem,

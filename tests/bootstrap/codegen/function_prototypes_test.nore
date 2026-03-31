@@ -17,7 +17,7 @@ func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8])
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
 }
 
-// Lock in the next codegen slice: user-function prototypes must be stable across modules and ref modes.
+// Lock in the declaration slice: user and native prototypes must stay stable across modules and ref modes.
 func main(): void = {
     mut mem: Arena = arena(8388608)
     mut sources: source.Sources = table_alloc(mut ref mem, 8)
@@ -78,6 +78,17 @@ func main(): void = {
         ref types_table,
         ref loaded.modules
     )
+    val native_dumped: [u8] = cdecl.native_function_prototypes_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        ref types_table,
+        ref loaded.modules
+    )
 
     mut expected_buf: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
     append_bytes(mut ref mem, mut ref expected_buf, ref "int64_t ni_m0_ping(void);\n")
@@ -88,4 +99,10 @@ func main(): void = {
 
     val expected: [u8] = expected_buf.data[0..expected_buf.count]
     assert string.str_eq(ref dumped, ref expected)
+
+    mut native_expected_buf: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 64)
+    append_bytes(mut ref mem, mut ref native_expected_buf, ref "int64_t ni_mem_copy(ni_slice_uint8_t *ni_dst, const ni_slice_uint8_t *ni_src);\n")
+
+    val native_expected: [u8] = native_expected_buf.data[0..native_expected_buf.count]
+    assert string.str_eq(ref native_dumped, ref native_expected)
 }

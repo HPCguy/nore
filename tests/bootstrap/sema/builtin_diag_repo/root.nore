@@ -1,4 +1,5 @@
 native func banana(x: i32): void
+native func fd_close(fd: i64): void
 
 value Pair {
     left: i64,

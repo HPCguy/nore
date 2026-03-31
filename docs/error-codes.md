@@ -185,6 +185,7 @@ error[D002]: Unknown flag: --invalid
 - **S087**: Built-in function requires native declaration in the current module
 - **S088**: Assignment target must be a variable, field, or index expression
 - **S089**: Catch-all match arm must be last
+- **S090**: Native function declaration must use the compiler-provided builtin signature
 - **R001**: Assertion failed
 - **R002**: Array index out of bounds
 - **R003**: Cast overflow (value out of range for target type at runtime)

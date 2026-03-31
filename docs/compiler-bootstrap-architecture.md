@@ -163,10 +163,10 @@ Current early codegen file scope:
   structs, tables, table rows, and enums only. It should not absorb expression,
   statement, runtime, or whole-file orchestration logic.
 
-- `compiler/codegen/c_emit_decl.nore`: emit stable module-prefixed C symbol
-  names plus user-function signatures and forward prototypes only. It owns
-  ref-parameter pointer lowering and the shared declaration spelling used by
-  later definition emitters, but not global initializers, expressions,
+- `compiler/codegen/c_emit_decl.nore`: emit stable C declaration spellings for
+  both module-prefixed user functions and plain `ni_*` native runtime hooks. It
+  owns ref-parameter pointer lowering and the shared declaration spelling used
+  by later definition emitters, but not global initializers, expressions,
   statements, runtime bodies, or whole-file orchestration.
 
 - `compiler/codegen/c_runtime.nore`: emit the minimal generated-C prelude only.
@@ -176,8 +176,9 @@ Current early codegen file scope:
 
 - `compiler/codegen/c_main.nore`: assemble the current whole-file C skeleton
   only. It owns section ordering for prelude, typedefs, module-global
-  definitions, generated helper functions, user prototypes, and the current
-  function-definition slice, but not runtime helper bodies or driver behavior.
+  definitions, generated helper functions, native/user prototypes, and the
+  current function-definition slice, but not runtime helper bodies or driver
+  behavior.
 
 - `compiler/codegen/c_emit_expr.nore`: emit the current checked expression
   slice only. It owns literals, typed array literals, unary/binary operators,

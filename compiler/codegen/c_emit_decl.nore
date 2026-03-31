@@ -1,6 +1,6 @@
 // Bootstrap compiler C declaration emission.
 // Responsibility: emit stable C names plus declaration-level codegen for checked modules.
-// Owns: user-function signatures, prototypes, and shared declaration naming helpers.
+// Owns: user/native function prototypes and shared declaration naming helpers.
 // Does not own: expression lowering, statement lowering, runtime bodies, or whole-file orchestration.
 
 import bbuf "../support/byte_buf.nore"
@@ -45,7 +45,7 @@ func local_name(
     string.str_concat(mut ref mem, ref "ni_", ref name)
 }
 
-// Runtime-provided native hooks are emitted later by c_runtime, not as user prototypes here.
+// Native declarations lower to shared ni_* runtime hook names instead of module-prefixed user symbols.
 func decl_is_native(ref nodes: node.Nodes, ref symbols_table: symbols.Symbols, decl_id: i64): bool = {
     if (nodes.kind[decl_id] == node.NodeKind.NativeFuncDecl) {
         return true
@@ -96,8 +96,8 @@ func append_param_decl(
     append_bytes(mut ref mem, mut ref out, ref name_text)
 }
 
-// Later declaration and definition emitters share one signature writer so prototypes stay identical.
-pub func append_function_signature(
+// Shared signature body so user and native prototypes stay structurally identical.
+func append_signature_with_name(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
@@ -106,7 +106,7 @@ pub func append_function_signature(
     ref nodes: node.Nodes,
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
-    module_id: i64,
+    ref name_text: str,
     decl_id: i64
 ): void = {
     val return_text: str = ctypes.type_name(
@@ -117,14 +117,6 @@ pub func append_function_signature(
         ref nodes,
         ref types_table,
         nodes.type_id[decl_id]
-    )
-    val name_text: str = decl_name(
-        mut ref mem,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        module_id,
-        nodes.data0[decl_id]
     )
     val param_count: i64 = nodes.data2[decl_id]
 
@@ -161,6 +153,106 @@ pub func append_function_signature(
     append_bytes(mut ref mem, mut ref out, ref ")")
 }
 
+// Module-prefixed user-function signature for prototypes and definitions.
+pub func append_function_signature(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    module_id: i64,
+    decl_id: i64
+): void = {
+    val name_text: str = decl_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        module_id,
+        nodes.data0[decl_id]
+    )
+    append_signature_with_name(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        ref name_text,
+        decl_id
+    )
+}
+
+// Plain ni_* native-hook signature for runtime forward declarations.
+func append_native_function_signature(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    decl_id: i64
+): void = {
+    val name_text: str = local_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        nodes.data0[decl_id]
+    )
+    append_signature_with_name(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        ref name_text,
+        decl_id
+    )
+}
+
+// Native hook names are translation-unit global, so later modules only need the first matching declaration emitted.
+func native_decl_emitted_earlier(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref module_range: span.Range,
+    current_module_id: i64,
+    current_decl_id: i64
+): bool = {
+    val current_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[current_decl_id])
+    mut module_id: i64 = module_range.start
+    while (module_id <= current_module_id && module_id < table_len(ref modules)) {
+        val root_id: i64 = modules.root_node[module_id]
+        mut decl_id: i64 = nodes.first_child[root_id]
+        while (decl_id >= 0) {
+            if (module_id == current_module_id && decl_id == current_decl_id) {
+                return false
+            }
+            if (decl_is_native(ref nodes, ref symbols_table, decl_id) &&
+                string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[decl_id]), ref current_name)) {
+                return true
+            }
+            decl_id = nodes.next_sibling[decl_id]
+        }
+        module_id += 1
+    }
+    false
+}
+
 // Forward declarations keep later body emission free to follow source order.
 pub func append_function_prototype(
     mut ref mem: Arena,
@@ -184,6 +276,32 @@ pub func append_function_prototype(
         ref symbols_table,
         ref types_table,
         module_id,
+        decl_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ";\n")
+}
+
+// Runtime hooks need forward C declarations before later generated helpers and function bodies call them.
+pub func append_native_function_prototype(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    decl_id: i64
+): void = {
+    append_native_function_signature(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
         decl_id
     )
     append_bytes(mut ref mem, mut ref out, ref ";\n")
@@ -220,6 +338,57 @@ pub func function_prototypes_dump(
                     ref symbols_table,
                     ref types_table,
                     module_id,
+                    decl_id
+                )
+            }
+            decl_id = nodes.next_sibling[decl_id]
+        }
+        module_id += 1
+    }
+
+    out.data[0..out.count]
+}
+
+// Native declarations stay in their own dump so whole-file assembly can place them before later definitions.
+pub func native_function_prototypes_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    ref module_range: span.Range
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        val root_id: i64 = modules.root_node[module_id]
+        mut decl_id: i64 = nodes.first_child[root_id]
+        while (decl_id >= 0) {
+            if (decl_is_native(ref nodes, ref symbols_table, decl_id) &&
+                !native_decl_emitted_earlier(
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref modules,
+                    ref symbols_table,
+                    ref module_range,
+                    module_id,
+                    decl_id
+                )) {
+                append_native_function_prototype(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref symbols_table,
+                    ref types_table,
                     decl_id
                 )
             }
