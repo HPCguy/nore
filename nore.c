@@ -7838,7 +7838,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                     return result;
                 }
 
-                /* Comparison: numeric x numeric -> bool (same concrete type required) */
+                /* Comparison: numeric x numeric or bool equality -> bool. */
                 case OP_EQ:
                 case OP_NEQ:
                 case OP_LT:
@@ -7866,6 +7866,29 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                         }
 
                         /* Try constant folding for enum comparisons */
+                        Ast *folded = try_fold_comparison(node, scope);
+                        if (folded) {
+                            ast_free(node->as.binary.left);
+                            ast_free(node->as.binary.right);
+                            *node = *folded;
+                            free(folded);
+                            return TYPE_BOOL;
+                        }
+
+                        node->expr_type = TYPE_BOOL;
+                        return TYPE_BOOL;
+                    }
+
+                    if (left_type == TYPE_BOOL || right_type == TYPE_BOOL) {
+                        if ((node->as.binary.op != OP_EQ &&
+                             node->as.binary.op != OP_NEQ) ||
+                            left_type != TYPE_BOOL || right_type != TYPE_BOOL) {
+                            diagnostic(node->loc.file, ERR_S006_TYPE_MISMATCH,
+                                       node->loc.line, node->loc.column,
+                                       "Cannot compare %s and %s",
+                                       type_name(left_type), type_name(right_type));
+                        }
+
                         Ast *folded = try_fold_comparison(node, scope);
                         if (folded) {
                             ast_free(node->as.binary.left);

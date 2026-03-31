@@ -17,6 +17,12 @@ func main(): void = {
     assert !false
     assert !!true
 
+    // Bool equality
+    assert true == true
+    assert false == false
+    assert true != false
+    assert !(true == false)
+
     // Combined
     val a: i64 = 5
     val b: i64 = 10

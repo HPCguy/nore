@@ -512,7 +512,7 @@ val y: i64 = {
 
 **Arithmetic** (numeric): `+` `-` `*` `/` `%` (modulo: integers only)
 **Bitwise** (integers): `&` `|` `^` `~` `<<` `>>`
-**Comparison** (numeric, produces bool): `==` `!=` `<` `<=` `>` `>=`
+**Comparison** (numeric, plus `bool` for `==`/`!=`, produces bool): `==` `!=` `<` `<=` `>` `>=`
 **Logical** (bool): `&&` `||` `!`
 **Assignment**: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` (mutable only)
 
@@ -544,7 +544,7 @@ arr[i] <<= 1
 - Bitwise binds tighter than comparison: `a & mask == 0` means `(a & mask) == 0`
 - Both operands must be same concrete type (after coercion)
 - Modulo follows C truncation semantics
-- No comparison of `bool` values
+- `bool` only supports `==` and `!=`
 
 ## Statements
 

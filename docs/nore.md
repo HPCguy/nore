@@ -781,7 +781,7 @@ val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
 
 **Bitwise** (integers only): `&`, `|`, `^`, `~`, `<<`, `>>`
 
-**Comparison** (numeric types, produces `bool`): `==`, `!=`, `<`, `<=`, `>`, `>=`
+**Comparison** (numeric types, plus `bool` for `==`/`!=`, produces `bool`): `==`, `!=`, `<`, `<=`, `>`, `>=`
 
 **Logical** (bool types): `&&`, `||`, `!`
 
@@ -810,7 +810,7 @@ Targets must be variables, or field/index expressions rooted in a mutable variab
 | 1 | `&&` | Logical AND |
 | 0 | `\|\|` | Logical OR |
 
-Bitwise operators bind tighter than comparisons: `a & mask == 0` means `(a & mask) == 0`. Both operands must be the same concrete type (after coercion). Modulo follows C truncation semantics (result sign matches dividend). No comparison of `bool` values.
+Bitwise operators bind tighter than comparisons: `a & mask == 0` means `(a & mask) == 0`. Both operands must be the same concrete type (after coercion). Modulo follows C truncation semantics (result sign matches dividend). `bool` only supports `==` and `!=`.
 
 ### Control Flow
 
