@@ -1,0 +1,11 @@
+func takes_os(ref os: OS): i64 = {
+    if (os == OS.MacOS) {
+        1
+    } else {
+        0
+    }
+}
+
+func pass_target_os(): i64 = {
+    takes_os(ref TARGET_OS)
+}

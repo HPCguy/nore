@@ -15,6 +15,11 @@ pub func append_core_prelude(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): voi
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t len; } ni_str;\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t capacity; int64_t offset; } ni_Arena;\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef int64_t ni_OS;\n")
+    append_bytes(mut ref mem, mut ref out, ref "#if defined(__APPLE__)\n")
+    append_bytes(mut ref mem, mut ref out, ref "#define NI_TARGET_OS 1L\n")
+    append_bytes(mut ref mem, mut ref out, ref "#else\n")
+    append_bytes(mut ref mem, mut ref out, ref "#define NI_TARGET_OS 0L\n")
+    append_bytes(mut ref mem, mut ref out, ref "#endif\n")
 }
 
 // Tests and c_main both need one stable entry point for the minimal generated-C prelude.

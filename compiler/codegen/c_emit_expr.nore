@@ -15,6 +15,10 @@ import string "std/string.nore"
 
 pub val SLICE_FLAG_HAS_START: i64 = 64
 pub val SLICE_FLAG_HAS_END: i64 = 128
+val CODEGEN_SYNTHETIC_TOKEN_OS: i64 = -2
+val CODEGEN_SYNTHETIC_TOKEN_TARGET_OS: i64 = -3
+val CODEGEN_SYNTHETIC_TOKEN_LINUX: i64 = -4
+val CODEGEN_SYNTHETIC_TOKEN_MACOS: i64 = -5
 
 func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
@@ -29,6 +33,36 @@ func flag_has(flags: i64, bit: i64): bool = {
 func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
     val text: str = string.i64_to_str(mut ref mem, n)
     append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// Compiler-injected names do not live in the token table, so codegen keeps the same synthetic spellings as sema.
+func token_text_or_synthetic(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    token_id: i64
+): [u8] = {
+    if (token_id == CODEGEN_SYNTHETIC_TOKEN_OS) {
+        return "OS"
+    }
+    if (token_id == CODEGEN_SYNTHETIC_TOKEN_TARGET_OS) {
+        return "TARGET_OS"
+    }
+    if (token_id == CODEGEN_SYNTHETIC_TOKEN_LINUX) {
+        return "Linux"
+    }
+    if (token_id == CODEGEN_SYNTHETIC_TOKEN_MACOS) {
+        return "MacOS"
+    }
+    token.token_text(ref sources, ref text_pool, ref tokens, token_id)
+}
+
+// Generated C keeps TARGET_OS as a preprocessor constant so static initializers remain valid C.
+func symbol_is_target_os_builtin(ref symbols_table: symbols.Symbols, symbol_id: i64): bool = {
+    symbol_id >= 0 &&
+    symbols_table.kind[symbol_id] == symbols.SymbolKind.GlobalSymbol &&
+    symbols_table.decl_node[symbol_id] < 0 &&
+    symbols_table.name_token[symbol_id] == CODEGEN_SYNTHETIC_TOKEN_TARGET_OS
 }
 
 // Local identifiers keep the short ni_ prefix because their scope stays inside one function.
@@ -60,6 +94,10 @@ func append_symbol_storage_name(
     }
 
     val kind: symbols.SymbolKind = symbols_table.kind[symbol_id]
+    if (symbol_is_target_os_builtin(ref symbols_table, symbol_id)) {
+        append_bytes(mut ref mem, mut ref out, ref "NI_TARGET_OS")
+        return
+    }
     if (kind == symbols.SymbolKind.LocalSymbol ||
         kind == symbols.SymbolKind.ParamSymbol) {
         append_local_name(
@@ -251,12 +289,12 @@ func enum_find_variant(
         return node.invalid_node_id()
     }
 
-    val wanted_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, variant_token)
+    val wanted_name: [u8] = token_text_or_synthetic(ref sources, ref text_pool, ref tokens, variant_token)
     val enum_decl: i64 = types_table.decl_node[enum_type]
     mut variant_id: i64 = nodes.first_child[enum_decl]
     while (variant_id >= 0) {
         if (nodes.kind[variant_id] == node.NodeKind.VariantDecl) {
-            val variant_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[variant_id])
+            val variant_name: [u8] = token_text_or_synthetic(ref sources, ref text_pool, ref tokens, nodes.data0[variant_id])
             if (string.str_eq(ref variant_name, ref wanted_name)) {
                 return variant_id
             }
@@ -618,9 +656,14 @@ func append_ref_arg_expr(
         return
     }
 
-    if (value_id >= 0 &&
+    // Rvalue ref args (literals, slices, injected constants) need a compound-literal temporary for addressability.
+    val is_rvalue_ref: bool = value_id >= 0 &&
         (nodes.kind[value_id] == node.NodeKind.StringLit ||
-         nodes.kind[value_id] == node.NodeKind.SliceExpr)) {
+         nodes.kind[value_id] == node.NodeKind.SliceExpr ||
+         (nodes.kind[value_id] == node.NodeKind.Identifier &&
+          nodes.symbol_id[value_id] >= 0 &&
+          symbol_is_target_os_builtin(ref symbols_table, nodes.symbol_id[value_id])))
+    if (is_rvalue_ref) {
         val type_text: str = ctypes.type_name(
             mut ref mem,
             ref sources,
