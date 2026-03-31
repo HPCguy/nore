@@ -1,6 +1,6 @@
 // Bootstrap compiler C expression emission.
 // Responsibility: emit C for the broader checked expression subset used by early compiler modules.
-// Owns: literals, operators, field/index/slice access, constructors, casts, and plain call emission.
+// Owns: literals, array/constructor compound literals, operators, field/index/slice access, casts, and plain call emission.
 // Does not own: statement/control-flow lowering, runtime helper bodies, or whole-file orchestration.
 
 import bbuf "../support/byte_buf.nore"
@@ -267,7 +267,7 @@ func enum_find_variant(
 }
 
 // Tags follow source-order enum variant numbering so C and sema stay aligned.
-func enum_variant_tag(ref nodes: node.Nodes, ref types_table: types.Types, enum_type: i64, wanted_variant: i64): i64 = {
+pub func enum_variant_tag(ref nodes: node.Nodes, ref types_table: types.Types, enum_type: i64, wanted_variant: i64): i64 = {
     if (enum_type < 0 || types_table.kind[enum_type] != types.TypeKind.EnumType) {
         return -1
     }
@@ -288,7 +288,7 @@ func enum_variant_tag(ref nodes: node.Nodes, ref types_table: types.Types, enum_
 }
 
 // Tagged-enum detection mirrors the typedef emitter so value lowering matches the C layout.
-func enum_has_payload_variant(ref nodes: node.Nodes, ref types_table: types.Types, enum_type: i64): bool = {
+pub func enum_has_payload_variant(ref nodes: node.Nodes, ref types_table: types.Types, enum_type: i64): bool = {
     if (enum_type < 0 || types_table.kind[enum_type] != types.TypeKind.EnumType) {
         return false
     }
@@ -618,18 +618,33 @@ func append_ref_arg_expr(
         return
     }
 
-    if (value_id >= 0 && nodes.kind[value_id] == node.NodeKind.StringLit) {
-        append_bytes(mut ref mem, mut ref out, ref "&(")
-        append_string_lit_expr(
+    if (value_id >= 0 &&
+        (nodes.kind[value_id] == node.NodeKind.StringLit ||
+         nodes.kind[value_id] == node.NodeKind.SliceExpr)) {
+        val type_text: str = ctypes.type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            nodes.type_id[value_id]
+        )
+        append_bytes(mut ref mem, mut ref out, ref "&(((")
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref "[]){")
+        append_expr(
             mut ref mem,
             mut ref out,
             ref sources,
             ref text_pool,
             ref tokens,
             ref nodes,
+            ref symbols_table,
+            ref types_table,
             value_id
         )
-        append_bytes(mut ref mem, mut ref out, ref ")")
+        append_bytes(mut ref mem, mut ref out, ref "})[0])")
         return
     }
 
@@ -853,6 +868,55 @@ func append_constructor_expr(
     }
 
     append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Fixed-size array literals lower to the array-typedef wrapper used by the type emitter.
+func append_array_lit_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[node_id]
+    )
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref "){{")
+
+    mut elem_id: i64 = nodes.first_child[node_id]
+    mut first: bool = true
+    while (elem_id >= 0) {
+        if (!first) {
+            append_bytes(mut ref mem, mut ref out, ref ", ")
+        }
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            elem_id
+        )
+        first = false
+        elem_id = nodes.next_sibling[elem_id]
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "}}")
 }
 
 // The first integer-literal slice only needs stable suffixes for i64 and enum-typed values.
@@ -1432,6 +1496,20 @@ pub func append_expr(
     }
     if (kind == node.NodeKind.ConstructorExpr) {
         append_constructor_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        return
+    }
+    if (kind == node.NodeKind.ArrayLit) {
+        append_array_lit_expr(
             mut ref mem,
             mut ref out,
             ref sources,

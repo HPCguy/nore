@@ -179,7 +179,7 @@ func main(): void = {
     append_bytes(mut ref mem, mut ref expected_buf, ref "}\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "int64_t ni_m0_call_take_name(void) {\n")
-    append_bytes(mut ref mem, mut ref expected_buf, ref "    return ni_m0_take_name(&((ni_str){.data = (uint8_t *)\"hi\", .len = 2L}));\n")
+    append_bytes(mut ref mem, mut ref expected_buf, ref "    return ni_m0_take_name(&(((ni_str[]){(ni_str){.data = (uint8_t *)\"hi\", .len = 2L}})[0]));\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "}\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "int64_t ni_m0_count_up(int64_t ni_limit) {\n")

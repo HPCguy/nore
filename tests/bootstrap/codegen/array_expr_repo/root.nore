@@ -1,0 +1,22 @@
+func digits(): [u8; 4] = {
+    [1, 2, 3, 4]
+}
+
+func choose_pair(flag: bool): [i64; 2] = {
+    val pair: [i64; 2] = if (flag) {
+        [10, 20]
+    } else {
+        [30, 40]
+    }
+    pair
+}
+
+func second_digit(): u8 = {
+    val digits: [u8; 4] = [9, 8, 7, 6]
+    digits[1]
+}
+
+func middle_digits(): [u8] = {
+    val digits: [u8; 4] = [9, 8, 7, 6]
+    digits[1..3]
+}

@@ -180,10 +180,11 @@ Current early codegen file scope:
   function-definition slice, but not runtime helper bodies or driver behavior.
 
 - `compiler/codegen/c_emit_expr.nore`: emit the current checked expression
-  slice only. It owns literals, unary/binary operators, casts, identifiers,
-  field/index/slice access, constructors, and plain user-function calls,
-  including ref-aware identifier/field lowering, but not statements, globals,
-  `if` / `match` expression lowering, or helper runtimes.
+  slice only. It owns literals, typed array literals, unary/binary operators,
+  casts, identifiers, field/index/slice access, constructors, and plain
+  user-function calls, including ref-aware identifier/field lowering plus
+  slice-view ref-argument temporaries, but not statements, globals, `if` /
+  `match` expression lowering, or helper runtimes.
 
 - `compiler/codegen/c_emit_stmt.nore`: emit the current checked statement/body
   slice only. It owns blocks, local declarations, assignments, explicit
