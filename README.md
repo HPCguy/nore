@@ -108,7 +108,7 @@ The compiler follows a multi-stage pipeline:
 
 ## Project Status
 
-**Current Phase**: Early development with bootstrap self-hosting scaffolding in place
+**Current Phase**: Early self-hosting, with a thin wrapper driving the self-hosted compiler through Clang
 
 The shipping compiler is still the single-file C program (`nore.c`) containing:
 - Lexer implementation
@@ -120,7 +120,7 @@ The shipping compiler is still the single-file C program (`nore.c`) containing:
 Bootstrap status:
 - the committed Nore-written compiler source tree lives in [`compiler/`](compiler/)
 - Milestone 1 is frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md)
-- Milestones 2 through 10 now provide committed support, diagnostics, frontend, sema, codegen, the `compiler/main.nore` bootstrap pipeline, a real stage-0 -> bootstrap-compiler -> Clang smoke path for sample programs, and a repeatable self-compile chain
+- Milestones 2 through 11 now provide committed support, diagnostics, frontend, sema, codegen, the `compiler/main.nore` bootstrap pipeline, a real stage-0 -> bootstrap-compiler -> Clang smoke path for sample programs, a repeatable self-compile chain, and a thin wrapper for building ordinary programs with the self-hosted compiler
 - the detailed milestone plan lives in [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md)
 
 ## Build Requirements
@@ -157,6 +157,19 @@ make clean
 
 # Combine flags
 ./nore program.nore --parser --codegen -o program
+```
+
+Bootstrap wrapper path:
+
+```bash
+# Build a program with the self-hosted compiler path
+./scripts/bootstrap-driver.sh program.nore
+
+# Build to an explicit output path
+./scripts/bootstrap-driver.sh program.nore -o build/program
+
+# Build and run immediately, forwarding argv after --
+./scripts/bootstrap-driver.sh --run program.nore -- arg1 arg2
 ```
 
 ## Language Guide

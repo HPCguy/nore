@@ -684,6 +684,10 @@ At this point the project is self-compiling, but not yet a drop-in replacement f
 
 ## Milestone 11: Close the Driver Gap
 
+**Status:** Complete
+
+Committed in `scripts/bootstrap-driver.sh` and `tests/bootstrap/selfhost/driver_test.sh`.
+
 ### Gaps to close before starting
 
 - Milestone 10 complete
@@ -711,6 +715,16 @@ Prefer the thin wrapper first. Add new natives only when the wrapper becomes a r
 
 - building ordinary Nore programs no longer depends on hand-run shell steps
 
+The committed thin wrapper now:
+
+- rebuilds the current self-hosted compiler chain through `nore2`
+- invokes the self-hosted compiler to emit C for an ordinary program
+- invokes Clang for the final native binary
+- supports `-o` and `--run ... -- argv` from one shell command
+
+`tests/bootstrap/selfhost/driver_test.sh` proves that flow on representative
+sample programs.
+
 ### Why this is not Step 0
 
 The frontend is the hard part. The driver is plumbing.
@@ -730,13 +744,90 @@ Turn the self-compiling compiler into the default compiler.
 ### Deliverables
 
 1. Close remaining frontend/typecheck/codegen gaps against the current C compiler
-2. Port the current test suite to run against the Nore compiler
-3. Add new regression tests for bootstrap-only failures found along the way
-4. Keep the C compiler as a fallback until parity is credible
+2. Make the original language test suite the first-line parity gate for `norec`:
+   - `tests/errors/`
+   - `tests/success/`
+   - `tests/std/`
+   - these suites should run against the self-hosted compiler by default once parity is credible
+3. Keep a separate compiler-focused suite for self-hosting and rebuild mechanics:
+   - rename the surviving `tests/bootstrap/` coverage to `tests/compiler/`
+   - keep only compiler-specific tests there, such as:
+     - self-compile chain tests
+     - bootstrap/rebuild-from-seed tests
+     - thin-driver tests
+     - compiler-module smoke tests
+     - generated-C comparison regressions
+4. Add new regression tests for parity-only failures found along the way
+5. Keep the C compiler as a fallback until parity is credible
+6. Once parity is credible, rename the staging self-hosted compiler artifact from `nore2` to `norec`
+7. Reshape the repository so the bootstrap seed is explicit:
+   - keep `compiler/` as the canonical self-hosted compiler source tree
+   - replace the ad hoc wrapper path with a dedicated top-level `bootstrap/` directory
+   - keep only the seed artifacts in `bootstrap/`:
+     - `bootstrap/bootstrap.sh`
+     - `bootstrap/nore.c`
+     - `bootstrap/README.md`
+     - `bootstrap/Makefile`
+   - have `bootstrap/bootstrap.sh` build a temporary stage-0 compiler under `tmp/`
+   - have that temporary compiler compile `compiler/main.nore`
+   - write the parity-ready executable to the repo root as `./norec`
+8. Add a compiler regression that compares emitted C between the two compilers:
+   - stage-0 `bootstrap/nore.c` generates C from a representative `.nore` source
+   - the freshly built self-hosted compiler generates C from the same `.nore` source
+   - the resulting C sources are compared as compiler-output regressions
+
+### Target layout at parity
+
+```text
+bootstrap/
+  bootstrap.sh
+  nore.c
+  README.md
+  Makefile
+
+compiler/
+  main.nore
+  support/
+  frontend/
+  sema/
+  codegen/
+  driver/
+
+docs/
+editors/
+examples/
+std/
+
+tests/
+  compiler/
+  errors/
+  success/
+  std/
+
+tmp/
+  bootstrap/
+  generated-c/
+  bins/
+
+norec                    # built artifact after bootstrap/parity switchover
+Makefile                 # repo-root entry point, delegating to the bootstrap flow
+```
+
+### Test policy at parity
+
+- `make test` should run `tests/errors/`, `tests/success/`, and `tests/std/` with `norec` as the default compiler
+- `make test-compiler` should run `tests/compiler/` for self-hosting, bootstrap, and compiler-output regressions
+- `tests/compiler/` should include at least one regression that compares the C emitted by stage-0 and the C emitted by the freshly built self-hosted compiler for the same `.nore` input
+- the old `tests/bootstrap/` directory name should disappear once the suite is no longer about the temporary bootstrap subset
 
 ### Exit criteria
 
 - full test suite passes under the Nore compiler
+- the parity-ready self-hosted compiler is published under the durable name `norec`, not the staging name `nore2`
+- rebuilding from scratch no longer depends on a root-level `nore.c`; the seed path lives under `bootstrap/`
+- `bootstrap/bootstrap.sh` can rebuild `./norec` by first creating a temporary stage-0 compiler in `tmp/`
+- the original language suites (`tests/errors/`, `tests/success/`, `tests/std/`) pass with `norec` as the default compiler
+- compiler-specific tests live under `tests/compiler/`, including stage-0 vs self-hosted generated-C comparison coverage
 - C compiler is no longer the default path
 
 ---
