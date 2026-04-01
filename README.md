@@ -7,7 +7,7 @@ Nore is a systems programming language that makes data-oriented design the path 
 
 Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
 
-The stage-0 compiler is currently a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation. The self-hosting compiler source tree now lives under [`compiler/`](compiler/) and is being grown incrementally from the bootstrap plan.
+The stage-0 compiler is currently a self-contained, single-file C program whose trusted seed now lives at [`bootstrap/nore.c`](bootstrap/nore.c). It translates Nore source code into native executables via C as an intermediate representation. The self-hosting compiler source tree lives under [`compiler/`](compiler/) and is being grown incrementally from the bootstrap plan.
 
 ## A Quick Look
 
@@ -108,9 +108,9 @@ The compiler follows a multi-stage pipeline:
 
 ## Project Status
 
-**Current Phase**: Early self-hosting, with a thin wrapper driving the self-hosted compiler through Clang
+**Current Phase**: Early self-hosting, with Milestone 12 switchover work started around an explicit bootstrap seed and `norec` rebuild path
 
-The shipping compiler is still the single-file C program (`nore.c`) containing:
+The shipping compiler is still the single-file C seed at [`bootstrap/nore.c`](bootstrap/nore.c), containing:
 - Lexer implementation
 - Parser implementation
 - AST data structures
@@ -159,17 +159,27 @@ make clean
 ./nore program.nore --parser --codegen -o program
 ```
 
+Bootstrap rebuild path:
+
+```bash
+# Rebuild the self-hosted compiler artifact at ./norec
+make norec
+
+# Equivalent direct seed rebuild entrypoint
+./bootstrap/bootstrap.sh
+```
+
 Bootstrap wrapper path:
 
 ```bash
 # Build a program with the self-hosted compiler path
-./scripts/bootstrap-driver.sh program.nore
+./bootstrap/bootstrap.sh program.nore
 
 # Build to an explicit output path
-./scripts/bootstrap-driver.sh program.nore -o build/program
+./bootstrap/bootstrap.sh program.nore -o build/program
 
 # Build and run immediately, forwarding argv after --
-./scripts/bootstrap-driver.sh --run program.nore -- arg1 arg2
+./bootstrap/bootstrap.sh --run program.nore -- arg1 arg2
 ```
 
 ## Language Guide
@@ -220,7 +230,7 @@ make test-std      # Run stdlib tests only
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
-- Bootstrap compiler tests live under `tests/bootstrap/` and run with `make test-bootstrap`
+- Compiler-specific selfhost/bootstrap tests live under `tests/compiler/` and run with `make test-compiler`
 - Test runners: `tests/run_error_tests.sh`, `tests/run_success_tests.sh`, `tests/run_std_tests.sh`
 
 ## Development Roadmap

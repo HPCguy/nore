@@ -1,0 +1,85 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import check "../../../compiler/sema/check.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import scopes "../../../compiler/sema/scopes.nore"
+import source "../../../compiler/support/source.nore"
+import symbols "../../../compiler/sema/symbols.nore"
+import token "../../../compiler/frontend/token.nore"
+import types "../../../compiler/sema/types.nore"
+import string "std/string.nore"
+
+// Count code occurrences so one fixture can pin multiple shape-validation regressions.
+func count_diag_code(
+    ref diags: diag.Diagnostics,
+    ref diag_pool: bbuf.ByteBuf,
+    ref wanted: [u8]
+): i64 = {
+    mut count: i64 = 0
+    mut diag_id: i64 = 0
+    while (diag_id < table_len(ref diags)) {
+        if (string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, diag_id), ref wanted)) {
+            count += 1
+        }
+        diag_id += 1
+    }
+    count
+}
+
+// Prove duplicate fields plus value/table field validation now emit their stage-0 codes.
+func main(): void = {
+    mut mem: Arena = arena(8388608)
+    mut sources: source.Sources = table_alloc(mut ref mem, 8)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 32768)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 2048)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 4096)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 16384)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 8)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 8)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 32)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 2048)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, 128)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, 256)
+    mut types_table: types.Types = table_alloc(mut ref mem, 256)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/compiler/sema/shape_diag_repo",
+        ref "tests/compiler/sema/shape_diag_repo/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert loaded.diags.count == 0
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert checked.diags.count >= 6
+    assert count_diag_code(ref diags, ref diag_pool, ref "S022") >= 1
+    assert count_diag_code(ref diags, ref diag_pool, ref "S045") >= 1
+    assert count_diag_code(ref diags, ref diag_pool, ref "S047") >= 2
+    assert count_diag_code(ref diags, ref diag_pool, ref "S059") >= 2
+}

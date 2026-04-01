@@ -1,0 +1,59 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import source "../../../compiler/support/source.nore"
+import token "../../../compiler/frontend/token.nore"
+import string "std/string.nore"
+
+// Verify missing-import diagnostics land on the import string with the committed code.
+func main(): void = {
+    mut mem: Arena = arena(1048576)
+    mut sources: source.Sources = table_alloc(mut ref mem, 8)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 4096)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 512)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 256)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 1024)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 8)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 8)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 8)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/compiler/imports/repo_missing",
+        ref "tests/compiler/imports/repo_missing/app/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert loaded.root_module == 0
+    assert loaded.modules.count == 1
+    assert loaded.imports.count == 0
+    assert loaded.diags.count == 1
+    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 0), ref "D007")
+
+    val rendered: [u8] = diag.diag_format(
+        mut ref mem,
+        ref diags,
+        ref diag_pool,
+        ref sources,
+        ref path_pool,
+        ref line_starts,
+        0
+    )
+    assert string.str_eq(
+        ref rendered,
+        ref "tests/compiler/imports/repo_missing/app/root.nore:1:16: error[D007]: Cannot find imported file"
+    )
+}

@@ -6,13 +6,13 @@ The purpose of this document is to let support, frontend, semantic-analysis, and
 
 ## Status
 
-- Stage-0 remains the C compiler in `nore.c`.
+- Stage-0 remains the C compiler in `bootstrap/nore.c`.
 - The Nore-written compiler source tree lives in `compiler/`.
 - Milestone 1 is complete once this document and that tree are in place.
 
 ## Non-Goals for the Bootstrap Compiler
 
-- Do not port `nore.c` function-by-function.
+- Do not port `bootstrap/nore.c` function-by-function.
 - Do not build pointer-rich recursive object graphs.
 - Do not depend on generics, hash maps, or native driver support.
 - Do not chase full language parity before the first self-compile.

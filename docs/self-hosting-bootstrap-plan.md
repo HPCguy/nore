@@ -9,7 +9,7 @@ Build a new multi-module Nore compiler in Nore, in Nore's own style:
 - explicit modules with small responsibilities
 - C as the backend IR during bootstrap
 
-The immediate goal is **not** "port `nore.c`". The goal is to build a new compiler that:
+The immediate goal is **not** "port `bootstrap/nore.c`". The goal is to build a new compiler that:
 
 1. compiles a useful bootstrap subset of Nore to C
 2. can compile its own source code
@@ -25,12 +25,12 @@ The current C compiler remains the stage-0 bootstrap compiler until late in the 
 
 - A Nore compiler source tree exists under a dedicated directory, split into modules.
 - The compiler data model is table-based, not pointer-based.
-- The compiler can compile itself before it is asked to replace `nore.c`.
+- The compiler can compile itself before it is asked to replace `bootstrap/nore.c`.
 - The thin "driver" problem is treated separately from the language frontend.
 
 ### What we should not do
 
-- Do not translate `nore.c` function-by-function into Nore.
+- Do not translate `bootstrap/nore.c` function-by-function into Nore.
 - Do not block the project on generics, hash maps, or a native driver.
 - Do not chase full language parity before the first self-compile.
 
@@ -56,8 +56,11 @@ The plan assumes the Nore-written compiler sources live in a committed top-level
 temporary build artifacts staying under `tmp/`.
 
 ```text
-docs/
-  self-hosting-bootstrap-plan.md
+bootstrap/
+  bootstrap.sh
+  Makefile
+  nore.c
+  README.md
 
 compiler/
   main.nore
@@ -91,7 +94,7 @@ compiler/
     clang_driver.nore       # later milestone
 
 tests/
-  bootstrap/
+  compiler/
     support/
     lexer/
     parser/
@@ -110,18 +113,18 @@ tmp/
 
 ### Why this layout
 
+- `bootstrap/` makes the trusted seed path explicit
 - `compiler/` is committed and versioned, unlike `tmp/`
 - `support/`, `frontend/`, `sema/`, and `codegen/` match the milestone order
-- `tests/bootstrap/` can grow incrementally without mixing bootstrap-specific
+- `tests/compiler/` can grow incrementally without mixing bootstrap-specific
   tests into the mature test corpus too early
 - `tmp/bootstrap/` keeps generated C, temporary binaries, and self-hosting
   stage artifacts out of the repository
 
 ### Naming recommendation
 
-Use `compiler/` as the durable source tree name from day one. Avoid calling the
-source directory `bootstrap/`, because that name becomes misleading once the
-compiler starts self-compiling and moves toward default status.
+Use `compiler/` as the durable source tree name for the self-hosted compiler.
+Reserve `bootstrap/` for the trusted C seed and rebuild-from-seed glue only.
 
 ---
 
@@ -322,7 +325,7 @@ Build the shared infrastructure that every stage will use.
 **Status:** Complete
 
 Committed in `compiler/frontend/token.nore`, `compiler/frontend/lexer.nore`, and
-`tests/bootstrap/lexer/`.
+`tests/compiler/lexer/`.
 
 ### Gaps to close before starting
 
@@ -360,7 +363,7 @@ Keep tokens as rows in a table, not heap-allocated linked structures.
 **Status:** Complete
 
 Committed in `compiler/frontend/node.nore`, `compiler/frontend/parser.nore`, and
-`tests/bootstrap/parser/`.
+`tests/compiler/parser/`.
 
 ### Gaps to close before starting
 
@@ -400,7 +403,7 @@ Parse one source file into a table-based syntax tree.
 
 **Status:** Complete
 
-Committed in `compiler/frontend/loader.nore` and `tests/bootstrap/imports/`.
+Committed in `compiler/frontend/loader.nore` and `tests/compiler/imports/`.
 
 ### Gaps to close before starting
 
@@ -445,7 +448,7 @@ Extend the frontend from one module to a whole import graph.
 
 **Status:** Complete
 
-Started in `compiler/sema/` and `tests/bootstrap/sema/`.
+Started in `compiler/sema/` and `tests/compiler/sema/`.
 The current committed slice binds module scopes, top-level declarations,
 locals/params, module-qualified lookups, and now typechecks the first
 user-declared subset: literals, field access, constructors, calls,
@@ -521,7 +524,7 @@ Do not try to reach full parity here. Reach "enough to compile the compiler sour
 Started in `compiler/codegen/c_types.nore`, `compiler/codegen/c_emit_decl.nore`,
 `compiler/codegen/c_runtime.nore`, `compiler/codegen/c_main.nore`,
 `compiler/codegen/c_emit_expr.nore`, `compiler/codegen/c_emit_stmt.nore`, and
-`tests/bootstrap/codegen/`. The current committed slice lowers sema types to
+`tests/compiler/codegen/`. The current committed slice lowers sema types to
 stable C names, emits typedefs for arrays, slices, values, structs, tables,
 table rows, and enums, emits stable user-function prototypes in module order
 plus plain `ni_*` native hook prototypes with ref-parameter pointer lowering,
@@ -594,8 +597,8 @@ Emit C for the subset used by the bootstrap compiler.
 
 **Status:** Complete
 
-Committed in `compiler/main.nore`, `tests/run_bootstrap_tests.sh`, and
-`tests/bootstrap/selfhost/`.
+Committed in `compiler/main.nore`, `tests/run_compiler_tests.sh`, and
+`tests/compiler/selfhost/`.
 
 ### Gaps to close before starting
 
@@ -628,7 +631,7 @@ Produce the first usable Nore-written compiler binary, even if it is still subse
 
 The committed `compiler/main.nore` is now a real pipeline instead of a stub:
 it loads the graph, prints loader/sema diagnostics, emits C, wires `args()`
-through the generated runtime, and `tests/bootstrap/selfhost/smoke_test.sh`
+through the generated runtime, and `tests/compiler/selfhost/smoke_test.sh`
 now proves the full stage-0 -> bootstrap compiler -> emitted C -> Clang ->
 native binary path for representative sample programs using the same basic
 Clang mode that stage-0 already uses for compiled Nore programs.
@@ -641,7 +644,7 @@ This is the first real milestone where "compiler in Nore" exists, but it is not 
 
 **Status:** Complete
 
-Committed in `tests/bootstrap/selfhost/self_compile_test.sh`.
+Committed in `tests/compiler/selfhost/self_compile_test.sh`.
 
 ### Gaps to close before starting
 
@@ -686,7 +689,7 @@ At this point the project is self-compiling, but not yet a drop-in replacement f
 
 **Status:** Complete
 
-Committed in `scripts/bootstrap-driver.sh` and `tests/bootstrap/selfhost/driver_test.sh`.
+Committed in `bootstrap/bootstrap.sh` and `tests/compiler/selfhost/driver_test.sh`.
 
 ### Gaps to close before starting
 
@@ -722,7 +725,7 @@ The committed thin wrapper now:
 - invokes Clang for the final native binary
 - supports `-o` and `--run ... -- argv` from one shell command
 
-`tests/bootstrap/selfhost/driver_test.sh` proves that flow on representative
+`tests/compiler/selfhost/driver_test.sh` proves that flow on representative
 sample programs.
 
 ### Why this is not Step 0
@@ -732,6 +735,11 @@ The frontend is the hard part. The driver is plumbing.
 ---
 
 ## Milestone 12: Grow from Bootstrap Subset to Full Parity
+
+**Status:** Started
+
+Started with the committed `bootstrap/` seed path, `tests/compiler/` suite rename,
+and `make norec` rebuild entrypoint.
 
 ### Gaps to close before starting
 
@@ -750,13 +758,12 @@ Turn the self-compiling compiler into the default compiler.
    - `tests/std/`
    - these suites should run against the self-hosted compiler by default once parity is credible
 3. Keep a separate compiler-focused suite for self-hosting and rebuild mechanics:
-   - rename the surviving `tests/bootstrap/` coverage to `tests/compiler/`
+   - keep the renamed `tests/compiler/` coverage focused on compiler-specific behavior
    - keep only compiler-specific tests there, such as:
      - self-compile chain tests
      - bootstrap/rebuild-from-seed tests
      - thin-driver tests
      - compiler-module smoke tests
-     - generated-C comparison regressions
 4. Add new regression tests for parity-only failures found along the way
 5. Keep the C compiler as a fallback until parity is credible
 6. Once parity is credible, rename the staging self-hosted compiler artifact from `nore2` to `norec`
@@ -771,11 +778,6 @@ Turn the self-compiling compiler into the default compiler.
    - have `bootstrap/bootstrap.sh` build a temporary stage-0 compiler under `tmp/`
    - have that temporary compiler compile `compiler/main.nore`
    - write the parity-ready executable to the repo root as `./norec`
-8. Add a compiler regression that compares emitted C between the two compilers:
-   - stage-0 `bootstrap/nore.c` generates C from a representative `.nore` source
-   - the freshly built self-hosted compiler generates C from the same `.nore` source
-   - the resulting C sources are compared as compiler-output regressions
-
 ### Target layout at parity
 
 ```text
@@ -817,7 +819,6 @@ Makefile                 # repo-root entry point, delegating to the bootstrap fl
 
 - `make test` should run `tests/errors/`, `tests/success/`, and `tests/std/` with `norec` as the default compiler
 - `make test-compiler` should run `tests/compiler/` for self-hosting, bootstrap, and compiler-output regressions
-- `tests/compiler/` should include at least one regression that compares the C emitted by stage-0 and the C emitted by the freshly built self-hosted compiler for the same `.nore` input
 - the old `tests/bootstrap/` directory name should disappear once the suite is no longer about the temporary bootstrap subset
 
 ### Exit criteria
@@ -827,7 +828,7 @@ Makefile                 # repo-root entry point, delegating to the bootstrap fl
 - rebuilding from scratch no longer depends on a root-level `nore.c`; the seed path lives under `bootstrap/`
 - `bootstrap/bootstrap.sh` can rebuild `./norec` by first creating a temporary stage-0 compiler in `tmp/`
 - the original language suites (`tests/errors/`, `tests/success/`, `tests/std/`) pass with `norec` as the default compiler
-- compiler-specific tests live under `tests/compiler/`, including stage-0 vs self-hosted generated-C comparison coverage
+- compiler-specific tests live under `tests/compiler/`
 - C compiler is no longer the default path
 
 ---

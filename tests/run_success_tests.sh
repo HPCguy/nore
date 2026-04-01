@@ -5,18 +5,18 @@
 PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NORE="${SCRIPT_DIR}/../nore"
+NORE_BIN="${NORE_BIN:-${SCRIPT_DIR}/../nore}"
 
-# Check if nore binary exists
-if [ ! -x "$NORE" ]; then
-    echo "Error: nore binary not found at $NORE"
+# Check if the configured compiler entrypoint exists
+if [ ! -x "$NORE_BIN" ]; then
+    echo "Error: compiler entrypoint not found at $NORE_BIN"
     echo "Run 'make' first to build the compiler"
     exit 1
 fi
 
 for f in "$SCRIPT_DIR"/success/*.nore; do
     # Run compiler with --run and capture output
-    output=$("$NORE" --run "$f" 2>&1)
+    output=$("$NORE_BIN" --run "$f" 2>&1)
     exit_code=$?
 
     if [ $exit_code -eq 0 ]; then
@@ -34,7 +34,7 @@ if ls "$SCRIPT_DIR"/std/*.nore 1>/dev/null 2>&1; then
     echo ""
     echo "--- stdlib tests ---"
     for f in "$SCRIPT_DIR"/std/*.nore; do
-        output=$("$NORE" --run "$f" 2>&1)
+        output=$("$NORE_BIN" --run "$f" 2>&1)
         exit_code=$?
 
         if [ $exit_code -eq 0 ]; then

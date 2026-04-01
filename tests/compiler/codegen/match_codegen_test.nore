@@ -1,0 +1,104 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import cmain "../../../compiler/codegen/c_main.nore"
+import check "../../../compiler/sema/check.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import scopes "../../../compiler/sema/scopes.nore"
+import source "../../../compiler/support/source.nore"
+import string "std/string.nore"
+import token "../../../compiler/frontend/token.nore"
+import types "../../../compiler/sema/types.nore"
+import symbols "../../../compiler/sema/symbols.nore"
+
+// Match codegen should cover statement arms, tail returns, local-init lowering, and scalar or-patterns.
+func main(): void = {
+    mut mem: Arena = arena(16777216)
+    mut sources: source.Sources = table_alloc(mut ref mem, 8)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 65536)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 4096)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 4096)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 16384)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 8)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 8)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 32)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 4096)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, 256)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, 512)
+    mut types_table: types.Types = table_alloc(mut ref mem, 512)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/compiler/codegen/match_repo",
+        ref "tests/compiler/codegen/match_repo/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert loaded.diags.count == 0
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert checked.diags.count == 0
+
+    val dumped: [u8] = cmain.c_file_dump(
+        mut ref mem,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        mut ref types_table,
+        ref checked.types,
+        ref loaded.modules
+    )
+
+    assert string.str_contains(ref dumped, ref "typedef struct {\n    int64_t tag;\n    union {\n        int64_t ni_Some;\n    } data;\n} ni_m0_Option;\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_unwrap(ni_m0_Option ni_opt) {\n    ni_m0_Option ni_match_")
+    assert string.str_contains(ref dumped, ref ".tag == 0L) {\n        int64_t ni_n = ni_match_")
+    assert string.str_contains(ref dumped, ref ".data.ni_Some;\n        return ni_n;\n    } else if (ni_match_")
+    assert string.str_contains(ref dumped, ref "== 1L) {\n        return 0L;\n    } else {\n        __builtin_unreachable();\n    }\n}\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_sum_if_some(ni_m0_Option ni_opt) {\n    int64_t ni_out = 0L;\n    ni_m0_Option ni_match_")
+    assert string.str_contains(ref dumped, ref "ni_out = ni_n;\n    } else if (ni_match_")
+    assert string.str_contains(ref dumped, ref "ni_out = (-1L);\n    } else {\n        __builtin_unreachable();\n    }\n    return ni_out;\n}\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_choose(int ni_flag) {\n    int64_t ni_value_")
+    assert string.str_contains(ref dumped, ref "int ni_match_")
+    assert string.str_contains(ref dumped, ref " = 1L;\n    } else if (ni_match_")
+    assert string.str_contains(ref dumped, ref " = 0L;\n    } else {\n        __builtin_unreachable();\n    }\n    int64_t ni_picked = ni_value_")
+    assert string.str_contains(ref dumped, ref "    return ni_picked;\n}\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_choose_if_shadow(int ni_flag) {\n    int64_t ni_value_")
+    assert string.str_contains(ref dumped, ref "if (ni_flag) {\n        int64_t ni_picked = 1L;\n        ni_value_")
+    assert string.str_contains(ref dumped, ref "    int64_t ni_picked = ni_value_")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_choose_payload_shadow(ni_m0_Option ni_opt) {\n    int64_t ni_value_")
+    assert string.str_contains(ref dumped, ref ".data.ni_Some;\n        ni_value_")
+    assert string.str_contains(ref dumped, ref "    int64_t ni_n = ni_value_")
+    assert !string.str_contains(ref dumped, ref "ni_n = ni_n;")
+    assert string.str_contains(ref dumped, ref "void ni_m0_discard_match_value(ni_m0_Option ni_opt) {\n    ni_m0_Option ni_match_")
+    assert string.str_contains(ref dumped, ref ".data.ni_Some;\n        (void)(ni_n);\n    } else if (ni_match_")
+    assert string.str_contains(ref dumped, ref "== 1L) {\n        (void)(0L);\n    } else {\n        __builtin_unreachable();\n    }\n}\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_classify(uint8_t ni_c) {\n    uint8_t ni_match_")
+    assert string.str_contains(ref dumped, ref "== 'a') || (ni_match_")
+}

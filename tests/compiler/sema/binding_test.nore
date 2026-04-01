@@ -1,0 +1,157 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import check "../../../compiler/sema/check.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import scopes "../../../compiler/sema/scopes.nore"
+import source "../../../compiler/support/source.nore"
+import symbols "../../../compiler/sema/symbols.nore"
+import token "../../../compiler/frontend/token.nore"
+import types "../../../compiler/sema/types.nore"
+import string "std/string.nore"
+
+// Child order is semantic in the flat node table, so tests need indexed access too.
+func child_at(ref nodes: node.Nodes, parent_id: i64, wanted_index: i64): i64 = {
+    mut child_id: i64 = nodes.first_child[parent_id]
+    mut index: i64 = 0
+    while (child_id >= 0) {
+        if (index == wanted_index) {
+            return child_id
+        }
+        child_id = nodes.next_sibling[child_id]
+        index += 1
+    }
+    -1
+}
+
+// Walk the bound tree looking for one specific qualified field access by member name.
+func find_field_access(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    ref field_name: [u8]
+): i64 = {
+    if (node_id < 0) {
+        return -1
+    }
+    if (nodes.kind[node_id] == node.NodeKind.FieldAccess &&
+        string.str_eq(
+            ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]),
+            ref field_name
+        )) {
+        return node_id
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        val found: i64 = find_field_access(ref nodes, ref tokens, ref sources, ref text_pool, child_id, ref field_name)
+        if (found >= 0) {
+            return found
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    -1
+}
+
+// Symbol assertions stay readable when the test can recover the token text directly.
+func symbol_name(
+    ref symbols_table: symbols.Symbols,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    symbol_id: i64
+): [u8] = {
+    token.token_text(ref sources, ref text_pool, ref tokens, symbols_table.name_token[symbol_id])
+}
+
+// Prove the first sema pass binds module aliases and qualified calls in a real import graph.
+func main(): void = {
+    mut mem: Arena = arena(8388608)
+    mut sources: source.Sources = table_alloc(mut ref mem, 16)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 2048)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 65536)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 4096)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 4096)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 16384)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 16)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 16)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 32)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 2048)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, 64)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, 256)
+    mut types_table: types.Types = table_alloc(mut ref mem, 256)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/compiler/imports/repo",
+        ref "tests/compiler/imports/repo/app/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert loaded.diags.count == 0
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert checked.diags.count == 0
+    assert checked.scopes.count >= 5
+    assert checked.symbols.count >= 8
+    assert checked.types.count >= 9
+
+    val root_node: i64 = modules.root_node[loaded.root_module]
+    val left_access: i64 = find_field_access(ref nodes, ref tokens, ref sources, ref text_pool, root_node, ref "left_value")
+    val support_access: i64 = find_field_access(ref nodes, ref tokens, ref sources, ref text_pool, root_node, ref "support_value")
+    assert left_access >= 0
+    assert support_access >= 0
+
+    val left_alias_node: i64 = child_at(ref nodes, left_access, 0)
+    val support_alias_node: i64 = child_at(ref nodes, support_access, 0)
+    assert left_alias_node >= 0
+    assert support_alias_node >= 0
+
+    val left_alias_symbol: i64 = nodes.symbol_id[left_alias_node]
+    val left_func_symbol: i64 = nodes.symbol_id[left_access]
+    val support_alias_symbol: i64 = nodes.symbol_id[support_alias_node]
+    val support_func_symbol: i64 = nodes.symbol_id[support_access]
+
+    assert left_alias_symbol >= 0
+    assert left_func_symbol >= 0
+    assert support_alias_symbol >= 0
+    assert support_func_symbol >= 0
+
+    assert symbols_table.kind[left_alias_symbol] == symbols.SymbolKind.ModuleAliasSymbol
+    assert symbols_table.kind[left_func_symbol] == symbols.SymbolKind.FunctionSymbol
+    assert symbols_table.kind[support_alias_symbol] == symbols.SymbolKind.ModuleAliasSymbol
+    assert symbols_table.kind[support_func_symbol] == symbols.SymbolKind.FunctionSymbol
+
+    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, left_alias_symbol), ref "left")
+    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, left_func_symbol), ref "left_value")
+    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, support_alias_symbol), ref "support")
+    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, support_func_symbol), ref "support_value")
+
+    assert symbols.symbol_is_public(ref symbols_table, left_func_symbol)
+    assert symbols.symbol_is_public(ref symbols_table, support_func_symbol)
+}
