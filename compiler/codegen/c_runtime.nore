@@ -15,7 +15,8 @@ pub func append_core_prelude(
     mut ref out: bbuf.ByteBuf,
     needs_arena: bool,
     needs_mem: bool,
-    needs_io: bool
+    needs_io: bool,
+    needs_args: bool
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n")
     append_bytes(mut ref mem, mut ref out, ref "#include <stdio.h>\n")
@@ -23,7 +24,7 @@ pub func append_core_prelude(
     if (needs_arena) {
         append_bytes(mut ref mem, mut ref out, ref "#include <stddef.h>\n")
     }
-    if (needs_arena || needs_mem || needs_io) {
+    if (needs_arena || needs_mem || needs_io || needs_args) {
         append_bytes(mut ref mem, mut ref out, ref "#include <string.h>\n")
     }
     if (needs_io) {
@@ -124,13 +125,32 @@ func append_exit_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = 
     append_bytes(mut ref mem, mut ref out, ref "}\n")
 }
 
+// args() snapshots argv into arena-owned strings so later code can treat them like ordinary arena slices.
+func append_args_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "static int ni_argc;\n")
+    append_bytes(mut ref mem, mut ref out, ref "static char **ni_argv;\n")
+    append_bytes(mut ref mem, mut ref out, ref "ni_slice_ni_str ni_args(ni_Arena *ni_mem) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_str *ni_args = (ni_str *)ni_arena_alloc(ni_mem, (int64_t)ni_argc, sizeof(ni_str), NI_ALIGNOF(ni_str));\n")
+    append_bytes(mut ref mem, mut ref out, ref "    int ni_i = 0;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    while (ni_i < ni_argc) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        size_t ni_len = strlen(ni_argv[ni_i]);\n")
+    append_bytes(mut ref mem, mut ref out, ref "        uint8_t *ni_data = (uint8_t *)ni_arena_alloc(ni_mem, (int64_t)ni_len, sizeof(uint8_t), NI_ALIGNOF(uint8_t));\n")
+    append_bytes(mut ref mem, mut ref out, ref "        memcpy(ni_data, ni_argv[ni_i], ni_len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_args[ni_i] = (ni_str){.data = ni_data, .len = (int64_t)ni_len};\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_i += 1;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (ni_slice_ni_str){.data = ni_args, .len = (int64_t)ni_argc};\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
 // Runtime helpers only emit the slices required by the scanned module graph.
 pub func runtime_helpers_dump(
     mut ref mem: Arena,
     needs_arena: bool,
     needs_mem: bool,
     needs_io: bool,
-    needs_exit: bool
+    needs_exit: bool,
+    needs_args: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
     mut wrote_any: bool = false
@@ -158,6 +178,13 @@ pub func runtime_helpers_dump(
             append_bytes(mut ref mem, mut ref out, ref "\n")
         }
         append_exit_runtime(mut ref mem, mut ref out)
+        wrote_any = true
+    }
+    if (needs_args) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_args_runtime(mut ref mem, mut ref out)
     }
     out.data[0..out.count]
 }
@@ -165,7 +192,7 @@ pub func runtime_helpers_dump(
 // Tests and c_main both need one stable entry point for the minimal generated-C prelude.
 pub func core_prelude_dump(mut ref mem: Arena): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out, false, false, false)
+    append_core_prelude(mut ref mem, mut ref out, false, false, false, false)
     out.data[0..out.count]
 }
 
@@ -174,9 +201,10 @@ pub func runtime_prelude_dump(
     mut ref mem: Arena,
     needs_arena: bool,
     needs_mem: bool,
-    needs_io: bool
+    needs_io: bool,
+    needs_args: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io)
+    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io, needs_args)
     out.data[0..out.count]
 }

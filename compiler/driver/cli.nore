@@ -1,3 +1,98 @@
-// Bootstrap compiler driver module placeholder.
-// Responsibility: command-line parsing and stage orchestration.
-// Implement in Milestone 9.
+// Bootstrap compiler driver helpers.
+// Responsibility: own the user-facing executable contract for bootstrap compilation entrypoints.
+// Owns: root-module `main` validation and its bootstrap diagnostics.
+// Does not own: frontend/sema/codegen internals, emitted-C layout, or Clang invocation.
+
+import bbuf "../support/byte_buf.nore"
+import diag "../support/diag.nore"
+import loader "../frontend/loader.nore"
+import node "../frontend/node.nore"
+import source "../support/source.nore"
+import span "../support/span.nore"
+import token "../frontend/token.nore"
+import types "../sema/types.nore"
+import string "std/string.nore"
+
+// The driver only cares whether a root declaration is the executable `main`.
+func decl_name_is_main(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    decl_id: i64
+): bool = {
+    if (decl_id < 0 || nodes.kind[decl_id] != node.NodeKind.FuncDecl) {
+        return false
+    }
+    val name_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[decl_id])
+    string.str_eq(ref name_text, ref "main")
+}
+
+// Stage-0 treats missing or invalid root `main` as semantic diagnostics, so the bootstrap driver does too.
+pub func validate_root_main(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref types_table: types.Types,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    ref module_range: span.Range
+): span.Range = {
+    val diag_start: i64 = table_len(ref diags)
+    if (module_range.count <= 0 || module_range.start >= table_len(ref modules)) {
+        return span.range(diag_start, 0)
+    }
+
+    val root_id: i64 = modules.root_node[module_range.start]
+    mut decl_id: i64 = nodes.first_child[root_id]
+    mut found_main: bool = false
+    while (decl_id >= 0) {
+        if (decl_name_is_main(ref sources, ref text_pool, ref tokens, ref nodes, decl_id)) {
+            found_main = true
+            if (nodes.data2[decl_id] != 0) {
+                diag.diag_error(
+                    mut ref mem,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    ref "S010",
+                    nodes.source_id[decl_id],
+                    nodes.start[decl_id],
+                    nodes.span_len[decl_id],
+                    ref "main must have no parameters"
+                )
+            }
+            if (nodes.type_id[decl_id] < 0 ||
+                types_table.kind[nodes.type_id[decl_id]] != types.TypeKind.VoidType) {
+                diag.diag_error(
+                    mut ref mem,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    ref "S010",
+                    nodes.source_id[decl_id],
+                    nodes.start[decl_id],
+                    nodes.span_len[decl_id],
+                    ref "main must return void"
+                )
+            }
+        }
+        decl_id = nodes.next_sibling[decl_id]
+    }
+
+    if (!found_main) {
+        diag.diag_error(
+            mut ref mem,
+            mut ref diags,
+            mut ref diag_pool,
+            ref "S009",
+            nodes.source_id[root_id],
+            0,
+            0,
+            ref "No 'main' function defined"
+        )
+    }
+
+    span.range(diag_start, table_len(ref diags) - diag_start)
+}

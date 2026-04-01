@@ -1,8 +1,226 @@
 // Bootstrap compiler entry point.
-// Responsibility: wire compiler stages together and own only top-level pipeline flow.
-// Owns: main() and later compile-stage sequencing.
-// Does not own: frontend, sema, codegen, or reusable support helpers.
+// Responsibility: wire the committed frontend, sema, and C codegen stages into one runnable pipeline.
+// Owns: CLI argument decoding, long-lived compiler tables, and top-level stage sequencing.
+// Does not own: frontend internals, semantic rules, codegen details, or Clang invocation.
 
-// Keep the entry point valid while later milestones fill in the pipeline.
+import bbuf "support/byte_buf.nore"
+import cmain "codegen/c_main.nore"
+import check "sema/check.nore"
+import driver "driver/cli.nore"
+import diag "support/diag.nore"
+import file "std/file.nore"
+import ibuf "support/i64_buf.nore"
+import io "std/io.nore"
+import loader "frontend/loader.nore"
+import node "frontend/node.nore"
+import scopes "sema/scopes.nore"
+import source "support/source.nore"
+import span "support/span.nore"
+import string "std/string.nore"
+import symbols "sema/symbols.nore"
+import token "frontend/token.nore"
+import types "sema/types.nore"
+
+native func exit(code: i32): void
+native func args(mut ref mem: Arena): [str]
+
+val MAIN_ARENA_CAPACITY: i64 = 134217728
+val SOURCES_CAPACITY: i64 = 128
+val PATH_POOL_CAPACITY: i64 = 4096
+val TEXT_POOL_CAPACITY: i64 = 262144
+val LINE_STARTS_CAPACITY: i64 = 32768
+val TOKENS_CAPACITY: i64 = 131072
+val NODES_CAPACITY: i64 = 524288
+val MODULES_CAPACITY: i64 = 128
+val IMPORTS_CAPACITY: i64 = 256
+val DIAGS_CAPACITY: i64 = 512
+val DIAG_POOL_CAPACITY: i64 = 16384
+val SCOPES_CAPACITY: i64 = 16384
+val SYMBOLS_CAPACITY: i64 = 65536
+val TYPES_CAPACITY: i64 = 32768
+
+// Keep the first bootstrap CLI contract explicit until a richer driver exists.
+func print_usage(): void = {
+    io.eprintln(ref "usage: bootstrap-compiler <input.nore> <output.c> [compiler_root]")
+    io.eprintln(ref "compiler_root defaults to '.' and should point at the repo root for std/ imports")
+}
+
+// Diagnostics already know how to format themselves; the driver only needs to stream one range in order.
+func emit_diag_range(
+    mut ref mem: Arena,
+    ref diags: diag.Diagnostics,
+    ref diag_pool: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref line_starts: ibuf.I64Buf,
+    ref diag_range: span.Range
+): void = {
+    mut diag_id: i64 = diag_range.start
+    val end: i64 = span.range_end(ref diag_range)
+    while (diag_id < end) {
+        val text: [u8] = diag.diag_format(
+            mut ref mem,
+            ref diags,
+            ref diag_pool,
+            ref sources,
+            ref path_pool,
+            ref line_starts,
+            diag_id
+        )
+        io.eprintln(ref text)
+        diag_id += 1
+    }
+}
+
+// One small helper keeps the write-error path out of the main pipeline flow.
+func write_output_or_exit(mut ref mem: Arena, ref output_path: str, ref dumped: [u8]): void = {
+    match (file.write_file(ref output_path, ref dumped)) {
+        Ok(written) = { }
+        Err(code) = {
+            val message: str = string.str_concat(mut ref mem, ref "Could not write output file: ", ref output_path)
+            io.eprintln(ref message)
+            exit(1)
+        }
+    }
+}
+
+// Stage-0 still prefers slice locals that come from function calls, so keep argv indexing behind helpers.
+func cli_input_path(ref argv: [str]): str = {
+    argv[1]
+}
+
+// The output-path accessor keeps the entrypoint source inside the currently self-compilable subset.
+func cli_output_path(ref argv: [str]): str = {
+    argv[2]
+}
+
+// compiler_root remains optional while std-import resolution still uses the current bootstrap path policy.
+func cli_compiler_root(ref argv: [str]): str = {
+    if (argv.len == 4) {
+        return argv[3]
+    }
+    "."
+}
+
+// The bootstrap pipeline is intentionally linear: decode args, load graph, typecheck, emit C, write file.
 func main(): void = {
+    mut mem: Arena = arena(MAIN_ARENA_CAPACITY)
+    val argv: [str] = args(mut ref mem)
+    if (argv.len < 3 || argv.len > 4) {
+        print_usage()
+        exit(1)
+    }
+
+    val input_path: str = cli_input_path(ref argv)
+    val output_path: str = cli_output_path(ref argv)
+    val compiler_root: str = cli_compiler_root(ref argv)
+
+    mut sources: source.Sources = table_alloc(mut ref mem, SOURCES_CAPACITY)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, PATH_POOL_CAPACITY)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, TEXT_POOL_CAPACITY)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, LINE_STARTS_CAPACITY)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, TOKENS_CAPACITY)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, NODES_CAPACITY)
+    mut modules: loader.Modules = table_alloc(mut ref mem, MODULES_CAPACITY)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, IMPORTS_CAPACITY)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, DIAGS_CAPACITY)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, DIAG_POOL_CAPACITY)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, SCOPES_CAPACITY)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, SYMBOLS_CAPACITY)
+    mut types_table: types.Types = table_alloc(mut ref mem, TYPES_CAPACITY)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref compiler_root,
+        ref input_path,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (loaded.diags.count > 0) {
+        emit_diag_range(
+            mut ref mem,
+            ref diags,
+            ref diag_pool,
+            ref sources,
+            ref path_pool,
+            ref line_starts,
+            ref loaded.diags
+        )
+        exit(1)
+    }
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    if (checked.diags.count > 0) {
+        emit_diag_range(
+            mut ref mem,
+            ref diags,
+            ref diag_pool,
+            ref sources,
+            ref path_pool,
+            ref line_starts,
+            ref checked.diags
+        )
+        exit(1)
+    }
+
+    val main_diags: span.Range = driver.validate_root_main(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref types_table,
+        mut ref diags,
+        mut ref diag_pool,
+        ref loaded.modules
+    )
+    if (main_diags.count > 0) {
+        emit_diag_range(
+            mut ref mem,
+            ref diags,
+            ref diag_pool,
+            ref sources,
+            ref path_pool,
+            ref line_starts,
+            ref main_diags
+        )
+        exit(1)
+    }
+
+    val dumped: [u8] = cmain.c_file_dump(
+        mut ref mem,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        mut ref types_table,
+        ref checked.types,
+        ref loaded.modules
+    )
+    write_output_or_exit(mut ref mem, ref output_path, ref dumped)
 }

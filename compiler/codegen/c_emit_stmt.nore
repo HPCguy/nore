@@ -212,6 +212,7 @@ func append_expr_statement(
     expr_id: i64,
     depth: i64
 ): void = {
+    val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[expr_id])
     append_indent(mut ref mem, mut ref out, depth)
     cexpr.append_expr(
         mut ref mem,
@@ -327,6 +328,7 @@ func append_condition_expr(
     ref types_table: types.Types,
     expr_id: i64
 ): void = {
+    val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[expr_id])
     append_bytes(mut ref mem, mut ref out, ref "(")
     if (binary_is_equality_condition(ref tokens, ref nodes, expr_id)) {
         cexpr.append_expr(
@@ -344,7 +346,7 @@ func append_condition_expr(
         append_bytes(
             mut ref mem,
             mut ref out,
-            ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[expr_id])
+            ref op_text
         )
         append_bytes(mut ref mem, mut ref out, ref " ")
         cexpr.append_expr(
@@ -560,7 +562,7 @@ func append_local_decl(
         nodes.data0[decl_id]
     )
     append_bytes(mut ref mem, mut ref out, ref " = ")
-    cexpr.append_expr(
+    cexpr.append_expr_as_type(
         mut ref mem,
         mut ref out,
         ref sources,
@@ -569,6 +571,7 @@ func append_local_decl(
         ref nodes,
         ref symbols_table,
         ref types_table,
+        nodes.type_id[decl_id],
         init_id
     )
     append_bytes(mut ref mem, mut ref out, ref ";\n")
@@ -587,6 +590,7 @@ func append_assignment_stmt(
     stmt_id: i64,
     depth: i64
 ): void = {
+    val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[stmt_id])
     append_indent(mut ref mem, mut ref out, depth)
     cexpr.append_expr(
         mut ref mem,
@@ -603,10 +607,10 @@ func append_assignment_stmt(
     append_bytes(
         mut ref mem,
         mut ref out,
-        ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[stmt_id])
+        ref op_text
     )
     append_bytes(mut ref mem, mut ref out, ref " ")
-    cexpr.append_expr(
+    cexpr.append_expr_as_type(
         mut ref mem,
         mut ref out,
         ref sources,
@@ -615,6 +619,7 @@ func append_assignment_stmt(
         ref nodes,
         ref symbols_table,
         ref types_table,
+        nodes.type_id[node.node_child_at(ref nodes, stmt_id, 0)],
         node.node_child_at(ref nodes, stmt_id, 1)
     )
     append_bytes(mut ref mem, mut ref out, ref ";\n")
@@ -784,7 +789,7 @@ func append_tail_value(
         types_table.kind[func_return_type] != types.TypeKind.VoidType) {
         append_indent(mut ref mem, mut ref out, depth)
         append_bytes(mut ref mem, mut ref out, ref "return ")
-        cexpr.append_expr(
+        cexpr.append_expr_as_type(
             mut ref mem,
             mut ref out,
             ref sources,
@@ -793,6 +798,7 @@ func append_tail_value(
             ref nodes,
             ref symbols_table,
             ref types_table,
+            func_return_type,
             node_id
         )
         append_bytes(mut ref mem, mut ref out, ref ";\n")
@@ -812,7 +818,7 @@ func append_tail_value(
             tail_assign_name_token
         )
         append_bytes(mut ref mem, mut ref out, ref " = ")
-        cexpr.append_expr(
+        cexpr.append_expr_as_type(
             mut ref mem,
             mut ref out,
             ref sources,
@@ -821,6 +827,7 @@ func append_tail_value(
             ref nodes,
             ref symbols_table,
             ref types_table,
+            func_return_type,
             node_id
         )
         append_bytes(mut ref mem, mut ref out, ref ";\n")
@@ -1416,7 +1423,7 @@ func append_statement(
         append_bytes(mut ref mem, mut ref out, ref "return")
         if (value_id >= 0) {
             append_bytes(mut ref mem, mut ref out, ref " ")
-            cexpr.append_expr(
+            cexpr.append_expr_as_type(
                 mut ref mem,
                 mut ref out,
                 ref sources,
@@ -1425,6 +1432,7 @@ func append_statement(
                 ref nodes,
                 ref symbols_table,
                 ref types_table,
+                func_return_type,
                 value_id
             )
         }

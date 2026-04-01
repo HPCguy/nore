@@ -1,0 +1,19 @@
+mut G: [u8; 3] = ['A', 'B', 'C']
+
+func make_str(): str = {
+    G
+}
+
+func make_bytes(): [u8] = {
+    G
+}
+
+func from_param(bytes: [u8; 3]): str = {
+    bytes
+}
+
+func main(): void = {
+    assert make_str().len == 3
+    assert make_bytes().len == 3
+    assert from_param(['x', 'y', 'z']).len == 3
+}

@@ -242,8 +242,9 @@ func native_decl_emitted_earlier(
             if (module_id == current_module_id && decl_id == current_decl_id) {
                 return false
             }
+            val decl_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[decl_id])
             if (decl_is_native(ref nodes, ref symbols_table, decl_id) &&
-                string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[decl_id]), ref current_name)) {
+                string.str_eq(ref decl_name, ref current_name)) {
                 return true
             }
             decl_id = nodes.next_sibling[decl_id]

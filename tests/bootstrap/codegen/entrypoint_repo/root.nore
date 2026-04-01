@@ -1,0 +1,11 @@
+native func args(mut ref mem: Arena): [str]
+
+func arg_count(mut ref mem: Arena): i64 = {
+    val argv: [str] = args(mut ref mem)
+    argv.len
+}
+
+func main(): void = {
+    mut mem: Arena = arena(4096)
+    assert arg_count(mut ref mem) >= 1
+}

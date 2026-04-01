@@ -516,7 +516,7 @@ Do not try to reach full parity here. Reach "enough to compile the compiler sour
 
 ## Milestone 8: C Codegen for the Bootstrap Subset
 
-**Status:** In progress
+**Status:** Complete
 
 Started in `compiler/codegen/c_types.nore`, `compiler/codegen/c_emit_decl.nore`,
 `compiler/codegen/c_runtime.nore`, `compiler/codegen/c_main.nore`,
@@ -541,15 +541,20 @@ names, ref arguments over slice-view temporaries, statement-form `if` /
 The current runtime/codegen slice now also lowers the first builtin calls
 (`arena`, `arena_alloc`, `arena_reset`, `table_alloc`, `table_get`,
 `table_insert`, `table_len`) to generated C helpers, emits the first shared
-arena/native runtime bodies (`ni_arena_*`, `ni_fd_*`, `ni_mem_copy`, `ni_exit`),
-and materializes per-table alloc/get/insert helpers only for table builtins used
-by the current module graph.
+arena/native runtime bodies (`ni_arena_*`, `ni_fd_*`, `ni_mem_copy`, `ni_exit`,
+`ni_args`), handles expected-type view coercions between `str`, `[u8]`, and
+`[u8; N]` in returns/locals/assignments/calls, emits a root `main(...)` wrapper
+when the graph defines a zero-arg Nore `main`, and materializes per-table
+alloc/get/insert helpers only for table builtins used by the current module
+graph.
 Dedicated smoke tests now prove one real compiler support module
 (`compiler/support/byte_buf.nore`), one real compiler frontend module
 (`compiler/frontend/node.nore`), one real compiler parser module globals
 slice, a dedicated `assert`-lowering regression, and two real std modules
 (`std/io.nore`, `std/file.nore`) plus a focused builtin-runtime fixture lower
-through the current whole-file codegen without asserting.
+through the current whole-file codegen without asserting. A real end-to-end
+bootstrap smoke now also emits C for `tests/success/print_hello.nore`, builds it
+with Clang, and runs the resulting binary successfully.
 
 ### Gaps to close before starting
 
@@ -587,6 +592,8 @@ Emit C for the subset used by the bootstrap compiler.
 
 ## Milestone 9: First End-to-End Bootstrap Compiler
 
+**Status:** In progress
+
 ### Gaps to close before starting
 
 - Milestone 8 complete
@@ -615,6 +622,12 @@ Produce the first usable Nore-written compiler binary, even if it is still subse
 - a Nore-written compiler can compile sample programs from the bootstrap subset
 
 ### Notes
+
+The committed `compiler/main.nore` is now a real pipeline instead of a stub:
+it loads the graph, prints loader/sema diagnostics, emits C, wires `args()`
+through the generated runtime, and is already used for the current Clang smoke
+path. The remaining Milestone 9 work is mostly about hardening and packaging
+that flow rather than inventing it from scratch.
 
 This is the first real milestone where "compiler in Nore" exists, but it is not self-hosted yet.
 

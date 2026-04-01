@@ -31,6 +31,11 @@ func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8])
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
 }
 
+func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
+    val text: str = string.i64_to_str(mut ref mem, n)
+    append_bytes(mut ref mem, mut ref out, ref text)
+}
+
 // Keep section spacing centralized so later codegen slices can extend the file layout without churn.
 func append_section(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
     if (data.len == 0) {
@@ -64,10 +69,13 @@ func identifier_token_is(
     node_id: i64,
     ref wanted: [u8]
 ): bool = {
-    node_id >= 0 &&
-    nodes.kind[node_id] == node.NodeKind.Identifier &&
-    nodes.symbol_id[node_id] < 0 &&
-    string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]), ref wanted)
+    if (node_id < 0 ||
+        nodes.kind[node_id] != node.NodeKind.Identifier ||
+        nodes.symbol_id[node_id] >= 0) {
+        return false
+    }
+    val name_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+    string.str_eq(ref name_text, ref wanted)
 }
 
 // One recursive scan keeps the generated-C runtime surface aligned with actual module usage.
@@ -81,7 +89,8 @@ func collect_runtime_usage(
     mut ref needs_arena: bool,
     mut ref needs_mem: bool,
     mut ref needs_io: bool,
-    mut ref needs_exit: bool
+    mut ref needs_exit: bool,
+    mut ref needs_args: bool
 ): void = {
     if (node_id < 0) {
         return
@@ -127,6 +136,10 @@ func collect_runtime_usage(
         if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "exit")) {
             needs_exit = true
         }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "args")) {
+            needs_arena = true
+            needs_args = true
+        }
         if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write") ||
             cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read") ||
             cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_open") ||
@@ -148,7 +161,8 @@ func collect_runtime_usage(
             mut ref needs_arena,
             mut ref needs_mem,
             mut ref needs_io,
-            mut ref needs_exit
+            mut ref needs_exit,
+            mut ref needs_args
         )
         child_id = nodes.next_sibling[child_id]
     }
@@ -819,8 +833,9 @@ func append_table_insert_helper(
     }
 
     if (has_field) {
+        val first_field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, first_field_token)
         append_bytes(mut ref mem, mut ref out, ref "    if (ni_table->ni__len >= ni_table->ni_")
-        append_bytes(mut ref mem, mut ref out, ref token.token_text(ref sources, ref text_pool, ref tokens, first_field_token))
+        append_bytes(mut ref mem, mut ref out, ref first_field_name)
         append_bytes(mut ref mem, mut ref out, ref ".len) {\n")
         append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"Table capacity exceeded\\n\");\n")
         append_bytes(mut ref mem, mut ref out, ref "        exit(2);\n")
@@ -1091,6 +1106,110 @@ func slice_helpers_dump(
     out.data[0..out.count]
 }
 
+// Value coercion helpers keep destination-type-aware reshapes single-evaluation in the generated C.
+func append_value_coercion_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    source_type: i64,
+    target_type: i64
+): void = {
+    val source_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+    val target_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        target_type
+    )
+    val helper_name: str = cexpr.value_coercion_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type,
+        target_type
+    )
+
+    val is_array_source: bool = types_table.kind[source_type] == types.TypeKind.ArrayType
+    append_bytes(mut ref mem, mut ref out, ref "static inline ")
+    append_bytes(mut ref mem, mut ref out, ref target_name)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref source_name)
+    if (is_array_source) {
+        append_bytes(mut ref mem, mut ref out, ref " *ni_value) {\n")
+        append_bytes(mut ref mem, mut ref out, ref "    return (")
+        append_bytes(mut ref mem, mut ref out, ref target_name)
+        append_bytes(mut ref mem, mut ref out, ref "){.data = ni_value->data, .len = ")
+        append_i64(mut ref mem, mut ref out, types_table.data1[source_type])
+        append_bytes(mut ref mem, mut ref out, ref "L};\n")
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref " ni_value) {\n")
+        append_bytes(mut ref mem, mut ref out, ref "    return (")
+        append_bytes(mut ref mem, mut ref out, ref target_name)
+        append_bytes(mut ref mem, mut ref out, ref "){.data = ni_value.data, .len = ni_value.len};\n")
+    }
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Helper emission is cheap enough to derive from the checked type table instead of a second context-specific scan.
+func value_coercion_helpers_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut wrote_any: bool = false
+    mut source_type: i64 = 0
+    while (source_type < table_len(ref types_table)) {
+        mut target_type: i64 = 0
+        while (target_type < table_len(ref types_table)) {
+            if (cexpr.value_coercion_supported(ref types_table, source_type, target_type)) {
+                if (wrote_any) {
+                    append_bytes(mut ref mem, mut ref out, ref "\n")
+                }
+                append_value_coercion_helper(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    ref types_table,
+                    source_type,
+                    target_type
+                )
+                wrote_any = true
+            }
+            target_type += 1
+        }
+        source_type += 1
+    }
+
+    out.data[0..out.count]
+}
+
 // Definitions still emit in module order, but now cover the broader statement/expression slice.
 func function_definitions_dump(
     mut ref mem: Arena,
@@ -1151,6 +1270,79 @@ func function_definitions_dump(
     out.data[0..out.count]
 }
 
+// Executable graphs keep the user-visible Nore main and add one C entry wrapper at the translation-unit boundary.
+func root_main_decl_id(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref module_range: span.Range
+): i64 = {
+    if (module_range.count <= 0 || module_range.start >= table_len(ref modules)) {
+        return -1
+    }
+
+    val root_id: i64 = modules.root_node[module_range.start]
+    mut decl_id: i64 = nodes.first_child[root_id]
+    while (decl_id >= 0) {
+        if (nodes.kind[decl_id] == node.NodeKind.FuncDecl &&
+            cexpr.token_name_is(ref sources, ref text_pool, ref tokens, nodes.data0[decl_id], ref "main")) {
+            return decl_id
+        }
+        decl_id = nodes.next_sibling[decl_id]
+    }
+    -1
+}
+
+// The wrapper stays tiny: stash argc/argv when needed, call the root-module Nore main, then return zero to libc.
+func entry_wrapper_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref types_table: types.Types,
+    ref module_range: span.Range,
+    needs_args: bool
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 128)
+    val decl_id: i64 = root_main_decl_id(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref module_range)
+    if (decl_id < 0 ||
+        nodes.data2[decl_id] != 0 ||
+        nodes.type_id[decl_id] < 0 ||
+        types_table.kind[nodes.type_id[decl_id]] != types.TypeKind.VoidType) {
+        return out.data[0..out.count]
+    }
+
+    val main_name: str = cdecl.decl_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        module_range.start,
+        nodes.data0[decl_id]
+    )
+    append_bytes(mut ref mem, mut ref out, ref "int main(")
+    if (needs_args) {
+        append_bytes(mut ref mem, mut ref out, ref "int argc, char **argv")
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref "void")
+    }
+    append_bytes(mut ref mem, mut ref out, ref ") {\n")
+    if (needs_args) {
+        append_bytes(mut ref mem, mut ref out, ref "    ni_argc = argc;\n")
+        append_bytes(mut ref mem, mut ref out, ref "    ni_argv = argv;\n")
+    }
+    append_bytes(mut ref mem, mut ref out, ref "    ")
+    append_bytes(mut ref mem, mut ref out, ref main_name)
+    append_bytes(mut ref mem, mut ref out, ref "();\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return 0;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    out.data[0..out.count]
+}
+
 // The current whole-file dump now assembles prelude, typedefs, module globals, native/user prototypes, and the broader early body-emission slice.
 pub func c_file_dump(
     mut ref mem: Arena,
@@ -1176,6 +1368,7 @@ pub func c_file_dump(
     mut needs_mem: bool = false
     mut needs_io: bool = false
     mut needs_exit: bool = false
+    mut needs_args: bool = false
     mut module_id: i64 = module_range.start
     val module_end: i64 = span.range_end(ref module_range)
     while (module_id < module_end && module_id < table_len(ref modules)) {
@@ -1189,12 +1382,13 @@ pub func c_file_dump(
             mut ref needs_arena,
             mut ref needs_mem,
             mut ref needs_io,
-            mut ref needs_exit
+            mut ref needs_exit,
+            mut ref needs_args
         )
         module_id += 1
     }
 
-    val prelude: [u8] = cruntime.runtime_prelude_dump(mut ref mem, needs_arena, needs_mem, needs_io)
+    val prelude: [u8] = cruntime.runtime_prelude_dump(mut ref mem, needs_arena, needs_mem, needs_io, needs_args)
     append_section(mut ref mem, mut ref out, ref prelude)
 
     val type_defs: [u8] = ctypes.type_defs_dump(
@@ -1213,7 +1407,8 @@ pub func c_file_dump(
         needs_arena,
         needs_mem,
         needs_io,
-        needs_exit
+        needs_exit,
+        needs_args
     )
 
     val globals: [u8] = global_definitions_dump(
@@ -1267,6 +1462,16 @@ pub func c_file_dump(
     )
     append_section(mut ref mem, mut ref out, ref helpers)
 
+    val coercion_helpers: [u8] = value_coercion_helpers_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table
+    )
+    append_section(mut ref mem, mut ref out, ref coercion_helpers)
+
     val prototypes: [u8] = cdecl.function_prototypes_dump(
         mut ref mem,
         ref sources,
@@ -1293,6 +1498,19 @@ pub func c_file_dump(
         ref module_range
     )
     append_section(mut ref mem, mut ref out, ref definitions)
+
+    val entry_wrapper: [u8] = entry_wrapper_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref types_table,
+        ref module_range,
+        needs_args
+    )
+    append_section(mut ref mem, mut ref out, ref entry_wrapper)
 
     out.data[0..out.count]
 }

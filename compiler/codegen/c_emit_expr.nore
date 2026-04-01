@@ -23,6 +23,8 @@ val CEXPR_BUILTIN_CALL_TABLE_ALLOC: i64 = 4
 val CEXPR_BUILTIN_CALL_TABLE_LEN: i64 = 5
 val CEXPR_BUILTIN_CALL_TABLE_GET: i64 = 6
 val CEXPR_BUILTIN_CALL_TABLE_INSERT: i64 = 7
+val CEXPR_CHECK_NODE_FLAG_MUT: i64 = 1
+val CEXPR_CHECK_NODE_FLAG_REF: i64 = 4
 val CODEGEN_SYNTHETIC_TOKEN_OS: i64 = -2
 val CODEGEN_SYNTHETIC_TOKEN_TARGET_OS: i64 = -3
 val CODEGEN_SYNTHETIC_TOKEN_LINUX: i64 = -4
@@ -43,6 +45,125 @@ func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
     append_bytes(mut ref mem, mut ref out, ref text)
 }
 
+// The bootstrap type table keeps builtin rows small, so a linear u8 lookup stays cheap and local.
+func u8_type_id(ref types_table: types.Types): i64 = {
+    mut type_id: i64 = 0
+    while (type_id < table_len(ref types_table)) {
+        if (types_table.kind[type_id] == types.TypeKind.U8Type) {
+            return type_id
+        }
+        type_id += 1
+    }
+    -1
+}
+
+// Byte-view coercions intentionally treat str, [u8], and [u8; N] as the same underlying data+len view.
+pub func type_is_byte_view(ref types_table: types.Types, type_id: i64): bool = {
+    if (type_id < 0) {
+        return false
+    }
+
+    if (types_table.kind[type_id] == types.TypeKind.StrType) {
+        return true
+    }
+
+    val byte_type: i64 = u8_type_id(ref types_table)
+    if (byte_type < 0) {
+        return false
+    }
+
+    if ((types_table.kind[type_id] == types.TypeKind.SliceType ||
+         types_table.kind[type_id] == types.TypeKind.ArrayType) &&
+        types_table.data0[type_id] == byte_type) {
+        return true
+    }
+
+    false
+}
+
+// Value coercions only cover the sema-approved view reshapes that do not need element conversion code.
+pub func value_coercion_supported(
+    ref types_table: types.Types,
+    source_type: i64,
+    target_type: i64
+): bool = {
+    if (source_type < 0 || target_type < 0 || source_type == target_type) {
+        return false
+    }
+
+    if (types_table.kind[target_type] == types.TypeKind.SliceType &&
+        types_table.kind[source_type] == types.TypeKind.ArrayType &&
+        types_table.data0[target_type] == types_table.data0[source_type]) {
+        return true
+    }
+
+    if ((types_table.kind[target_type] == types.TypeKind.StrType ||
+         (types_table.kind[target_type] == types.TypeKind.SliceType &&
+          type_is_byte_view(ref types_table, target_type))) &&
+        type_is_byte_view(ref types_table, source_type)) {
+        return true
+    }
+
+    false
+}
+
+// str and [u8] share the same lowered `{data,len}` header, so ref coercions can preserve aliasing with a cast.
+func value_coercion_uses_pointer_cast(
+    ref types_table: types.Types,
+    source_type: i64,
+    target_type: i64
+): bool = {
+    if (!value_coercion_supported(ref types_table, source_type, target_type)) {
+        return false
+    }
+
+    source_type >= 0 &&
+    target_type >= 0 &&
+    source_type != target_type &&
+    type_is_byte_view(ref types_table, source_type) &&
+    type_is_byte_view(ref types_table, target_type) &&
+    types_table.kind[source_type] != types.TypeKind.ArrayType &&
+    types_table.kind[target_type] != types.TypeKind.ArrayType
+}
+
+// Helper names stay type-pair-specific so value coercions evaluate the source expression only once.
+pub func value_coercion_helper_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    source_type: i64,
+    target_type: i64
+): str = {
+    val source_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+    val target_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        target_type
+    )
+    val prefix: str = string.str_concat3(mut ref mem, ref "ni_coerce__", ref target_name, ref "__from__")
+    string.str_concat(mut ref mem, ref prefix, ref source_name)
+}
+
+// Parameter declarations reuse sema's ref flag layout in nodes.data1.
+func decl_is_ref(ref nodes: node.Nodes, param_id: i64): bool = {
+    param_id >= 0 && (nodes.data1[param_id] & CEXPR_CHECK_NODE_FLAG_REF) != 0
+}
+
 // Builtin names still dispatch by source spelling until sema grows dedicated call rows.
 pub func token_name_is(
     ref sources: source.Sources,
@@ -51,8 +172,11 @@ pub func token_name_is(
     token_id: i64,
     ref wanted: [u8]
 ): bool = {
-    token_id >= 0 &&
-    string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, token_id), ref wanted)
+    if (token_id < 0) {
+        return false
+    }
+    val token_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, token_id)
+    string.str_eq(ref token_text, ref wanted)
 }
 
 // Keep the builtin dispatch table aligned with sema without coupling codegen to sema internals.
@@ -693,8 +817,208 @@ func append_place_expr(
     assert false
 }
 
+// View literals keep array-to-slice/str reshapes explicit at the call site without inventing hidden locals.
+func append_view_literal_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    target_type: i64,
+    value_id: i64
+): void = {
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        target_type
+    )
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref "){.data = ")
+    append_array_like_data_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        value_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ", .len = ")
+    append_array_like_len_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        value_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Array-source view coercions must preserve the original array storage whenever the source is addressable.
+func append_array_value_pointer(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val actual_type: i64 = nodes.type_id[node_id]
+    if (actual_type < 0) {
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.Identifier &&
+        nodes.symbol_id[node_id] >= 0 &&
+        symbols_table.kind[nodes.symbol_id[node_id]] == symbols.SymbolKind.ParamSymbol &&
+        symbols.symbol_is_ref(ref symbols_table, nodes.symbol_id[node_id])) {
+        append_symbol_storage_name(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref symbols_table,
+            nodes.symbol_id[node_id]
+        )
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.Identifier ||
+        nodes.kind[node_id] == node.NodeKind.FieldAccess) {
+        append_bytes(mut ref mem, mut ref out, ref "&")
+        append_place_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        return
+    }
+
+    val type_text: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        actual_type
+    )
+    append_bytes(mut ref mem, mut ref out, ref "&(((")
+    append_bytes(mut ref mem, mut ref out, ref type_text)
+    append_bytes(mut ref mem, mut ref out, ref "[]){")
+    append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        node_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref "})[0])")
+}
+
+// Value coercions call one generated helper so the source expression only runs once.
+pub func append_expr_as_type(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    expected_type: i64,
+    node_id: i64
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    val actual_type: i64 = nodes.type_id[node_id]
+    if (value_coercion_supported(ref types_table, actual_type, expected_type)) {
+        val helper_name: str = value_coercion_helper_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            actual_type,
+            expected_type
+        )
+        append_bytes(mut ref mem, mut ref out, ref helper_name)
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        if (actual_type >= 0 && types_table.kind[actual_type] == types.TypeKind.ArrayType) {
+            append_array_value_pointer(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                node_id
+            )
+        } else {
+            append_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                node_id
+            )
+        }
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        node_id
+    )
+}
+
 // Ref arguments lower to pointers, reusing an existing pointer when the source is already a ref binding.
-func append_ref_arg_expr(
+func append_ref_source_pointer(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
@@ -772,6 +1096,135 @@ func append_ref_arg_expr(
     )
 }
 
+// Ref arguments may need a pointer-preserving cast or a temporary view object when sema accepted a coercion.
+func append_ref_arg_expr_as_type(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    expected_type: i64,
+    ref_expr_id: i64
+): void = {
+    val value_id: i64 = node.node_child_at(ref nodes, ref_expr_id, 0)
+    val actual_type: i64 = if (value_id >= 0) { nodes.type_id[value_id] } else { -1 }
+    if (value_coercion_supported(ref types_table, actual_type, expected_type)) {
+        if (value_coercion_uses_pointer_cast(ref types_table, actual_type, expected_type)) {
+            val type_text: str = ctypes.type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                expected_type
+            )
+            append_bytes(mut ref mem, mut ref out, ref "((")
+            if ((nodes.data0[ref_expr_id] & CEXPR_CHECK_NODE_FLAG_MUT) == 0) {
+                append_bytes(mut ref mem, mut ref out, ref "const ")
+            }
+            append_bytes(mut ref mem, mut ref out, ref type_text)
+            append_bytes(mut ref mem, mut ref out, ref " *)")
+            append_ref_source_pointer(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                ref_expr_id
+            )
+            append_bytes(mut ref mem, mut ref out, ref ")")
+            return
+        }
+
+        val type_text: str = ctypes.type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            expected_type
+        )
+        append_bytes(mut ref mem, mut ref out, ref "&(((")
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref "[]){")
+        if (actual_type >= 0 && types_table.kind[actual_type] == types.TypeKind.ArrayType) {
+            append_view_literal_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                expected_type,
+                value_id
+            )
+        } else {
+            append_expr_as_type(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                expected_type,
+                value_id
+            )
+        }
+        append_bytes(mut ref mem, mut ref out, ref "})[0])")
+        return
+    }
+
+    append_ref_source_pointer(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        ref_expr_id
+    )
+}
+
+// Legacy ref emission still exists for builtin lowering paths that do not need destination-type coercions.
+func append_ref_arg_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    ref_expr_id: i64
+): void = {
+    append_ref_arg_expr_as_type(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        -1,
+        ref_expr_id
+    )
+}
+
 // Builtin ref arguments still wrap the pointee in a RefExpr node even though codegen lowers them specially.
 pub func ref_arg_value_id(ref nodes: node.Nodes, arg_id: i64): i64 = {
     if (arg_id < 0) {
@@ -815,13 +1268,7 @@ func arena_alloc_elem_type(ref types_table: types.Types, result_type: i64): i64 
         return types_table.data0[result_type]
     }
     if (types_table.kind[result_type] == types.TypeKind.StrType) {
-        mut type_id: i64 = 0
-        while (type_id < table_len(ref types_table)) {
-            if (types_table.kind[type_id] == types.TypeKind.U8Type) {
-                return type_id
-            }
-            type_id += 1
-        }
+        return u8_type_id(ref types_table)
     }
     -1
 }
@@ -1191,6 +1638,28 @@ func append_call_target(
     assert false
 }
 
+// Call lowering only needs the already-checked parameter node so argument emission can mirror sema's expectations.
+func call_param_id(
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    callee_id: i64,
+    arg_index: i64
+): i64 = {
+    if (callee_id < 0 ||
+        arg_index < 0 ||
+        nodes.symbol_id[callee_id] < 0 ||
+        symbols_table.kind[nodes.symbol_id[callee_id]] != symbols.SymbolKind.FunctionSymbol) {
+        return -1
+    }
+
+    val decl_id: i64 = symbols_table.decl_node[nodes.symbol_id[callee_id]]
+    if (decl_id < 0 || arg_index >= nodes.data2[decl_id]) {
+        return -1
+    }
+
+    node.node_child_at(ref nodes, decl_id, arg_index)
+}
+
 // Type-qualified enum variant values lower directly to their tag or tagged-enum literal.
 func append_enum_variant_expr(
     mut ref mem: Arena,
@@ -1280,7 +1749,7 @@ func append_enum_variant_call_expr(
         append_bytes(mut ref mem, mut ref out, ref ", .data = {.ni_")
         append_bytes(mut ref mem, mut ref out, ref variant_name)
         append_bytes(mut ref mem, mut ref out, ref " = ")
-        append_expr(
+        append_expr_as_type(
             mut ref mem,
             mut ref out,
             ref sources,
@@ -1289,6 +1758,7 @@ func append_enum_variant_call_expr(
             ref nodes,
             ref symbols_table,
             ref types_table,
+            nodes.type_id[variant_id],
             arg_id
         )
         append_bytes(mut ref mem, mut ref out, ref "}")
@@ -1441,10 +1911,11 @@ func append_token_text_lit(
     ref nodes: node.Nodes,
     node_id: i64
 ): void = {
+    val token_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
     append_bytes(
         mut ref mem,
         mut ref out,
-        ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        ref token_text
     )
 }
 
@@ -1460,11 +1931,12 @@ func append_unary_expr(
     ref types_table: types.Types,
     node_id: i64
 ): void = {
+    val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
     append_bytes(mut ref mem, mut ref out, ref "(")
     append_bytes(
         mut ref mem,
         mut ref out,
-        ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        ref op_text
     )
     append_expr(
         mut ref mem,
@@ -1492,6 +1964,7 @@ func append_binary_expr(
     ref types_table: types.Types,
     node_id: i64
 ): void = {
+    val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
     append_bytes(mut ref mem, mut ref out, ref "(")
     append_expr(
         mut ref mem,
@@ -1508,7 +1981,7 @@ func append_binary_expr(
     append_bytes(
         mut ref mem,
         mut ref out,
-        ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        ref op_text
     )
     append_bytes(mut ref mem, mut ref out, ref " ")
     append_expr(
@@ -1965,13 +2438,16 @@ pub func append_expr(
         } else {
             node.invalid_node_id()
         }
+        mut arg_index: i64 = 0
         mut first: bool = true
         while (arg_id >= 0) {
+            val param_id: i64 = call_param_id(ref nodes, ref symbols_table, callee_id, arg_index)
+            val param_type: i64 = if (param_id >= 0) { nodes.type_id[param_id] } else { -1 }
             if (!first) {
                 append_bytes(mut ref mem, mut ref out, ref ", ")
             }
-            if (nodes.kind[arg_id] == node.NodeKind.RefExpr) {
-                append_ref_arg_expr(
+            if (nodes.kind[arg_id] == node.NodeKind.RefExpr && decl_is_ref(ref nodes, param_id)) {
+                append_ref_arg_expr_as_type(
                     mut ref mem,
                     mut ref out,
                     ref sources,
@@ -1980,10 +2456,11 @@ pub func append_expr(
                     ref nodes,
                     ref symbols_table,
                     ref types_table,
+                    param_type,
                     arg_id
                 )
             } else {
-                append_expr(
+                append_expr_as_type(
                     mut ref mem,
                     mut ref out,
                     ref sources,
@@ -1992,11 +2469,13 @@ pub func append_expr(
                     ref nodes,
                     ref symbols_table,
                     ref types_table,
+                    param_type,
                     arg_id
                 )
             }
             first = false
             arg_id = nodes.next_sibling[arg_id]
+            arg_index += 1
         }
         append_bytes(mut ref mem, mut ref out, ref ")")
         return

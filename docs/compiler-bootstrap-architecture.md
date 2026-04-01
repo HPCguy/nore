@@ -172,22 +172,26 @@ Current early codegen file scope:
 - `compiler/codegen/c_runtime.nore`: emit the shared generated-C runtime slice
   only. It owns required standard includes, builtin runtime-facing typedefs
   such as `ni_str`, `ni_Arena`, and `ni_OS`, the first arena helpers, and the
-  compiler-provided native hook bodies (`ni_fd_*`, `ni_mem_copy`, `ni_exit`),
-  but not bounds/cast helpers, table-specific helpers, or orchestration.
+  compiler-provided native hook bodies (`ni_fd_*`, `ni_mem_copy`, `ni_exit`,
+  `ni_args`), but not bounds/cast helpers, table-specific helpers, or
+  orchestration.
 
 - `compiler/codegen/c_main.nore`: assemble the current whole-file C skeleton
   only. It owns section ordering for prelude, typedefs, module-global
   definitions, generated helper functions (including the first table builtin
-  helpers), native/user prototypes, and the current function-definition slice,
-  but not shared runtime helper bodies or driver behavior.
+  helpers, slice-tail helpers, and view-coercion helpers), native/user
+  prototypes, the generated root `main(...)` wrapper, and the current
+  function-definition slice, but not shared runtime helper bodies or driver
+  behavior.
 
 - `compiler/codegen/c_emit_expr.nore`: emit the current checked expression
   slice only. It owns literals, typed array literals, unary/binary operators,
   casts, identifiers, field/index/slice access, constructors, plain
   user-function calls, and the first builtin call lowering (`arena_*`,
-  `table_*`), including ref-aware identifier/field lowering plus slice-view
-  ref-argument temporaries, but not statements, globals, `if` / `match`
-  expression lowering, or shared runtime bodies.
+  `table_*`), including ref-aware identifier/field lowering, slice-view
+  ref-argument temporaries, and the first expected-type-aware byte-view
+  coercions for `str` / `[u8]` / `[u8; N]`, but not statements, globals, `if`
+  / `match` expression lowering, or shared runtime bodies.
 
 - `compiler/codegen/c_emit_stmt.nore`: emit the current checked statement/body
   slice only. It owns blocks, local declarations, assignments, explicit
@@ -197,10 +201,10 @@ Current early codegen file scope:
   `match` lowered through statement codegen, but not general expression
   spelling, globals, or whole-file orchestration.
 
-Remaining placeholder file scope:
-
-- `compiler/driver/cli.nore`: CLI parsing and stage orchestration at the driver
-  boundary only. It should not absorb frontend or codegen internals.
+- `compiler/driver/cli.nore`: bootstrap driver helpers only. It owns the
+  root-module executable contract, including validation of the user-facing
+  `main` signature (`S009` / `S010`), but should not absorb frontend, sema, or
+  codegen internals beyond that boundary.
 
 Rule for future files:
 
