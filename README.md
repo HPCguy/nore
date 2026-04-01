@@ -172,7 +172,7 @@ make norec
 Bootstrap wrapper path:
 
 ```bash
-# Build a program with the self-hosted compiler path
+# Build a program with the default self-hosted compiler path
 ./bootstrap/bootstrap.sh program.nore
 
 # Build to an explicit output path
@@ -181,6 +181,10 @@ Bootstrap wrapper path:
 # Build and run immediately, forwarding argv after --
 ./bootstrap/bootstrap.sh --run program.nore -- arg1 arg2
 ```
+
+`./norec` is currently the raw self-hosted C emitter. The default user-facing
+self-hosted path is `./bootstrap/bootstrap.sh`, which rebuilds `./norec` when
+needed and then invokes Clang for the final executable.
 
 ## Language Guide
 
@@ -222,10 +226,15 @@ The [examples/](examples/) directory contains real programs built on the standar
 
 ## Testing
 ```bash
-make test          # Run all tests (errors + success + stdlib)
-make test-errors   # Run error code tests only
-make test-success  # Run success tests only (includes stdlib)
-make test-std      # Run stdlib tests only
+make test          # Run language suites through bootstrap/bootstrap.sh
+make test-stage0   # Run the same language suites through the C seed fallback
+make test-parity   # Alias for the self-hosted language-suite path
+make test-errors   # Run error code tests through bootstrap/bootstrap.sh
+make test-errors-stage0  # Run error tests through the C seed fallback
+make test-success  # Run success tests through bootstrap/bootstrap.sh (includes stdlib)
+make test-success-stage0 # Run success tests through the C seed fallback
+make test-std      # Run stdlib tests through bootstrap/bootstrap.sh
+make test-std-stage0     # Run stdlib tests through the C seed fallback
 ```
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag

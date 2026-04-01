@@ -87,7 +87,7 @@ func main(): void = {
     assert string.str_contains(ref dumped, ref "return ni_slice_uint8_t_tail(ni_m0_get_bytes(), 1L);\n")
     assert string.str_contains(ref dumped, ref "return ni_slice_uint8_t_tail(ni_m0_get_bytes(), 0L);\n")
     assert string.str_contains(ref dumped, ref "return ni_str_tail((ni_str){.data = (uint8_t *)\"abc\", .len = 3L}, 1L);\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_m0_send_tail(ni_slice_uint8_t ni_src) {\n    return ni_fd_write(1L, &(((ni_slice_uint8_t[]){ni_slice_uint8_t_tail(ni_src, 1L)})[0]));\n}\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_m0_send_all(ni_slice_uint8_t ni_src) {\n    return ni_fd_write(1L, &(((ni_slice_uint8_t[]){ni_slice_uint8_t_tail(ni_src, 0L)})[0]));\n}\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_send_tail(const ni_slice_uint8_t *ni_src) {\n    return ni_fd_write(1L, &(((ni_slice_uint8_t[]){ni_slice_uint8_t_tail((*ni_src), 1L)})[0]));\n}\n")
+    assert string.str_contains(ref dumped, ref "int64_t ni_m0_send_all(const ni_slice_uint8_t *ni_src) {\n    return ni_fd_write(1L, &(((ni_slice_uint8_t[]){ni_slice_uint8_t_tail((*ni_src), 0L)})[0]));\n}\n")
     assert string.str_contains(ref dumped, ref "int64_t ni_m0_send_name_tail(const ni_str *ni_name) {\n    return ni_fd_write(1L, &(((ni_slice_uint8_t[]){ni_str_tail((*ni_name), 1L)})[0]));\n}\n")
 }

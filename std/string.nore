@@ -290,16 +290,28 @@ pub func str_to_i64(ref s: str): ParseResult = {
         return ParseResult.None
     }
     mut result: i64 = 0
+    val i64_max_div10: i64 = 922337203685477580
+    val i64_min_div10: i64 = -922337203685477580
     while (i < s.len) {
         val c: u8 = s[i]
         if (c < '0' || c > '9') {
             return ParseResult.None
         }
-        result = result * 10 + i64(c - '0')
+        val digit: i64 = i64(c - '0')
+        if (neg) {
+            if (result < i64_min_div10 ||
+                (result == i64_min_div10 && digit > 8)) {
+                return ParseResult.None
+            }
+            result = result * 10 - digit
+        } else {
+            if (result > i64_max_div10 ||
+                (result == i64_max_div10 && digit > 7)) {
+                return ParseResult.None
+            }
+            result = result * 10 + digit
+        }
         i += 1
-    }
-    if (neg) {
-        return ParseResult.Ok(0 - result)
     }
     ParseResult.Ok(result)
 }

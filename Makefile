@@ -22,6 +22,7 @@ ROOT_DIR := $(CURDIR)
 BOOTSTRAP_DIR := $(ROOT_DIR)/bootstrap
 TARGET := nore
 NOREC := norec
+BOOTSTRAP_BIN := $(BOOTSTRAP_DIR)/bootstrap.sh
 STAGE0_SOURCE := $(BOOTSTRAP_DIR)/nore.c
 
 # Default target
@@ -47,25 +48,59 @@ clean:
 
 # Run error code tests
 test-errors: $(TARGET)
+	@chmod +x $(BOOTSTRAP_BIN) tests/run_error_tests.sh
+	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_error_tests.sh
+
+# Run error code tests with the explicit stage-0 fallback compiler
+test-errors-stage0: $(TARGET)
 	@chmod +x tests/run_error_tests.sh
-	@./tests/run_error_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_error_tests.sh
+
+# Backward-compatible alias for the self-hosted default path
+test-errors-norec: test-errors
 
 # Run success tests
 test-success: $(TARGET)
-	@chmod +x tests/run_success_tests.sh
-	@./tests/run_success_tests.sh
+	@chmod +x $(BOOTSTRAP_BIN) tests/run_success_tests.sh
+	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_success_tests.sh
 
-# Run all tests
+# Run success tests with the explicit stage-0 fallback compiler
+test-success-stage0: $(TARGET)
+	@chmod +x tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_success_tests.sh
+
+# Backward-compatible alias for the self-hosted default path
+test-success-norec: test-success
+
+# Run all language suites through the self-hosted wrapper path
 test: $(TARGET)
-	@chmod +x tests/run_error_tests.sh tests/run_success_tests.sh
-	@./tests/run_error_tests.sh
+	@chmod +x $(BOOTSTRAP_BIN) tests/run_error_tests.sh tests/run_success_tests.sh
+	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_error_tests.sh
 	@echo ""
-	@./tests/run_success_tests.sh
+	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_success_tests.sh
+
+# Run all language suites with the explicit stage-0 fallback compiler
+test-stage0: $(TARGET)
+	@chmod +x tests/run_error_tests.sh tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_error_tests.sh
+	@echo ""
+	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_success_tests.sh
+
+# Legacy alias for the self-hosted default language-suite path
+test-parity: test
 
 # Run stdlib tests only
 test-std: $(TARGET)
+	@chmod +x $(BOOTSTRAP_BIN) tests/run_std_tests.sh
+	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_std_tests.sh
+
+# Run stdlib tests only with the explicit stage-0 fallback compiler
+test-std-stage0: $(TARGET)
 	@chmod +x tests/run_std_tests.sh
-	@./tests/run_std_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_std_tests.sh
+
+# Backward-compatible alias for the self-hosted default path
+test-std-norec: test-std
 
 # Run compiler-specific bootstrap/selfhost tests
 test-compiler: $(TARGET)
@@ -73,4 +108,4 @@ test-compiler: $(TARGET)
 	@./tests/run_compiler_tests.sh
 
 # Phony targets
-.PHONY: all debug clean norec test-errors test-success test-std test-compiler test
+.PHONY: all debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-compiler test test-stage0 test-parity

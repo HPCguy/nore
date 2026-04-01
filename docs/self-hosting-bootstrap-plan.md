@@ -736,10 +736,12 @@ The frontend is the hard part. The driver is plumbing.
 
 ## Milestone 12: Grow from Bootstrap Subset to Full Parity
 
-**Status:** Started
+**Status:** In progress
 
 Started with the committed `bootstrap/` seed path, `tests/compiler/` suite rename,
-and `make norec` rebuild entrypoint.
+and `make norec` rebuild entrypoint. The language-suite `make test*` targets now
+default to `bootstrap/bootstrap.sh`, while explicit `*-stage0` targets keep the
+trusted C seed available as a fallback path.
 
 ### Gaps to close before starting
 

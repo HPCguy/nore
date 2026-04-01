@@ -43,13 +43,35 @@ default_output_path() {
 
 build_stage0_compiler() {
     mkdir -p "$STAGE0_DIR"
-    make -C "$SCRIPT_DIR" CC="$CC_BIN" STAGE0="$STAGE0" stage0 >/dev/null
+    if [ ! -x "$STAGE0" ] || [ "$SCRIPT_DIR/nore.c" -nt "$STAGE0" ] || [ "$SCRIPT_DIR/Makefile" -nt "$STAGE0" ]; then
+        make -C "$SCRIPT_DIR" CC="$CC_BIN" STAGE0="$STAGE0" stage0 >/dev/null
+    fi
+    rm -rf "$STAGE0_DIR/std"
     ln -sfn "$ROOT_DIR/std" "$STAGE0_DIR/std"
+}
+
+compiler_sources_newer_than_norec() {
+    if [ ! -x "$NOREC" ]; then
+        return 0
+    fi
+
+    if [ "$SCRIPT_DIR/bootstrap.sh" -nt "$NOREC" ] || [ "$SCRIPT_DIR/Makefile" -nt "$NOREC" ] || [ "$SCRIPT_DIR/nore.c" -nt "$NOREC" ]; then
+        return 0
+    fi
+
+    if find "$ROOT_DIR/compiler" "$ROOT_DIR/std" -type f -name '*.nore' -newer "$NOREC" -print -quit | grep -q .; then
+        return 0
+    fi
+
+    return 1
 }
 
 build_norec() {
     mkdir -p "$STAGE1_DIR" "$GENERATED_DIR" "$BIN_DIR"
     build_stage0_compiler
+    if ! compiler_sources_newer_than_norec; then
+        return
+    fi
     (
         cd "$ROOT_DIR"
         "$STAGE0" compiler/main.nore -o "$STAGE1"
@@ -151,5 +173,9 @@ build_norec
 "$CC_BIN" "${CLANG_FLAGS[@]}" -x c "$generated_c" -o "$output_path"
 
 if [ "$run_mode" -eq 1 ]; then
-    "$output_path" "${program_args[@]}"
+    if [ "${#program_args[@]}" -gt 0 ]; then
+        "$output_path" "${program_args[@]}"
+    else
+        "$output_path"
+    fi
 fi

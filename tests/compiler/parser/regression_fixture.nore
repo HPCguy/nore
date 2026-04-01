@@ -16,3 +16,8 @@ func grouped_else_match(n: i64): i64 = {
         0 | else = { { 30 } }
     }
 }
+
+func lower_constructor(): i64 = {
+    val built = foo { x: 1 }
+    built.x
+}

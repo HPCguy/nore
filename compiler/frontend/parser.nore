@@ -22,6 +22,7 @@ val FLAG_HAS_END: i64 = 128
 
 struct Parser {
     source_id: i64,
+    source_text: [u8],
     token_start: i64,
     token_end: i64,
     current: i64,
@@ -42,6 +43,73 @@ func flag_has(flags: i64, bit: i64): bool = {
 // Token spans are stored as start plus len, so most node ranges need this helper.
 func token_end_offset(ref tokens: token.Tokens, token_id: i64): i64 = {
     tokens.start[token_id] + tokens.len[token_id]
+}
+
+// Constructor disambiguation only needs a tiny ASCII uppercase check.
+func byte_is_upper_alpha(byte_value: u8): bool = {
+    byte_value >= 'A' && byte_value <= 'Z'
+}
+
+// Constructor callees are restricted to plain identifiers and dotted paths.
+func constructor_callee_token_id(ref nodes: node.Nodes, callee_id: i64): i64 = {
+    if (callee_id < 0) {
+        return node.invalid_node_id()
+    }
+    if (nodes.kind[callee_id] == node.NodeKind.Identifier ||
+        nodes.kind[callee_id] == node.NodeKind.FieldAccess) {
+        return nodes.data0[callee_id]
+    }
+    node.invalid_node_id()
+}
+
+// Newline boundaries keep ordinary block braces from being swallowed as constructors.
+func tokens_share_line(ref parser: Parser, ref tokens: token.Tokens, left_token_id: i64, right_token_id: i64): bool = {
+    mut cursor: i64 = token_end_offset(ref tokens, left_token_id)
+    val limit: i64 = tokens.start[right_token_id]
+    while (cursor < limit) {
+        if (parser.source_text[cursor] == '\n') {
+            return false
+        }
+        cursor += 1
+    }
+    true
+}
+
+// Lowercase constructors only stay unambiguous when the first field already starts with `name:`.
+func lbrace_starts_constructor_body(ref parser: Parser, ref tokens: token.Tokens): bool = {
+    val next_kind: token.TokenKind = parser_peek_kind(ref parser, ref tokens, 1)
+    if (next_kind == token.TokenKind.RBrace) {
+        return true
+    }
+    next_kind == token.TokenKind.Identifier &&
+        parser_peek_kind(ref parser, ref tokens, 2) == token.TokenKind.Colon
+}
+
+// Same-line braces become constructors for PascalCase paths or explicit `name:` field starts.
+func parser_can_start_constructor(ref parser: Parser, ref tokens: token.Tokens, ref nodes: node.Nodes, callee_id: i64): bool = {
+    if (!parser_check(ref parser, ref tokens, token.TokenKind.LBrace)) {
+        return false
+    }
+
+    val callee_token_id: i64 = constructor_callee_token_id(ref nodes, callee_id)
+    if (callee_token_id < 0) {
+        return false
+    }
+
+    val lbrace_token_id: i64 = parser_current_token_id(ref parser)
+    if (!tokens_share_line(ref parser, ref tokens, callee_token_id, lbrace_token_id)) {
+        return false
+    }
+
+    if (lbrace_starts_constructor_body(ref parser, ref tokens)) {
+        return true
+    }
+
+    val start: i64 = tokens.start[callee_token_id]
+    if (start < 0 || start >= parser.source_text.len) {
+        return false
+    }
+    byte_is_upper_alpha(parser.source_text[start])
 }
 
 // Clamp parser reads to the EOF token when the cursor has already reached the end.
@@ -427,6 +495,10 @@ func parse_type(
 
     if (parser_match(mut ref parser, ref tokens, token.TokenKind.LBracket)) {
         val lbracket_id: i64 = parser_previous_token_id(ref parser)
+        if (parser_check(ref parser, ref tokens, token.TokenKind.Semicolon)) {
+            parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P031", ref "Expected array element type")
+            return node.invalid_node_id()
+        }
         val elem_type: i64 = parse_type(
             mut ref mem,
             mut ref parser,
@@ -1560,7 +1632,7 @@ func parse_postfix(
                         result = parser_finish_node(mut ref nodes, ref tokens, index_id, parser_previous_token_id(ref parser), 0, 0, 0)
                     }
                 } else {
-                    if (parser_check(ref parser, ref tokens, token.TokenKind.LBrace)) {
+                    if (parser_can_start_constructor(ref parser, ref tokens, ref nodes, result)) {
                         result = parse_constructor(
                             mut ref mem,
                             mut ref parser,
@@ -1750,7 +1822,17 @@ func parse_var_decl(
         node.node_append_child(mut ref nodes, decl_id, type_id)
         full_flags |= FLAG_HAS_TYPE
     } else {
-        if (flag_has(full_flags, FLAG_MUT)) {
+        val next_kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
+        if (next_kind == token.TokenKind.I64 ||
+            next_kind == token.TokenKind.I32 ||
+            next_kind == token.TokenKind.U8 ||
+            next_kind == token.TokenKind.U32 ||
+            next_kind == token.TokenKind.F64 ||
+            next_kind == token.TokenKind.Bool ||
+            next_kind == token.TokenKind.Str ||
+            next_kind == token.TokenKind.ArenaType ||
+            next_kind == token.TokenKind.Identifier ||
+            next_kind == token.TokenKind.LBracket) {
             parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P014", ref "Expected ':' after identifier")
             return node.invalid_node_id()
         }
@@ -1923,9 +2005,12 @@ func parse_block(
         }
 
         if (parser_check(ref parser, ref tokens, token.TokenKind.RBrace)) {
-            node.node_append_child(mut ref nodes, block_id, expr_id)
-            flags |= FLAG_HAS_VALUE
-            break
+            if (nodes.kind[expr_id] != node.NodeKind.Block ||
+                node_block_has_value(ref nodes, expr_id)) {
+                node.node_append_child(mut ref nodes, block_id, expr_id)
+                flags |= FLAG_HAS_VALUE
+                break
+            }
         }
 
         val op_kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
@@ -1962,22 +2047,27 @@ func parse_block(
             ))
             statement_count += 1
         } else {
-            if (nodes.kind[expr_id] == node.NodeKind.CallExpr) {
-                val stmt_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.ExprStmt, expr_id)
-                node.node_append_child(mut ref nodes, stmt_id, expr_id)
-                node.node_append_child(mut ref nodes, block_id, parser_finish_node(
-                    mut ref nodes,
-                    ref tokens,
-                    stmt_id,
-                    parser_previous_token_id(ref parser),
-                    0,
-                    0,
-                    0
-                ))
+            if (nodes.kind[expr_id] == node.NodeKind.Block) {
+                node.node_append_child(mut ref nodes, block_id, expr_id)
                 statement_count += 1
             } else {
-                parser_error_token(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, parser_previous_token_id(ref parser), ref "P005", ref "Expected statement")
-                return node.invalid_node_id()
+                if (nodes.kind[expr_id] == node.NodeKind.CallExpr) {
+                    val stmt_id: i64 = parser_open_node_from_node(mut ref nodes, node.NodeKind.ExprStmt, expr_id)
+                    node.node_append_child(mut ref nodes, stmt_id, expr_id)
+                    node.node_append_child(mut ref nodes, block_id, parser_finish_node(
+                        mut ref nodes,
+                        ref tokens,
+                        stmt_id,
+                        parser_previous_token_id(ref parser),
+                        0,
+                        0,
+                        0
+                    ))
+                    statement_count += 1
+                } else {
+                    parser_error_token(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, parser_previous_token_id(ref parser), ref "P005", ref "Expected statement")
+                    return node.invalid_node_id()
+                }
             }
         }
     }
@@ -2484,6 +2574,8 @@ func parse_top_level_decl(
 // Parse one module worth of tokens into the shared flat node table.
 pub func parse_tokens(
     mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
     ref token_range: span.Range,
     ref tokens: token.Tokens,
     mut ref nodes: node.Nodes,
@@ -2497,6 +2589,7 @@ pub func parse_tokens(
     val source_id: i64 = tokens.source_id[first_token_id]
     mut parser: Parser = Parser {
         source_id: source_id,
+        source_text: source.source_text(ref text_pool, ref sources, source_id),
         token_start: token_range.start,
         token_end: token_range.start + token_range.count,
         current: token_range.start,

@@ -231,6 +231,8 @@ func parse_module_once(
 
     val parsed: parser.ParseResult = parser.parse_tokens(
         mut ref mem,
+        ref sources,
+        ref text_pool,
         ref lexed.tokens,
         ref tokens,
         mut ref nodes,

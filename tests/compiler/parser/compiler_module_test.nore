@@ -52,6 +52,8 @@ func main(): void = {
     mut nodes: node.Nodes = table_alloc(mut ref mem, node.node_capacity_for_token_count(lexed.tokens.count))
     val parsed: parser.ParseResult = parser.parse_tokens(
         mut ref mem,
+        ref sources,
+        ref text_pool,
         ref lexed.tokens,
         ref tokens,
         mut ref nodes,

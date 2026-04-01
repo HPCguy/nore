@@ -1,0 +1,4 @@
+func main(): void = {
+    val s: [u8] = "abc"[..]
+    mut copy = s
+}

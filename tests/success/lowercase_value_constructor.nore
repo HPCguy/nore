@@ -1,0 +1,7 @@
+value foo { x: i64, y: i64 }
+
+func main(): void = {
+    val point: foo = foo { x: 1, y: 2 }
+    assert point.x == 1
+    assert point.y == 2
+}

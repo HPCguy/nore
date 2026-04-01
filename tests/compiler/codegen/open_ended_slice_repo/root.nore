@@ -16,11 +16,11 @@ func tail_name(): [u8] = {
     "abc"[1..]
 }
 
-func send_tail(src: [u8]): i64 = {
+func send_tail(ref src: [u8]): i64 = {
     fd_write(1, ref src[1..])
 }
 
-func send_all(src: [u8]): i64 = {
+func send_all(ref src: [u8]): i64 = {
     fd_write(1, ref src[..])
 }
 

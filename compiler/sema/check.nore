@@ -37,6 +37,10 @@ val SYNTHETIC_TOKEN_TARGET_OS: i64 = -3
 val SYNTHETIC_TOKEN_LINUX: i64 = -4
 val SYNTHETIC_TOKEN_MACOS: i64 = -5
 val MATCH_PATTERN_CATCH_ALL_ID: i64 = -6
+val INT_CONST_I64_MAX: i64 = 9223372036854775807
+val INT_CONST_I64_MIN: i64 = -9223372036854775807 - 1
+val INT_CONST_I32_MAX: i64 = 2147483647
+val INT_CONST_I32_MIN: i64 = -2147483647 - 1
 
 // Per-type property cache stored in types.data2, avoids redundant recursive queries.
 val TYPE_CACHE_HAS_ARENA_COMPUTED: i64 = 1
@@ -67,6 +71,12 @@ value ScalarPatternInfo {
 value ScalarCoverageState {
     has_true: bool,
     has_false: bool
+}
+
+value IntegerLiteralEval {
+    known: bool,
+    overflow: bool,
+    int_value: i64
 }
 
 table ArenaDependencies {
@@ -258,6 +268,53 @@ func native_signature_message(
 ): str = {
     val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
     message_named(mut ref mem, ref "Native function '", ref name, ref "' must use the compiler-provided signature")
+}
+
+// Native I/O hooks use dedicated diagnostics so callers see stable language-level errors, not generic arg mismatches.
+func native_builtin_arg_is_fd_integer(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    name_token: i64,
+    arg_index: i64
+): bool = {
+    arg_index == 0 &&
+        (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write") ||
+         token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read") ||
+         token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_close") ||
+         token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_seek"))
+}
+
+// Byte-buffer native hooks share one compatibility contract across io and mem_copy.
+func native_builtin_arg_is_byte_buffer(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    name_token: i64,
+    arg_index: i64
+): bool = {
+    (arg_index == 0 &&
+        token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_open")) ||
+    (arg_index == 1 &&
+        (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write") ||
+         token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read") ||
+         token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "mem_copy"))) ||
+    (arg_index == 0 &&
+        token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "mem_copy"))
+}
+
+// Mutable-byte-buffer hooks reject immutable refs with a dedicated diagnostic.
+func native_builtin_arg_requires_mutable_buffer(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    name_token: i64,
+    arg_index: i64
+): bool = {
+    (arg_index == 1 &&
+        token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read")) ||
+    (arg_index == 0 &&
+        token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "mem_copy"))
 }
 
 // Known native names still need one exact signature contract so multi-module graphs lower to one C hook declaration.
@@ -492,7 +549,7 @@ func scope_find_value_visible(
     symbols.invalid_symbol_id()
 }
 
-// Function lookup is module-local until later milestones add overloads or imports by name.
+// Function lookup prefers native hooks (prefer_public=false) or public wrappers (prefer_public=true).
 func module_find_function(
     ref scopes_table: scopes.Scopes,
     ref symbols_table: symbols.Symbols,
@@ -500,8 +557,10 @@ func module_find_function(
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     scope_id: i64,
-    name_token: i64
+    name_token: i64,
+    prefer_public: bool
 ): i64 = {
+    mut first_match: i64 = symbols.invalid_symbol_id()
     mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
     while (symbol_id >= 0) {
         if (symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol &&
@@ -512,6 +571,47 @@ func module_find_function(
                 symbols_table.name_token[symbol_id],
                 name_token
             )) {
+            if (first_match < 0) {
+                first_match = symbol_id
+            }
+            if (prefer_public) {
+                if (symbols.symbol_is_public(ref symbols_table, symbol_id)) {
+                    return symbol_id
+                }
+            } else {
+                if (symbols.symbol_is_native(ref symbols_table, symbol_id)) {
+                    return symbol_id
+                }
+            }
+        }
+        symbol_id = symbols_table.next_symbol[symbol_id]
+    }
+    first_match
+}
+
+
+// One native declaration may share a name with one regular wrapper, but same-kind duplicates stay illegal.
+func module_find_same_kind_function(
+    ref scopes_table: scopes.Scopes,
+    ref symbols_table: symbols.Symbols,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    scope_id: i64,
+    name_token: i64,
+    wants_native: bool
+): i64 = {
+    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    while (symbol_id >= 0) {
+        if (symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol &&
+            token_name_eq(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                symbols_table.name_token[symbol_id],
+                name_token
+            ) &&
+            symbols.symbol_is_native(ref symbols_table, symbol_id) == wants_native) {
             return symbol_id
         }
         symbol_id = symbols_table.next_symbol[symbol_id]
@@ -744,14 +844,15 @@ func bind_func_decl(
     decl_id: i64
 ): void = {
     val name_token: i64 = nodes.data0[decl_id]
-    if (module_find_function(
+    if (module_find_same_kind_function(
         ref scopes_table,
         ref symbols_table,
         ref sources,
         ref text_pool,
         ref tokens,
         module_scope,
-        name_token
+        name_token,
+        decl_is_native(ref nodes, decl_id)
     ) >= 0) {
         val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, name_token)
         val message: str = message_named(mut ref mem, ref "Duplicate function '", ref name, ref "'")
@@ -1064,6 +1165,9 @@ func resolve_type_node(
             Ok(n) = { n }
             None = { -1 }
         }
+        if (size <= 0) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S031", ref "Array size must be positive integer")
+        }
         val type_id: i64 = types.type_array(mut ref types_table, elem_type, size)
         nodes.type_id[node_id] = type_id
         return type_id
@@ -1284,7 +1388,8 @@ func resolve_call_identifier(
         ref text_pool,
         ref tokens,
         module_scope,
-        name_token
+        name_token,
+        false
     )
     if (symbol_id >= 0) {
         nodes.symbol_id[node_id] = symbol_id
@@ -1324,7 +1429,8 @@ func resolve_qualified_call(
         ref text_pool,
         ref tokens,
         target_scope,
-        field_token
+        field_token,
+        true
     )
     if (symbol_id < 0) {
         val name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, field_token)
@@ -1621,24 +1727,434 @@ func array_like_slice_type(
     types.type_slice(mut ref types_table, elem_type)
 }
 
+// Signed literals are parsed as unary minus over a literal token in the current frontend.
+func node_is_negative_literal(
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64,
+    wants_float: bool
+): bool = {
+    if (node_id < 0 || nodes.kind[node_id] != node.NodeKind.UnaryExpr) {
+        return false
+    }
+    if (tokens.kind[nodes.data0[node_id]] != token.TokenKind.Minus) {
+        return false
+    }
+
+    val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    if (wants_float) {
+        return operand_id >= 0 && nodes.kind[operand_id] == node.NodeKind.FloatLit
+    }
+
+    operand_id >= 0 &&
+        (nodes.kind[operand_id] == node.NodeKind.NumberLit ||
+         nodes.kind[operand_id] == node.NodeKind.CharLit)
+}
+
 // Integer literals stay flexible until a surrounding type check pins them down.
-func node_is_integer_literal(ref nodes: node.Nodes, node_id: i64): bool = {
+func node_is_integer_literal(ref tokens: token.Tokens, ref nodes: node.Nodes, node_id: i64): bool = {
     if (node_id < 0) {
         return false
     }
     nodes.kind[node_id] == node.NodeKind.NumberLit ||
-    nodes.kind[node_id] == node.NodeKind.CharLit
+    nodes.kind[node_id] == node.NodeKind.CharLit ||
+    node_is_negative_literal(ref tokens, ref nodes, node_id, false)
 }
 
 // Float literals only coerce to f64 in the current bootstrap subset.
-func node_is_float_literal(ref nodes: node.Nodes, node_id: i64): bool = {
-    node_id >= 0 && nodes.kind[node_id] == node.NodeKind.FloatLit
+func node_is_float_literal(ref tokens: token.Tokens, ref nodes: node.Nodes, node_id: i64): bool = {
+    (node_id >= 0 && nodes.kind[node_id] == node.NodeKind.FloatLit) ||
+    node_is_negative_literal(ref tokens, ref nodes, node_id, true)
+}
+
+// Number tokens still parse through std/string so sema only keeps one overflow policy.
+func number_token_integer_eval(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    token_id: i64
+): IntegerLiteralEval = {
+    val text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, token_id)
+    val parsed: string.ParseResult = string.str_to_i64(ref text)
+    val result: IntegerLiteralEval = match (parsed) {
+        Ok(n) = {
+            IntegerLiteralEval { known: true, overflow: false, int_value: n }
+        }
+        None = {
+            IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+        }
+    }
+    result
+}
+
+// The absolute text for i64 min is only valid after a unary minus applies the missing sign.
+func integer_text_is_i64_min_abs(ref text: [u8]): bool = {
+    string.str_eq(ref text, ref "9223372036854775808")
+}
+
+// Bindings need to reject overflowing integer tokens even when they sit inside a larger expression tree.
+func expr_has_overflowing_integer_literal(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64
+): bool = {
+    if (node_id < 0) {
+        return false
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.NumberLit) {
+        return number_token_integer_eval(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]).overflow
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.UnaryExpr &&
+        tokens.kind[nodes.data0[node_id]] == token.TokenKind.Minus) {
+        val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        if (operand_id >= 0 && nodes.kind[operand_id] == node.NodeKind.NumberLit) {
+            val text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[operand_id])
+            val operand_eval: IntegerLiteralEval = number_token_integer_eval(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                nodes.data0[operand_id]
+            )
+            return operand_eval.overflow && !integer_text_is_i64_min_abs(ref text)
+        }
+        return expr_has_overflowing_integer_literal(ref sources, ref text_pool, ref tokens, ref nodes, operand_id)
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        if (expr_has_overflowing_integer_literal(ref sources, ref text_pool, ref tokens, ref nodes, child_id)) {
+            return true
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    false
+}
+
+// Subtraction overflow still needs a dedicated guard because signed wrap is not sema-visible.
+func integer_sub_overflows(left_value: i64, right_value: i64): bool = {
+    if (right_value > 0 && left_value < INT_CONST_I64_MIN + right_value) {
+        return true
+    }
+    if (right_value < 0 && left_value > INT_CONST_I64_MAX + right_value) {
+        return true
+    }
+    false
+}
+
+// Multiplication keeps the usual division-bound checks so sema never relies on wrapped results.
+func integer_mul_overflows(left_value: i64, right_value: i64): bool = {
+    if (left_value == 0 || right_value == 0) {
+        return false
+    }
+    if ((left_value == INT_CONST_I64_MIN && right_value == -1) ||
+        (right_value == INT_CONST_I64_MIN && left_value == -1)) {
+        return true
+    }
+
+    if (left_value > 0) {
+        if (right_value > 0) {
+            return left_value > INT_CONST_I64_MAX / right_value
+        }
+        return right_value < INT_CONST_I64_MIN / left_value
+    }
+
+    if (right_value > 0) {
+        return left_value < INT_CONST_I64_MIN / right_value
+    }
+
+    left_value < INT_CONST_I64_MAX / right_value
+}
+
+// Integer range checks fold the current constant subset so later diagnostics can reuse one evaluator.
+func integer_literal_eval(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64
+): IntegerLiteralEval = {
+    if (node_id < 0) {
+        return IntegerLiteralEval { known: false, overflow: false, int_value: 0 }
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.NumberLit) {
+        return number_token_integer_eval(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.CharLit) {
+        return IntegerLiteralEval {
+            known: true,
+            overflow: false,
+            int_value: char_literal_value(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        }
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.UnaryExpr &&
+        tokens.kind[nodes.data0[node_id]] == token.TokenKind.Minus) {
+        val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        if (operand_id >= 0 && nodes.kind[operand_id] == node.NodeKind.NumberLit) {
+            val text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[operand_id])
+            val operand_eval: IntegerLiteralEval = number_token_integer_eval(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                nodes.data0[operand_id]
+            )
+            if (operand_eval.overflow) {
+                if (integer_text_is_i64_min_abs(ref text)) {
+                    return IntegerLiteralEval { known: true, overflow: false, int_value: INT_CONST_I64_MIN }
+                }
+                return operand_eval
+            }
+            return IntegerLiteralEval {
+                known: true,
+                overflow: false,
+                int_value: 0 - operand_eval.int_value
+            }
+        }
+
+        val operand_eval: IntegerLiteralEval = integer_literal_eval(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            operand_id
+        )
+        if (!(operand_eval.known) || operand_eval.overflow) {
+            return operand_eval
+        }
+        if (operand_eval.int_value == INT_CONST_I64_MIN) {
+            return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+        }
+        return IntegerLiteralEval {
+            known: true,
+            overflow: false,
+            int_value: 0 - operand_eval.int_value
+        }
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.BinaryExpr) {
+        val op_kind: token.TokenKind = tokens.kind[nodes.data0[node_id]]
+        if (op_kind != token.TokenKind.Plus &&
+            op_kind != token.TokenKind.Minus &&
+            op_kind != token.TokenKind.Star &&
+            op_kind != token.TokenKind.Slash &&
+            op_kind != token.TokenKind.Percent) {
+            return IntegerLiteralEval { known: false, overflow: false, int_value: 0 }
+        }
+
+        val left_eval: IntegerLiteralEval = integer_literal_eval(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            node.node_child_at(ref nodes, node_id, 0)
+        )
+        val right_eval: IntegerLiteralEval = integer_literal_eval(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            node.node_child_at(ref nodes, node_id, 1)
+        )
+        if (left_eval.overflow || right_eval.overflow) {
+            return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+        }
+        if (!(left_eval.known) || !(right_eval.known)) {
+            return IntegerLiteralEval { known: false, overflow: false, int_value: 0 }
+        }
+
+        if (op_kind == token.TokenKind.Plus) {
+            if (right_eval.int_value > 0 && left_eval.int_value > INT_CONST_I64_MAX - right_eval.int_value) {
+                return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+            }
+            if (right_eval.int_value < 0 && left_eval.int_value < INT_CONST_I64_MIN - right_eval.int_value) {
+                return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+            }
+            return IntegerLiteralEval {
+                known: true,
+                overflow: false,
+                int_value: left_eval.int_value + right_eval.int_value
+            }
+        }
+
+        if (op_kind == token.TokenKind.Minus) {
+            if (integer_sub_overflows(left_eval.int_value, right_eval.int_value)) {
+                return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+            }
+            return IntegerLiteralEval {
+                known: true,
+                overflow: false,
+                int_value: left_eval.int_value - right_eval.int_value
+            }
+        }
+
+        if (op_kind == token.TokenKind.Star) {
+            if (integer_mul_overflows(left_eval.int_value, right_eval.int_value)) {
+                return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+            }
+            return IntegerLiteralEval {
+                known: true,
+                overflow: false,
+                int_value: left_eval.int_value * right_eval.int_value
+            }
+        }
+
+        if (right_eval.int_value == 0) {
+            return IntegerLiteralEval { known: false, overflow: false, int_value: 0 }
+        }
+        if (left_eval.int_value == INT_CONST_I64_MIN && right_eval.int_value == -1) {
+            return IntegerLiteralEval { known: false, overflow: true, int_value: 0 }
+        }
+        if (op_kind == token.TokenKind.Slash) {
+            return IntegerLiteralEval {
+                known: true,
+                overflow: false,
+                int_value: left_eval.int_value / right_eval.int_value
+            }
+        }
+        return IntegerLiteralEval {
+            known: true,
+            overflow: false,
+            int_value: left_eval.int_value % right_eval.int_value
+        }
+    }
+
+    IntegerLiteralEval { known: false, overflow: false, int_value: 0 }
+}
+
+// Constant zero-divisor checks need to walk the whole expression tree, not just the top-level node.
+func integer_expr_divides_by_zero(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64
+): bool = {
+    if (node_id < 0) {
+        return false
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.BinaryExpr) {
+        val op_kind: token.TokenKind = tokens.kind[nodes.data0[node_id]]
+        if (op_kind == token.TokenKind.Slash || op_kind == token.TokenKind.Percent) {
+            val right_eval: IntegerLiteralEval = integer_literal_eval(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                node.node_child_at(ref nodes, node_id, 1)
+            )
+            if (right_eval.known && !(right_eval.overflow) && right_eval.int_value == 0) {
+                return true
+            }
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        if (integer_expr_divides_by_zero(ref sources, ref text_pool, ref tokens, ref nodes, child_id)) {
+            return true
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    false
+}
+
+// Arithmetic overflow also needs a tree walk so folded subexpressions cannot slip through bindings.
+func integer_expr_arithmetic_overflows(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64
+): bool = {
+    if (node_id < 0) {
+        return false
+    }
+
+    if (integer_literal_eval(ref sources, ref text_pool, ref tokens, ref nodes, node_id).overflow) {
+        return true
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        if (integer_expr_arithmetic_overflows(ref sources, ref text_pool, ref tokens, ref nodes, child_id)) {
+            return true
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    false
+}
+
+// Integer literal coercions still need one concrete target-range check for typed bindings.
+func integer_value_fits_type(
+    ref builtins: types.BuiltinTypes,
+    target_type: i64,
+    int_value: i64
+): bool = {
+    if (target_type == builtins.i64_type) {
+        return true
+    }
+    if (target_type == builtins.i32_type) {
+        return int_value >= INT_CONST_I32_MIN && int_value <= INT_CONST_I32_MAX
+    }
+    if (target_type == builtins.u32_type) {
+        return int_value >= 0 && int_value <= 4294967295
+    }
+    if (target_type == builtins.u8_type) {
+        return int_value >= 0 && int_value <= 255
+    }
+    false
+}
+
+// Typed and inferred integer bindings share the same constant-range diagnostics.
+func check_integer_binding_diagnostics(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    type_id: i64,
+    init_node: i64
+): void = {
+    if (expr_has_overflowing_integer_literal(ref sources, ref text_pool, ref tokens, ref nodes, init_node)) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_node, ref "P006", ref "Integer literal out of range")
+        return
+    }
+    if (integer_expr_divides_by_zero(ref sources, ref text_pool, ref tokens, ref nodes, init_node)) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_node, ref "S019", ref "Division by zero in constant expression")
+        return
+    }
+    if (integer_expr_arithmetic_overflows(ref sources, ref text_pool, ref tokens, ref nodes, init_node)) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_node, ref "S050", ref "Literal out of range for target type / integer overflow in constant expression")
+        return
+    }
+    val literal_eval: IntegerLiteralEval = integer_literal_eval(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        init_node
+    )
+    if (literal_eval.known &&
+        integer_value_fits_type(ref builtins, type_id, literal_eval.int_value) == false) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_node, ref "S050", ref "Literal out of range for target type / integer overflow in constant expression")
+    }
 }
 
 // Literal coercions and byte-slice compatibility stay in one reusable helper.
 func expr_type_compatible(
     ref types_table: types.Types,
     ref builtins: types.BuiltinTypes,
+    ref tokens: token.Tokens,
     ref nodes: node.Nodes,
     expected_type: i64,
     actual_type: i64,
@@ -1652,11 +2168,11 @@ func expr_type_compatible(
         return true
     }
 
-    if (node_is_integer_literal(ref nodes, value_node) &&
+    if (node_is_integer_literal(ref tokens, ref nodes, value_node) &&
         type_is_numeric_builtin(ref types_table, expected_type)) {
         return true
     }
-    if (node_is_float_literal(ref nodes, value_node) &&
+    if (node_is_float_literal(ref tokens, ref nodes, value_node) &&
         types_table.kind[expected_type] == types.TypeKind.F64Type) {
         return true
     }
@@ -1685,6 +2201,7 @@ func expr_type_compatible(
 func numeric_common_type(
     ref types_table: types.Types,
     ref builtins: types.BuiltinTypes,
+    ref tokens: token.Tokens,
     ref nodes: node.Nodes,
     left_node: i64,
     left_type: i64,
@@ -1698,22 +2215,28 @@ func numeric_common_type(
         return left_type
     }
 
-    val left_is_float: bool = node_is_float_literal(ref nodes, left_node) ||
+    val left_is_float: bool = node_is_float_literal(ref tokens, ref nodes, left_node) ||
         types_table.kind[left_type] == types.TypeKind.F64Type
-    val right_is_float: bool = node_is_float_literal(ref nodes, right_node) ||
+    val right_is_float: bool = node_is_float_literal(ref tokens, ref nodes, right_node) ||
         types_table.kind[right_type] == types.TypeKind.F64Type
 
-    if (left_is_float && node_is_integer_literal(ref nodes, right_node)) {
+    if (left_is_float && node_is_integer_literal(ref tokens, ref nodes, right_node)) {
         return builtins.f64_type
     }
-    if (right_is_float && node_is_integer_literal(ref nodes, left_node)) {
+    if (right_is_float && node_is_integer_literal(ref tokens, ref nodes, left_node)) {
         return builtins.f64_type
     }
-    if (node_is_integer_literal(ref nodes, left_node) &&
+    if (left_is_float && type_is_numeric_builtin(ref types_table, right_type)) {
+        return builtins.f64_type
+    }
+    if (right_is_float && type_is_numeric_builtin(ref types_table, left_type)) {
+        return builtins.f64_type
+    }
+    if (node_is_integer_literal(ref tokens, ref nodes, left_node) &&
         type_is_numeric_builtin(ref types_table, right_type)) {
         return right_type
     }
-    if (node_is_integer_literal(ref nodes, right_node) &&
+    if (node_is_integer_literal(ref tokens, ref nodes, right_node) &&
         type_is_numeric_builtin(ref types_table, left_type)) {
         return left_type
     }
@@ -2170,6 +2693,24 @@ func symbol_copy_arena_tracking(
 func decl_init_is_string_literal(ref nodes: node.Nodes, decl_id: i64): bool = {
     val init_node: i64 = decl_init_node(ref nodes, decl_id)
     init_node >= 0 && nodes.kind[init_node] == node.NodeKind.StringLit
+}
+
+// Slice locals only stay valid when they come from a fresh producer or a sub-slice view.
+func expr_is_slice_local_initializer(ref nodes: node.Nodes, node_id: i64): bool = {
+    if (node_id < 0) {
+        return false
+    }
+    nodes.kind[node_id] == node.NodeKind.CallExpr ||
+    nodes.kind[node_id] == node.NodeKind.SliceExpr
+}
+
+// Non-copyable locals only reject direct copies; constructors and calls remain allowed.
+func expr_is_copy_source(ref nodes: node.Nodes, node_id: i64): bool = {
+    if (node_id < 0) {
+        return false
+    }
+    nodes.kind[node_id] == node.NodeKind.Identifier ||
+    nodes.kind[node_id] == node.NodeKind.FieldAccess
 }
 
 // Table built-ins all materialize the same synthetic `.Row` type for one table decl.
@@ -3661,6 +4202,7 @@ func check_match_scalar_pattern_coverage(
             valid_value = expr_type_compatible(
                 ref types_table,
                 ref builtins,
+                ref tokens,
                 ref nodes,
                 scrutinee_type,
                 nodes.type_id[pattern_id],
@@ -4170,6 +4712,7 @@ func check_match_scalar_pattern_impl(
     if (!expr_type_compatible(
             ref types_table,
             ref builtins,
+            ref tokens,
             ref nodes,
             scrutinee_type,
             nodes.type_id[pattern_id],
@@ -5030,7 +5573,7 @@ func check_enum_variant_access(
         field_token
     )
     if (variant_id < 0) {
-        diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, field_token, ref "S029", ref "Unknown enum variant")
+        diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, field_token, ref "P045", ref "Unknown enum variant")
         return true
     }
     if (flag_has(nodes.data1[variant_id], CHECK_NODE_FLAG_HAS_TYPE)) {
@@ -5115,7 +5658,7 @@ func check_enum_variant_call(
         field_token
     )
     if (variant_id < 0) {
-        diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, field_token, ref "S029", ref "Unknown enum variant")
+        diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, field_token, ref "P045", ref "Unknown enum variant")
         return true
     }
 
@@ -5183,6 +5726,7 @@ func check_enum_variant_call(
         !expr_type_compatible(
             ref types_table,
             ref builtins,
+            ref tokens,
             ref nodes,
             payload_type,
             nodes.type_id[payload_id],
@@ -5231,7 +5775,8 @@ func check_builtin_call(
             ref text_pool,
             ref tokens,
             module_scope,
-            name_token
+            name_token,
+            false
         ) >= 0) {
         return false
     }
@@ -5268,7 +5813,7 @@ func check_builtin_call(
                 false
             )
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[capacity_id]) &&
-                !node_is_integer_literal(ref nodes, capacity_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, capacity_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, capacity_id, ref "S006", ref "Type mismatch")
             }
         }
@@ -5307,6 +5852,11 @@ func check_builtin_call(
             val arena_value: i64 = builtin_ref_value_id(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arena_id, true)
             if (arena_value >= 0 && nodes.type_id[arena_value] >= 0 && nodes.type_id[arena_value] != builtins.arena_type) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arena_id, ref "S051", ref "arena_alloc() requires Arena type")
+            } else {
+                if (arena_value >= 0 &&
+                    !expr_is_mutable_place(ref nodes, ref symbols_table, arena_value)) {
+                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arena_id, ref "S052", ref "Cannot arena_alloc from immutable Arena (use 'mut')")
+                }
             }
         }
         if (count_id >= 0) {
@@ -5332,7 +5882,7 @@ func check_builtin_call(
                 false
             )
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[count_id]) &&
-                !node_is_integer_literal(ref nodes, count_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, count_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, count_id, ref "S006", ref "Type mismatch")
             }
         }
@@ -5479,7 +6029,7 @@ func check_builtin_call(
                 false
             )
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[count_id]) &&
-                !node_is_integer_literal(ref nodes, count_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, count_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, count_id, ref "S006", ref "Type mismatch")
             }
         }
@@ -5608,7 +6158,7 @@ func check_builtin_call(
                 false
             )
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[index_id]) &&
-                !node_is_integer_literal(ref nodes, index_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, index_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, index_id, ref "S034", ref "Index must be integer")
             }
         }
@@ -5686,6 +6236,7 @@ func check_builtin_call(
             !expr_type_compatible(
                 ref types_table,
                 ref builtins,
+                ref tokens,
                 ref nodes,
                 expected_row,
                 nodes.type_id[row_id],
@@ -6168,6 +6719,7 @@ func check_expr(
 
             val callee_decl: i64 = symbols_table.decl_node[callee_symbol]
             val callee_module: i64 = symbols_table.module_id[callee_symbol]
+            val callee_name_token: i64 = symbols_table.name_token[callee_symbol]
             val expected_arg_count: i64 = nodes.data2[callee_decl]
             if (nodes.data0[node_id] != expected_arg_count) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S017", ref "Wrong number of arguments")
@@ -6233,16 +6785,52 @@ func check_expr(
                             } else {
                                 arg_id
                             }
+                            if (symbols.symbol_is_native(ref symbols_table, callee_symbol) &&
+                                expects_mut_ref &&
+                                arg_is_ref &&
+                                native_builtin_arg_requires_mutable_buffer(
+                                    ref sources,
+                                    ref text_pool,
+                                    ref tokens,
+                                    callee_name_token,
+                                    arg_index
+                                ) &&
+                                !expr_is_mutable_place(ref nodes, ref symbols_table, value_id)) {
+                                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S066", ref "I/O built-in buffer must be mutable")
+                            }
                             if (!expr_type_compatible(
                                 ref types_table,
                                 ref builtins,
+                                ref tokens,
                                 ref nodes,
                                 param_type,
                                 nodes.type_id[value_id],
                                 value_id,
                                 expects_ref
                             )) {
-                                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S018", ref "Argument type mismatch")
+                                if (symbols.symbol_is_native(ref symbols_table, callee_symbol) &&
+                                    native_builtin_arg_is_fd_integer(
+                                        ref sources,
+                                        ref text_pool,
+                                        ref tokens,
+                                        callee_name_token,
+                                        arg_index
+                                    )) {
+                                    diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S064", ref "I/O built-in fd argument must be integer type")
+                                } else {
+                                    if (symbols.symbol_is_native(ref symbols_table, callee_symbol) &&
+                                        native_builtin_arg_is_byte_buffer(
+                                            ref sources,
+                                            ref text_pool,
+                                            ref tokens,
+                                            callee_name_token,
+                                            arg_index
+                                        )) {
+                                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S065", ref "I/O built-in data/buffer/path argument must be []u8 or [u8; N]")
+                                    } else {
+                                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, arg_id, ref "S018", ref "Argument type mismatch")
+                                    }
+                                }
                             }
                         }
                     }
@@ -6364,6 +6952,7 @@ func check_expr(
                     if (!expr_type_compatible(
                         ref types_table,
                         ref builtins,
+                        ref tokens,
                         ref nodes,
                         field_type,
                         nodes.type_id[value_id],
@@ -6453,6 +7042,7 @@ func check_expr(
                 !expr_type_compatible(
                     ref types_table,
                     ref builtins,
+                    ref tokens,
                     ref nodes,
                     elem_type,
                     nodes.type_id[first_elem],
@@ -6460,6 +7050,11 @@ func check_expr(
                     false
                 )) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, first_elem, ref "S033", ref "Array element type mismatch")
+            }
+            if (expected_type >= 0 &&
+                types_table.kind[expected_type] == types.TypeKind.ArrayType &&
+                types_table.data1[expected_type] != nodes.data0[node_id]) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S032", ref "Array literal wrong number of elements")
             }
 
             mut elem_id: i64 = nodes.next_sibling[first_elem]
@@ -6488,6 +7083,7 @@ func check_expr(
                 val common_type: i64 = numeric_common_type(
                     ref types_table,
                     ref builtins,
+                    ref tokens,
                     ref nodes,
                     first_elem,
                     elem_type,
@@ -6497,6 +7093,7 @@ func check_expr(
                 if (expr_type_compatible(
                     ref types_table,
                     ref builtins,
+                    ref tokens,
                     ref nodes,
                     elem_type,
                     nodes.type_id[elem_id],
@@ -6563,7 +7160,7 @@ func check_expr(
                 false
             )
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[index_id]) &&
-                !node_is_integer_literal(ref nodes, index_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, index_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, index_id, ref "S034", ref "Index must be integer")
             }
             val elem_type: i64 = array_like_elem_type(ref types_table, ref builtins, nodes.type_id[object_id])
@@ -6623,7 +7220,7 @@ func check_expr(
                     false
                 )
                 if (!type_is_integer_builtin(ref types_table, nodes.type_id[bound_id]) &&
-                    !node_is_integer_literal(ref nodes, bound_id)) {
+                    !node_is_integer_literal(ref tokens, ref nodes, bound_id)) {
                     diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, bound_id, ref "S071", ref "Slice range bound must be integer type")
                 }
                 bound_id = nodes.next_sibling[bound_id]
@@ -6679,7 +7276,12 @@ func check_expr(
                     if (type_is_integer_builtin(ref types_table, nodes.type_id[operand_id])) {
                         nodes.type_id[node_id] = nodes.type_id[operand_id]
                     } else {
-                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, operand_id, ref "S006", ref "Type mismatch")
+                        if (nodes.type_id[operand_id] >= 0 &&
+                            types_table.kind[nodes.type_id[operand_id]] == types.TypeKind.F64Type) {
+                            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, operand_id, ref "S062", ref "bitwise operators are not supported on floating-point types")
+                        } else {
+                            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, operand_id, ref "S006", ref "Type mismatch")
+                        }
                     }
                 }
             }
@@ -6775,6 +7377,7 @@ func check_expr(
                     (expr_type_compatible(
                             ref types_table,
                             ref builtins,
+                            ref tokens,
                             ref nodes,
                             nodes.type_id[left_id],
                             nodes.type_id[right_id],
@@ -6784,6 +7387,7 @@ func check_expr(
                         expr_type_compatible(
                             ref types_table,
                             ref builtins,
+                            ref tokens,
                             ref nodes,
                             nodes.type_id[right_id],
                             nodes.type_id[left_id],
@@ -6800,6 +7404,7 @@ func check_expr(
             val common_type: i64 = numeric_common_type(
                 ref types_table,
                 ref builtins,
+                ref tokens,
                 ref nodes,
                 left_id,
                 nodes.type_id[left_id],
@@ -6828,8 +7433,20 @@ func check_expr(
                 op_kind == token.TokenKind.Caret ||
                 op_kind == token.TokenKind.LessLess ||
                 op_kind == token.TokenKind.GreaterGreater) {
+                val left_is_float_operand: bool = nodes.type_id[left_id] >= 0 &&
+                    types_table.kind[nodes.type_id[left_id]] == types.TypeKind.F64Type
+                val right_is_float_operand: bool = nodes.type_id[right_id] >= 0 &&
+                    types_table.kind[nodes.type_id[right_id]] == types.TypeKind.F64Type
                 if (left_is_enum || right_is_enum) {
                     diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S067", ref "Arithmetic or ordering not allowed on enum type")
+                    return
+                }
+                if (left_is_float_operand || right_is_float_operand) {
+                    if (op_kind == token.TokenKind.Percent) {
+                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S061", ref "modulo operator '%' is not supported on floating-point types")
+                    } else {
+                        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S062", ref "bitwise operators are not supported on floating-point types")
+                    }
                     return
                 }
                 if (common_type >= 0 && type_is_integer_builtin(ref types_table, common_type)) {
@@ -6888,8 +7505,8 @@ func check_expr(
                 return
             }
             if (!type_is_numeric_builtin(ref types_table, nodes.type_id[operand_id]) &&
-                !node_is_integer_literal(ref nodes, operand_id) &&
-                !node_is_float_literal(ref nodes, operand_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, operand_id) &&
+                !node_is_float_literal(ref tokens, ref nodes, operand_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, operand_id, ref "S063", ref "Cannot cast non-numeric type")
             }
             return
@@ -7030,6 +7647,7 @@ func check_expr(
             if (expr_type_compatible(
                     ref types_table,
                     ref builtins,
+                    ref tokens,
                     ref nodes,
                     nodes.type_id[then_id],
                     nodes.type_id[else_id],
@@ -7041,6 +7659,7 @@ func check_expr(
                 if (expr_type_compatible(
                         ref types_table,
                         ref builtins,
+                        ref tokens,
                         ref nodes,
                         nodes.type_id[else_id],
                         nodes.type_id[then_id],
@@ -7145,6 +7764,7 @@ func check_expr(
                         val common_type: i64 = numeric_common_type(
                             ref types_table,
                             ref builtins,
+                            ref tokens,
                             ref nodes,
                             result_node,
                             result_type,
@@ -7154,6 +7774,7 @@ func check_expr(
                         if (expr_type_compatible(
                                 ref types_table,
                                 ref builtins,
+                                ref tokens,
                                 ref nodes,
                                 result_type,
                                 nodes.type_id[body_id],
@@ -7164,6 +7785,7 @@ func check_expr(
                             if (expr_type_compatible(
                                     ref types_table,
                                     ref builtins,
+                                    ref tokens,
                                     ref nodes,
                                     nodes.type_id[body_id],
                                     result_type,
@@ -7295,6 +7917,15 @@ func check_assignment_target(
         false
     )
 
+    if (nodes.kind[target_id] == node.NodeKind.FieldAccess) {
+        val object_id: i64 = node.node_child_at(ref nodes, target_id, 0)
+        if (token_name_is(ref sources, ref text_pool, ref tokens, nodes.data0[target_id], ref "len") &&
+            array_like_elem_type(ref types_table, ref builtins, nodes.type_id[object_id]) >= 0) {
+            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, target_id, ref "S088", ref "Assignment target must be a variable, field, or index expression")
+            return nodes.type_id[target_id]
+        }
+    }
+
     if (!expr_is_addressable(ref nodes, target_id)) {
         diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, target_id, ref "S088", ref "Assignment target must be a variable, field, or index expression")
         return nodes.type_id[target_id]
@@ -7319,6 +7950,50 @@ func check_assignment_target(
     nodes.type_id[target_id]
 }
 
+// Shared slice-local and non-copyable-copy checks for local declarations.
+func check_decl_copy_safety(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    ref scopes_table: scopes.Scopes,
+    ref symbols_table: symbols.Symbols,
+    mut ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    type_id: i64,
+    init_node: i64
+): bool = {
+    if (type_id >= 0 &&
+        types_table.kind[type_id] == types.TypeKind.SliceType &&
+        !expr_is_slice_local_initializer(ref nodes, init_node)) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_node, ref "S046", ref "Slice type not allowed as local variable (use arena_alloc or function call)")
+        return true
+    }
+    if (type_is_non_copyable(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            ref scopes_table,
+            ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            type_id,
+            64
+        ) &&
+        expr_is_copy_source(ref nodes, init_node)) {
+        diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_node, ref "S043", ref "Cannot copy non-copyable value")
+        return true
+    }
+    false
+}
+
 // Local declarations infer or validate their type before introducing the new binding.
 func check_local_decl(
     mut ref mem: Arena,
@@ -7341,13 +8016,14 @@ func check_local_decl(
     decl_id: i64
 ): void = {
     val name_token: i64 = nodes.data0[decl_id]
+    val has_decl_type: bool = decl_has_type(ref nodes, decl_id)
     mut type_id: i64 = types.invalid_type_id()
-    val type_child: i64 = if (decl_has_type(ref nodes, decl_id)) {
+    val type_child: i64 = if (has_decl_type) {
         node.node_child_at(ref nodes, decl_id, 0)
     } else {
         node.invalid_node_id()
     }
-    val init_child: i64 = if (decl_has_type(ref nodes, decl_id)) {
+    val init_child: i64 = if (has_decl_type) {
         node.node_child_at(ref nodes, decl_id, 1)
     } else {
         node.node_child_at(ref nodes, decl_id, 0)
@@ -7415,22 +8091,71 @@ func check_local_decl(
     }
 
     if (type_id < 0) {
-        if (!expr_is_untyped_constant(ref nodes, ref symbols_table, init_child, 64)) {
+        if (!decl_is_mut(ref nodes, decl_id) &&
+            !expr_is_untyped_constant(ref nodes, ref symbols_table, init_child, 64)) {
             diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, name_token, ref "S020", ref "Type annotation required (expression is not compile-time constant)")
         }
         type_id = nodes.type_id[init_child]
     } else {
-        if (!expr_type_compatible(
-            ref types_table,
-            ref builtins,
-            ref nodes,
-            type_id,
-            nodes.type_id[init_child],
-            init_child,
-            false
-        )) {
-            diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_child, ref "S006", ref "Type mismatch")
+        if (!check_decl_copy_safety(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                mut ref nodes,
+                ref scopes_table,
+                ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                mut ref diags,
+                mut ref diag_pool,
+                type_id,
+                init_child
+            )) {
+            if (!expr_type_compatible(
+                    ref types_table,
+                    ref builtins,
+                    ref tokens,
+                    ref nodes,
+                    type_id,
+                    nodes.type_id[init_child],
+                    init_child,
+                    false
+                )) {
+                diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, init_child, ref "S006", ref "Type mismatch")
+            }
         }
+    }
+    if (!has_decl_type && type_id >= 0) {
+        check_decl_copy_safety(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            mut ref nodes,
+            ref scopes_table,
+            ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            type_id,
+            init_child
+        )
+    }
+    if (type_is_integer_builtin(ref types_table, type_id)) {
+        check_integer_binding_diagnostics(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            type_id,
+            init_child
+        )
     }
     if (decl_is_mut(ref nodes, decl_id) &&
         decl_init_is_string_literal(ref nodes, decl_id)) {
@@ -7552,6 +8277,7 @@ func check_assignment_stmt(
     if (!expr_type_compatible(
         ref types_table,
         ref builtins,
+        ref tokens,
         ref nodes,
         target_type,
         nodes.type_id[value_id],
@@ -7593,6 +8319,7 @@ func check_assignment_stmt(
             val common_type: i64 = numeric_common_type(
                 ref types_table,
                 ref builtins,
+                ref tokens,
                 ref nodes,
                 target_id,
                 target_type,
@@ -7723,6 +8450,7 @@ func check_statement(
                     if (!expr_type_compatible(
                         ref types_table,
                         ref builtins,
+                        ref tokens,
                         ref nodes,
                         func_return_type,
                         nodes.type_id[value_id],
@@ -7885,11 +8613,11 @@ func check_statement(
                 false
             )
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[start_id]) &&
-                !node_is_integer_literal(ref nodes, start_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, start_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, start_id, ref "S058", ref "For-loop range bound must be integer type")
             }
             if (!type_is_integer_builtin(ref types_table, nodes.type_id[end_id]) &&
-                !node_is_integer_literal(ref nodes, end_id)) {
+                !node_is_integer_literal(ref tokens, ref nodes, end_id)) {
                 diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, end_id, ref "S058", ref "For-loop range bound must be integer type")
             }
 
@@ -8160,6 +8888,31 @@ func check_func_decl(
         if (type_id == builtins.void_type) {
             diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, name_token, ref "S012", ref "void is not valid as parameter type")
         }
+        if (type_id >= 0 &&
+            !decl_is_ref(ref nodes, param_id) &&
+            (types_table.kind[type_id] == types.TypeKind.SliceType ||
+             types_table.kind[type_id] == types.TypeKind.StrType)) {
+            diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, name_token, ref "S049", ref "Slice parameter must use 'ref' or 'mut ref'")
+        } else {
+            if (type_is_non_copyable(
+                    mut ref mem,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    mut ref nodes,
+                    ref scopes_table,
+                    ref symbols_table,
+                    mut ref types_table,
+                    ref builtins,
+                    mut ref diags,
+                    mut ref diag_pool,
+                    type_id,
+                    64
+                ) &&
+                !decl_is_ref(ref nodes, param_id)) {
+                diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, name_token, ref "S044", ref "Non-copyable parameter must use 'ref' or 'mut ref'")
+            }
+        }
 
         if (scope_find_value_local(
             ref scopes_table,
@@ -8369,6 +9122,7 @@ func check_global_decl(
         if (!expr_type_compatible(
             ref types_table,
             ref builtins,
+            ref tokens,
             ref nodes,
             type_id,
             nodes.type_id[init_node],
@@ -8381,6 +9135,20 @@ func check_global_decl(
     if (decl_is_mut(ref nodes, decl_id) &&
         decl_init_is_string_literal(ref nodes, decl_id)) {
         diag_error_token(mut ref mem, ref tokens, mut ref diags, mut ref diag_pool, nodes.data0[decl_id], ref "S054", ref "String literals cannot be mutable (use 'val')")
+    }
+    if (type_is_integer_builtin(ref types_table, type_id)) {
+        check_integer_binding_diagnostics(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref builtins,
+            mut ref diags,
+            mut ref diag_pool,
+            type_id,
+            init_node
+        )
     }
 
     nodes.type_id[decl_id] = type_id
