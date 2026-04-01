@@ -15,6 +15,14 @@ import string "std/string.nore"
 
 pub val SLICE_FLAG_HAS_START: i64 = 64
 pub val SLICE_FLAG_HAS_END: i64 = 128
+val CEXPR_BUILTIN_CALL_NONE: i64 = 0
+val CEXPR_BUILTIN_CALL_ARENA: i64 = 1
+val CEXPR_BUILTIN_CALL_ARENA_ALLOC: i64 = 2
+val CEXPR_BUILTIN_CALL_ARENA_RESET: i64 = 3
+val CEXPR_BUILTIN_CALL_TABLE_ALLOC: i64 = 4
+val CEXPR_BUILTIN_CALL_TABLE_LEN: i64 = 5
+val CEXPR_BUILTIN_CALL_TABLE_GET: i64 = 6
+val CEXPR_BUILTIN_CALL_TABLE_INSERT: i64 = 7
 val CODEGEN_SYNTHETIC_TOKEN_OS: i64 = -2
 val CODEGEN_SYNTHETIC_TOKEN_TARGET_OS: i64 = -3
 val CODEGEN_SYNTHETIC_TOKEN_LINUX: i64 = -4
@@ -33,6 +41,65 @@ func flag_has(flags: i64, bit: i64): bool = {
 func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
     val text: str = string.i64_to_str(mut ref mem, n)
     append_bytes(mut ref mem, mut ref out, ref text)
+}
+
+// Builtin names still dispatch by source spelling until sema grows dedicated call rows.
+pub func token_name_is(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    token_id: i64,
+    ref wanted: [u8]
+): bool = {
+    token_id >= 0 &&
+    string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, token_id), ref wanted)
+}
+
+// Keep the builtin dispatch table aligned with sema without coupling codegen to sema internals.
+func builtin_call_kind(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    token_id: i64
+): i64 = {
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "arena")) {
+        return CEXPR_BUILTIN_CALL_ARENA
+    }
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "arena_alloc")) {
+        return CEXPR_BUILTIN_CALL_ARENA_ALLOC
+    }
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "arena_reset")) {
+        return CEXPR_BUILTIN_CALL_ARENA_RESET
+    }
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "table_alloc")) {
+        return CEXPR_BUILTIN_CALL_TABLE_ALLOC
+    }
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "table_len")) {
+        return CEXPR_BUILTIN_CALL_TABLE_LEN
+    }
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "table_get")) {
+        return CEXPR_BUILTIN_CALL_TABLE_GET
+    }
+    if (token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "table_insert")) {
+        return CEXPR_BUILTIN_CALL_TABLE_INSERT
+    }
+    CEXPR_BUILTIN_CALL_NONE
+}
+
+// Builtin lowering only applies when sema left the callee unresolved, so module-local shadowing stays a normal call.
+func resolved_builtin_call_kind(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    callee_id: i64
+): i64 = {
+    if (callee_id < 0 ||
+        nodes.kind[callee_id] != node.NodeKind.Identifier ||
+        nodes.symbol_id[callee_id] >= 0) {
+        return CEXPR_BUILTIN_CALL_NONE
+    }
+    builtin_call_kind(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id])
 }
 
 // Compiler-injected names do not live in the token table, so codegen keeps the same synthetic spellings as sema.
@@ -703,6 +770,387 @@ func append_ref_arg_expr(
         ref types_table,
         value_id
     )
+}
+
+// Builtin ref arguments still wrap the pointee in a RefExpr node even though codegen lowers them specially.
+pub func ref_arg_value_id(ref nodes: node.Nodes, arg_id: i64): i64 = {
+    if (arg_id < 0) {
+        return -1
+    }
+    if (nodes.kind[arg_id] == node.NodeKind.RefExpr) {
+        return node.node_child_at(ref nodes, arg_id, 0)
+    }
+    arg_id
+}
+
+// Table helpers keep one stable naming convention shared with the helper-emission pass.
+pub func table_helper_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    table_type: i64,
+    ref suffix: [u8]
+): str = {
+    val base_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type
+    )
+    string.str_concat(mut ref mem, ref base_name, ref suffix)
+}
+
+// arena_alloc can produce either a slice or a str, so codegen needs the same byte-element fallback sema accepts.
+func arena_alloc_elem_type(ref types_table: types.Types, result_type: i64): i64 = {
+    if (result_type < 0) {
+        return -1
+    }
+    if (types_table.kind[result_type] == types.TypeKind.SliceType) {
+        return types_table.data0[result_type]
+    }
+    if (types_table.kind[result_type] == types.TypeKind.StrType) {
+        mut type_id: i64 = 0
+        while (type_id < table_len(ref types_table)) {
+            if (types_table.kind[type_id] == types.TypeKind.U8Type) {
+                return type_id
+            }
+            type_id += 1
+        }
+    }
+    -1
+}
+
+// Arena allocation lowers to the shared ni_arena_alloc runtime with element-type metadata.
+func append_arena_alloc_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val arena_arg_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+    val count_id: i64 = node.node_child_at(ref nodes, node_id, 2)
+    val result_type: i64 = nodes.type_id[node_id]
+    val elem_type: i64 = arena_alloc_elem_type(ref types_table, result_type)
+    val result_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        result_type
+    )
+    val elem_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        elem_type
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref result_name)
+    append_bytes(mut ref mem, mut ref out, ref "){.data = (")
+    append_bytes(mut ref mem, mut ref out, ref elem_name)
+    append_bytes(mut ref mem, mut ref out, ref " *)ni_arena_alloc(")
+    append_ref_arg_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        arena_arg_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        count_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ", sizeof(")
+    append_bytes(mut ref mem, mut ref out, ref elem_name)
+    append_bytes(mut ref mem, mut ref out, ref "), NI_ALIGNOF(")
+    append_bytes(mut ref mem, mut ref out, ref elem_name)
+    append_bytes(mut ref mem, mut ref out, ref ")), .len = ")
+    append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        count_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref "}")
+}
+
+// Table allocation lowers through one generated helper per table type.
+func append_table_alloc_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val arena_arg_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+    val count_id: i64 = node.node_child_at(ref nodes, node_id, 2)
+    val helper_name: str = table_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[node_id],
+        ref "__alloc"
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_ref_arg_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        arena_arg_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        count_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ")")
+}
+
+// Table get/insert helpers need the pointee table type rather than the call-result row type.
+func append_table_helper_call(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    call_id: i64,
+    ref suffix: [u8]
+): void = {
+    val table_arg_id: i64 = node.node_child_at(ref nodes, call_id, 1)
+    val table_value_id: i64 = ref_arg_value_id(ref nodes, table_arg_id)
+    val helper_name: str = table_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        nodes.type_id[table_value_id],
+        ref suffix
+    )
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_ref_arg_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        table_arg_id
+    )
+}
+
+// Builtin calls lower directly to runtime/helper spellings instead of the unresolved source identifiers.
+func append_builtin_call_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64,
+    builtin_kind: i64
+): void = {
+    if (builtin_kind == CEXPR_BUILTIN_CALL_ARENA) {
+        append_bytes(mut ref mem, mut ref out, ref "ni_arena_new(")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, node_id, 1)
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    if (builtin_kind == CEXPR_BUILTIN_CALL_ARENA_ALLOC) {
+        append_arena_alloc_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        return
+    }
+
+    if (builtin_kind == CEXPR_BUILTIN_CALL_ARENA_RESET) {
+        append_bytes(mut ref mem, mut ref out, ref "ni_arena_reset(")
+        append_ref_arg_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, node_id, 1)
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    if (builtin_kind == CEXPR_BUILTIN_CALL_TABLE_ALLOC) {
+        append_table_alloc_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id
+        )
+        return
+    }
+
+    if (builtin_kind == CEXPR_BUILTIN_CALL_TABLE_LEN) {
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_ref_arg_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, node_id, 1)
+        )
+        append_bytes(mut ref mem, mut ref out, ref "->ni__len)")
+        return
+    }
+
+    if (builtin_kind == CEXPR_BUILTIN_CALL_TABLE_GET) {
+        append_table_helper_call(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id,
+            ref "__get"
+        )
+        append_bytes(mut ref mem, mut ref out, ref ", ")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, node_id, 2)
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+        return
+    }
+
+    if (builtin_kind == CEXPR_BUILTIN_CALL_TABLE_INSERT) {
+        append_table_helper_call(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node_id,
+            ref "__insert"
+        )
+        append_bytes(mut ref mem, mut ref out, ref ", ")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            node.node_child_at(ref nodes, node_id, 2)
+        )
+        append_bytes(mut ref mem, mut ref out, ref ")")
+    }
 }
 
 // Call targets use symbol resolution rather than value-expression spelling.
@@ -1469,6 +1917,22 @@ pub func append_expr(
     }
     if (kind == node.NodeKind.CallExpr) {
         val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val builtin_kind: i64 = resolved_builtin_call_kind(ref sources, ref text_pool, ref tokens, ref nodes, callee_id)
+        if (builtin_kind != CEXPR_BUILTIN_CALL_NONE) {
+            append_builtin_call_expr(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                ref types_table,
+                node_id,
+                builtin_kind
+            )
+            return
+        }
         val callee_enum_type: i64 = field_access_enum_type(ref nodes, ref symbols_table, ref types_table, callee_id)
         if (callee_enum_type >= 0) {
             append_enum_variant_call_expr(

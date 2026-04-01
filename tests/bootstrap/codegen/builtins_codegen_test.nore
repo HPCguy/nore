@@ -12,7 +12,7 @@ import token "../../../compiler/frontend/token.nore"
 import types "../../../compiler/sema/types.nore"
 import symbols "../../../compiler/sema/symbols.nore"
 
-// One real std module should lower through the current whole-file slice, including native hook prototypes.
+// Arena/table builtins should lower to runtime helpers instead of raw source names.
 func main(): void = {
     mut mem: Arena = arena(16777216)
     mut sources: source.Sources = table_alloc(mut ref mem, 16)
@@ -31,8 +31,8 @@ func main(): void = {
 
     val loaded: loader.LoadResult = loader.load_graph(
         mut ref mem,
-        ref ".",
-        ref "std/io.nore",
+        ref "tests/bootstrap/codegen/builtins_repo",
+        ref "tests/bootstrap/codegen/builtins_repo/root.nore",
         mut ref sources,
         mut ref path_pool,
         mut ref text_pool,
@@ -76,18 +76,24 @@ func main(): void = {
         ref loaded.modules
     )
 
-    assert string.str_contains(ref dumped, ref "typedef struct { uint8_t data[21]; } ni_arr_21_uint8_t;\n")
-    assert string.str_contains(ref dumped, ref "#include <stddef.h>\n#include <string.h>\n#include <unistd.h>\n#include <fcntl.h>\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_fd_write(int32_t ni_fd, const ni_slice_uint8_t *ni_data);\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_fd_read(int32_t ni_fd, ni_slice_uint8_t *ni_buf);\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_mem_copy(ni_slice_uint8_t *ni_dst, const ni_slice_uint8_t *ni_src);\n")
+    assert string.str_contains(ref dumped, ref "#include <stddef.h>\n#include <string.h>\n")
     assert string.str_contains(ref dumped, ref "static ni_Arena ni_arena_new(int64_t ni_capacity) {\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_fd_write(int32_t ni_fd, const ni_slice_uint8_t *ni_data) {\n    return (int64_t)write(ni_fd, ni_data->data, (size_t)ni_data->len);\n}\n")
-    assert string.str_contains(ref dumped, ref "int64_t ni_mem_copy(ni_slice_uint8_t *ni_dst, const ni_slice_uint8_t *ni_src) {\n    int64_t ni_n = (ni_dst->len < ni_src->len) ? ni_dst->len : ni_src->len;\n")
-    assert string.str_contains(ref dumped, ref "void ni_m0_print_i64(int64_t ni_n) {\n    ni_arr_21_uint8_t ni_buf = (ni_arr_21_uint8_t){{0L, 0L, 0L, 0L")
-    assert string.str_contains(ref dumped, ref "int64_t ni_pos = ni_m1_fmt_i64(&ni_buf, ni_n);\n    (void)(ni_fd_write(ni_m0_STDOUT, &(((ni_slice_uint8_t[]){(ni_slice_uint8_t){.data = (ni_buf).data + ni_pos, .len = (20L - ni_pos)}})[0])));\n}\n")
-    assert string.str_contains(ref dumped, ref "void ni_m0_write_i64(ni_m0_Writer *ni_w, int64_t ni_n) {\n    ni_arr_21_uint8_t ni_buf = (ni_arr_21_uint8_t){{0L, 0L, 0L, 0L")
-    assert string.str_contains(ref dumped, ref "ni_mem_copy(&ni_dst, &(((ni_slice_uint8_t[]){(ni_slice_uint8_t){.data = (ni_buf).data + ni_pos, .len = (20L - ni_pos)}})[0]));\n")
-    assert !string.str_contains(ref dumped, ref "static int64_t ni_fd_write(")
-    assert !string.str_contains(ref dumped, ref "static int64_t ni_mem_copy(")
+    assert string.str_contains(ref dumped, ref "static void *ni_arena_alloc(ni_Arena *ni_arena, int64_t ni_count, size_t ni_elem_size, size_t ni_elem_align) {\n")
+    assert string.str_contains(ref dumped, ref "static ni_m0_Bag ni_m0_Bag__alloc(ni_Arena *ni_arena, int64_t ni_cap) {\n")
+    assert string.str_contains(ref dumped, ref "static ni_m0_Bag_Row ni_m0_Bag__get(const ni_m0_Bag *ni_table, int64_t ni_idx) {\n")
+    assert string.str_contains(ref dumped, ref "static void ni_m0_Bag__insert(ni_m0_Bag *ni_table, ni_m0_Bag_Row ni_row) {\n")
+    assert string.str_contains(ref dumped, ref "return ni_arena_new(64L);\n")
+    assert string.str_contains(ref dumped, ref "return (ni_slice_uint8_t){.data = (uint8_t *)ni_arena_alloc(ni_mem, ni_count, sizeof(uint8_t), NI_ALIGNOF(uint8_t)), .len = ni_count};\n")
+    assert string.str_contains(ref dumped, ref "return (ni_str){.data = (uint8_t *)ni_arena_alloc(ni_mem, ni_count, sizeof(uint8_t), NI_ALIGNOF(uint8_t)), .len = ni_count};\n")
+    assert string.str_contains(ref dumped, ref "ni_m0_Bag ni_bag = ni_m0_Bag__alloc(ni_mem, 4L);\n")
+    assert string.str_contains(ref dumped, ref "ni_m0_Bag__insert(&ni_bag, (ni_m0_Bag_Row){.ni_count = 7L});\n")
+    assert string.str_contains(ref dumped, ref "ni_m0_Bag_Row ni_got = ni_m0_Bag__get(&ni_bag, 0L);\n")
+    assert string.str_contains(ref dumped, ref "ni_got.ni_count")
+    assert string.str_contains(ref dumped, ref "ni__len")
+    assert !string.str_contains(ref dumped, ref "sizeof(void)")
+    assert !string.str_contains(ref dumped, ref "NI_ALIGNOF(void)")
+    assert !string.str_contains(ref dumped, ref "table_alloc(")
+    assert !string.str_contains(ref dumped, ref "table_get(")
+    assert !string.str_contains(ref dumped, ref "table_insert(")
+    assert !string.str_contains(ref dumped, ref " arena_reset(")
 }

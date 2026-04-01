@@ -169,23 +169,25 @@ Current early codegen file scope:
   by later definition emitters, but not global initializers, expressions,
   statements, runtime bodies, or whole-file orchestration.
 
-- `compiler/codegen/c_runtime.nore`: emit the minimal generated-C prelude only.
-  It owns required standard includes plus builtin runtime-facing typedefs such
-  as `ni_str`, `ni_Arena`, and `ni_OS`, but not bounds/cast helpers, native
-  hook bodies, or orchestration.
+- `compiler/codegen/c_runtime.nore`: emit the shared generated-C runtime slice
+  only. It owns required standard includes, builtin runtime-facing typedefs
+  such as `ni_str`, `ni_Arena`, and `ni_OS`, the first arena helpers, and the
+  compiler-provided native hook bodies (`ni_fd_*`, `ni_mem_copy`, `ni_exit`),
+  but not bounds/cast helpers, table-specific helpers, or orchestration.
 
 - `compiler/codegen/c_main.nore`: assemble the current whole-file C skeleton
   only. It owns section ordering for prelude, typedefs, module-global
-  definitions, generated helper functions, native/user prototypes, and the
-  current function-definition slice, but not runtime helper bodies or driver
-  behavior.
+  definitions, generated helper functions (including the first table builtin
+  helpers), native/user prototypes, and the current function-definition slice,
+  but not shared runtime helper bodies or driver behavior.
 
 - `compiler/codegen/c_emit_expr.nore`: emit the current checked expression
   slice only. It owns literals, typed array literals, unary/binary operators,
-  casts, identifiers, field/index/slice access, constructors, and plain
-  user-function calls, including ref-aware identifier/field lowering plus
-  slice-view ref-argument temporaries, but not statements, globals, `if` /
-  `match` expression lowering, or helper runtimes.
+  casts, identifiers, field/index/slice access, constructors, plain
+  user-function calls, and the first builtin call lowering (`arena_*`,
+  `table_*`), including ref-aware identifier/field lowering plus slice-view
+  ref-argument temporaries, but not statements, globals, `if` / `match`
+  expression lowering, or shared runtime bodies.
 
 - `compiler/codegen/c_emit_stmt.nore`: emit the current checked statement/body
   slice only. It owns blocks, local declarations, assignments, explicit

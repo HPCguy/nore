@@ -1,0 +1,27 @@
+table Bag {
+    count: i64
+}
+
+func new_arena(): Arena = {
+    arena(64)
+}
+
+func take_bytes(mut ref mem: Arena, count: i64): [u8] = {
+    arena_alloc(mut ref mem, count)
+}
+
+func take_name(mut ref mem: Arena, count: i64): str = {
+    arena_alloc(mut ref mem, count)
+}
+
+func reset_local(): void = {
+    mut mem: Arena = arena(8)
+    arena_reset(mut ref mem)
+}
+
+func use_table(mut ref mem: Arena): i64 = {
+    mut bag: Bag = table_alloc(mut ref mem, 4)
+    table_insert(mut ref bag, Bag.Row { count: 7 })
+    val got: Bag.Row = table_get(ref bag, 0)
+    got.count + table_len(ref bag)
+}

@@ -23,6 +23,9 @@ val GLOBAL_TYPED_FLAG: i64 = 16
 val EMIT_STATE_UNSEEN: i64 = 0
 val EMIT_STATE_VISITING: i64 = 1
 val EMIT_STATE_EMITTED: i64 = 2
+val TABLE_HELPER_ALLOC: i64 = 1
+val TABLE_HELPER_GET: i64 = 2
+val TABLE_HELPER_INSERT: i64 = 4
 
 func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
@@ -52,7 +55,7 @@ func decl_init_node(ref nodes: node.Nodes, decl_id: i64): i64 = {
     node.node_child_at(ref nodes, decl_id, 0)
 }
 
-// Builtin calls still spell their source name in the callee identifier child.
+// Builtin scans only match unresolved identifiers so module-local shadowing stays aligned with sema.
 func identifier_token_is(
     ref sources: source.Sources,
     ref text_pool: bbuf.ByteBuf,
@@ -63,7 +66,92 @@ func identifier_token_is(
 ): bool = {
     node_id >= 0 &&
     nodes.kind[node_id] == node.NodeKind.Identifier &&
+    nodes.symbol_id[node_id] < 0 &&
     string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]), ref wanted)
+}
+
+// One recursive scan keeps the generated-C runtime surface aligned with actual module usage.
+func collect_runtime_usage(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    node_id: i64,
+    mut ref table_helpers: [i64],
+    mut ref needs_arena: bool,
+    mut ref needs_mem: bool,
+    mut ref needs_io: bool,
+    mut ref needs_exit: bool
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.CallExpr) {
+        val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        if (identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "arena") ||
+            identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "arena_alloc") ||
+            identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "arena_reset")) {
+            needs_arena = true
+        }
+
+        if (identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "table_alloc")) {
+            needs_arena = true
+            if (nodes.type_id[node_id] >= 0 && nodes.type_id[node_id] < table_helpers.len) {
+                table_helpers[nodes.type_id[node_id]] = table_helpers[nodes.type_id[node_id]] | TABLE_HELPER_ALLOC
+            }
+        }
+
+        if (identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "table_get")) {
+            val table_value_id: i64 = cexpr.ref_arg_value_id(ref nodes, node.node_child_at(ref nodes, node_id, 1))
+            if (table_value_id >= 0 &&
+                nodes.type_id[table_value_id] >= 0 &&
+                nodes.type_id[table_value_id] < table_helpers.len) {
+                table_helpers[nodes.type_id[table_value_id]] = table_helpers[nodes.type_id[table_value_id]] | TABLE_HELPER_GET
+            }
+        } else if (identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "table_insert")) {
+            val table_value_id: i64 = cexpr.ref_arg_value_id(ref nodes, node.node_child_at(ref nodes, node_id, 1))
+            if (table_value_id >= 0 &&
+                nodes.type_id[table_value_id] >= 0 &&
+                nodes.type_id[table_value_id] < table_helpers.len) {
+                table_helpers[nodes.type_id[table_value_id]] = table_helpers[nodes.type_id[table_value_id]] | TABLE_HELPER_INSERT
+            }
+        }
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.NativeFuncDecl) {
+        val name_token: i64 = nodes.data0[node_id]
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "mem_copy")) {
+            needs_mem = true
+        }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "exit")) {
+            needs_exit = true
+        }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write") ||
+            cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read") ||
+            cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_open") ||
+            cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_close") ||
+            cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_seek")) {
+            needs_io = true
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        collect_runtime_usage(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            child_id,
+            mut ref table_helpers,
+            mut ref needs_arena,
+            mut ref needs_mem,
+            mut ref needs_io,
+            mut ref needs_exit
+        )
+        child_id = nodes.next_sibling[child_id]
+    }
 }
 
 // Arena globals still need a special lowering path until runtime init/free hooks are wired through main.
@@ -496,6 +584,339 @@ pub func global_definitions_dump(
     out.data[0..out.count]
 }
 
+// Table helper emission reuses the same field iteration shape as the table typedefs.
+func append_table_alloc_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    table_type: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[table_type]
+    val table_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type
+    )
+    val helper_name: str = cexpr.table_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type,
+        ref "__alloc"
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "static ")
+    append_bytes(mut ref mem, mut ref out, ref table_name)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(ni_Arena *ni_arena, int64_t ni_cap) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (")
+    append_bytes(mut ref mem, mut ref out, ref table_name)
+    append_bytes(mut ref mem, mut ref out, ref "){\n")
+
+    mut field_id: i64 = nodes.first_child[decl_id]
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+            val slice_type_id: i64 = types.type_slice(mut ref types_table, nodes.type_id[field_id])
+            val slice_name: str = ctypes.type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                slice_type_id
+            )
+            val elem_name: str = ctypes.type_name(
+                mut ref mem,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                nodes.type_id[field_id]
+            )
+            val field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[field_id])
+            append_bytes(mut ref mem, mut ref out, ref "        .ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref " = (")
+            append_bytes(mut ref mem, mut ref out, ref slice_name)
+            append_bytes(mut ref mem, mut ref out, ref "){.data = (")
+            append_bytes(mut ref mem, mut ref out, ref elem_name)
+            append_bytes(mut ref mem, mut ref out, ref " *)ni_arena_alloc(ni_arena, ni_cap, sizeof(")
+            append_bytes(mut ref mem, mut ref out, ref elem_name)
+            append_bytes(mut ref mem, mut ref out, ref "), NI_ALIGNOF(")
+            append_bytes(mut ref mem, mut ref out, ref elem_name)
+            append_bytes(mut ref mem, mut ref out, ref ")), .len = ni_cap},\n")
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "        .ni__len = 0L\n")
+    append_bytes(mut ref mem, mut ref out, ref "    };\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Table row helpers centralize the bounds/error contract for the first lowered table builtin slice.
+func append_table_get_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    table_type: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[table_type]
+    val row_type: i64 = types.type_table_row(
+        mut ref types_table,
+        types_table.module_id[table_type],
+        decl_id,
+        table_type
+    )
+    val table_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type
+    )
+    val row_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        row_type
+    )
+    val helper_name: str = cexpr.table_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type,
+        ref "__get"
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "static ")
+    append_bytes(mut ref mem, mut ref out, ref row_name)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(const ")
+    append_bytes(mut ref mem, mut ref out, ref table_name)
+    append_bytes(mut ref mem, mut ref out, ref " *ni_table, int64_t ni_idx) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if ((uint64_t)ni_idx >= (uint64_t)ni_table->ni__len) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"error[R002]: Table index out of bounds: %ld not in [0, %ld)\\n\", (long)ni_idx, (long)ni_table->ni__len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "        exit(2);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (")
+    append_bytes(mut ref mem, mut ref out, ref row_name)
+    append_bytes(mut ref mem, mut ref out, ref "){")
+
+    mut field_id: i64 = nodes.first_child[decl_id]
+    mut wrote_any: bool = false
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+            val field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[field_id])
+            if (wrote_any) {
+                append_bytes(mut ref mem, mut ref out, ref ", ")
+            }
+            append_bytes(mut ref mem, mut ref out, ref ".ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref " = ni_table->ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref ".data[ni_idx]")
+            wrote_any = true
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "};\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Table inserts stay table-specific so the generated C never needs a generic metadata layer during bootstrap.
+func append_table_insert_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    table_type: i64
+): void = {
+    val decl_id: i64 = types_table.decl_node[table_type]
+    val row_type: i64 = types.type_table_row(
+        mut ref types_table,
+        types_table.module_id[table_type],
+        decl_id,
+        table_type
+    )
+    val table_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type
+    )
+    val row_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        row_type
+    )
+    val helper_name: str = cexpr.table_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        table_type,
+        ref "__insert"
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "static void ")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref table_name)
+    append_bytes(mut ref mem, mut ref out, ref " *ni_table, ")
+    append_bytes(mut ref mem, mut ref out, ref row_name)
+    append_bytes(mut ref mem, mut ref out, ref " ni_row) {\n")
+
+    mut field_id: i64 = nodes.first_child[decl_id]
+    mut first_field_token: i64 = -1
+    mut has_field: bool = false
+    while (field_id >= 0 && !has_field) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+            first_field_token = nodes.data0[field_id]
+            has_field = true
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+
+    if (has_field) {
+        append_bytes(mut ref mem, mut ref out, ref "    if (ni_table->ni__len >= ni_table->ni_")
+        append_bytes(mut ref mem, mut ref out, ref token.token_text(ref sources, ref text_pool, ref tokens, first_field_token))
+        append_bytes(mut ref mem, mut ref out, ref ".len) {\n")
+        append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"Table capacity exceeded\\n\");\n")
+        append_bytes(mut ref mem, mut ref out, ref "        exit(2);\n")
+        append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    }
+
+    field_id = nodes.first_child[decl_id]
+    while (field_id >= 0) {
+        if (nodes.kind[field_id] == node.NodeKind.FieldDecl) {
+            val field_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[field_id])
+            append_bytes(mut ref mem, mut ref out, ref "    ni_table->ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref ".data[ni_table->ni__len] = ni_row.ni_")
+            append_bytes(mut ref mem, mut ref out, ref field_name)
+            append_bytes(mut ref mem, mut ref out, ref ";\n")
+        }
+        field_id = nodes.next_sibling[field_id]
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "    ni_table->ni__len += 1L;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Per-table helpers only emit for builtin table operations actually used by the current module graph.
+func table_helpers_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    mut ref types_table: types.Types,
+    ref table_helpers: [i64]
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
+    mut wrote_any: bool = false
+    mut type_id: i64 = 0
+    while (type_id < table_helpers.len && type_id < table_len(ref types_table)) {
+        val helper_flags: i64 = table_helpers[type_id]
+        if (helper_flags != 0 &&
+            types_table.kind[type_id] == types.TypeKind.TableType) {
+            if (wrote_any) {
+                append_bytes(mut ref mem, mut ref out, ref "\n")
+            }
+            mut wrote_table_helper: bool = false
+            if (flag_has(helper_flags, TABLE_HELPER_ALLOC)) {
+                append_table_alloc_helper(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    mut ref types_table,
+                    type_id
+                )
+                wrote_table_helper = true
+            }
+            if (flag_has(helper_flags, TABLE_HELPER_GET)) {
+                if (wrote_table_helper) {
+                    append_bytes(mut ref mem, mut ref out, ref "\n")
+                }
+                append_table_get_helper(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    mut ref types_table,
+                    type_id
+                )
+                wrote_table_helper = true
+            }
+            if (flag_has(helper_flags, TABLE_HELPER_INSERT)) {
+                if (wrote_table_helper) {
+                    append_bytes(mut ref mem, mut ref out, ref "\n")
+                }
+                append_table_insert_helper(
+                    mut ref mem,
+                    mut ref out,
+                    ref sources,
+                    ref text_pool,
+                    ref tokens,
+                    ref nodes,
+                    mut ref types_table,
+                    type_id
+                )
+            }
+            wrote_any = true
+        }
+        type_id += 1
+    }
+
+    out.data[0..out.count]
+}
+
 // The helper body is tiny but centralizes the single-evaluation contract for open-ended sub-slices.
 func append_slice_tail_helper(
     mut ref mem: Arena,
@@ -745,8 +1166,35 @@ pub func c_file_dump(
     ref module_range: span.Range
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut table_helpers: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
+    mut helper_id: i64 = 0
+    while (helper_id < table_helpers.len) {
+        table_helpers[helper_id] = 0
+        helper_id += 1
+    }
+    mut needs_arena: bool = false
+    mut needs_mem: bool = false
+    mut needs_io: bool = false
+    mut needs_exit: bool = false
+    mut module_id: i64 = module_range.start
+    val module_end: i64 = span.range_end(ref module_range)
+    while (module_id < module_end && module_id < table_len(ref modules)) {
+        collect_runtime_usage(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            modules.root_node[module_id],
+            mut ref table_helpers,
+            mut ref needs_arena,
+            mut ref needs_mem,
+            mut ref needs_io,
+            mut ref needs_exit
+        )
+        module_id += 1
+    }
 
-    val prelude: [u8] = cruntime.core_prelude_dump(mut ref mem)
+    val prelude: [u8] = cruntime.runtime_prelude_dump(mut ref mem, needs_arena, needs_mem, needs_io)
     append_section(mut ref mem, mut ref out, ref prelude)
 
     val type_defs: [u8] = ctypes.type_defs_dump(
@@ -759,6 +1207,14 @@ pub func c_file_dump(
         ref type_range
     )
     append_section(mut ref mem, mut ref out, ref type_defs)
+
+    val runtime_helpers: [u8] = cruntime.runtime_helpers_dump(
+        mut ref mem,
+        needs_arena,
+        needs_mem,
+        needs_io,
+        needs_exit
+    )
 
     val globals: [u8] = global_definitions_dump(
         mut ref mem,
@@ -785,6 +1241,19 @@ pub func c_file_dump(
         ref module_range
     )
     append_section(mut ref mem, mut ref out, ref native_prototypes)
+
+    append_section(mut ref mem, mut ref out, ref runtime_helpers)
+
+    val table_helper_text: [u8] = table_helpers_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        mut ref types_table,
+        ref table_helpers
+    )
+    append_section(mut ref mem, mut ref out, ref table_helper_text)
 
     val helpers: [u8] = slice_helpers_dump(
         mut ref mem,

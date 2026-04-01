@@ -1,7 +1,7 @@
 // Bootstrap compiler C runtime/prelude emission.
-// Responsibility: emit the core C prelude required by bootstrap-generated files.
-// Owns: standard includes and builtin typedefs shared by lowered bootstrap types.
-// Does not own: bounds/cast helpers, native hook bodies, or whole-file orchestration.
+// Responsibility: emit generated-C includes, shared typedefs, and the first runtime helper bodies.
+// Owns: standard includes, builtin typedefs, arena helpers, and compiler-provided native hook bodies.
+// Does not own: bounds/cast helpers, table-specific helpers, or whole-file orchestration.
 
 import bbuf "../support/byte_buf.nore"
 
@@ -9,11 +9,28 @@ func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8])
     bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
 }
 
-// Lowered bootstrap types currently rely on stdint plus the shared ni_str / ni_Arena / ni_OS spellings.
-pub func append_core_prelude(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+// Lowered bootstrap types only pull extra headers when the generated file needs the matching runtime slice.
+pub func append_core_prelude(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    needs_arena: bool,
+    needs_mem: bool,
+    needs_io: bool
+): void = {
     append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n")
     append_bytes(mut ref mem, mut ref out, ref "#include <stdio.h>\n")
-    append_bytes(mut ref mem, mut ref out, ref "#include <stdlib.h>\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "#include <stdlib.h>\n")
+    if (needs_arena) {
+        append_bytes(mut ref mem, mut ref out, ref "#include <stddef.h>\n")
+    }
+    if (needs_arena || needs_mem || needs_io) {
+        append_bytes(mut ref mem, mut ref out, ref "#include <string.h>\n")
+    }
+    if (needs_io) {
+        append_bytes(mut ref mem, mut ref out, ref "#include <unistd.h>\n")
+        append_bytes(mut ref mem, mut ref out, ref "#include <fcntl.h>\n")
+    }
+    append_bytes(mut ref mem, mut ref out, ref "\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t len; } ni_str;\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t capacity; int64_t offset; } ni_Arena;\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef int64_t ni_OS;\n")
@@ -24,9 +41,142 @@ pub func append_core_prelude(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): voi
     append_bytes(mut ref mem, mut ref out, ref "#endif\n")
 }
 
+// Emit the shared arena helper slice once so builtin lowering can target stable C spellings.
+func append_arena_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "#define NI_ALIGNOF(T) offsetof(struct { char c; T value; }, value)\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static ni_Arena ni_arena_new(int64_t ni_capacity) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_Arena ni_arena;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_arena.data = (uint8_t *)malloc((size_t)ni_capacity);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (!ni_arena.data) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"Arena allocation failed\\n\");\n")
+    append_bytes(mut ref mem, mut ref out, ref "        exit(1);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_arena.capacity = ni_capacity;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_arena.offset = 0L;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return ni_arena;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static size_t ni_align_up(size_t ni_offset, size_t ni_align) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_align <= 1UL) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        return ni_offset;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    size_t ni_rem = (ni_offset % ni_align);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_rem == 0UL) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        return ni_offset;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (ni_offset + (ni_align - ni_rem));\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static void *ni_arena_alloc(ni_Arena *ni_arena, int64_t ni_count, size_t ni_elem_size, size_t ni_elem_align) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    size_t ni_bytes = ((size_t)ni_count * ni_elem_size);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    size_t ni_offset = ni_align_up((size_t)ni_arena->offset, ni_elem_align);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if ((ni_offset + ni_bytes) > (size_t)ni_arena->capacity) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"Arena out of memory\\n\");\n")
+    append_bytes(mut ref mem, mut ref out, ref "        exit(1);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    void *ni_ptr = (ni_arena->data + ni_offset);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    memset(ni_ptr, 0, ni_bytes);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_arena->offset = (int64_t)(ni_offset + ni_bytes);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return ni_ptr;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static void ni_arena_reset(ni_Arena *ni_arena) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_arena->offset = 0L;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Native I/O hooks stay compiler-provided so std modules can lower without a separate support library.
+func append_io_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "int64_t ni_fd_write(int32_t ni_fd, const ni_slice_uint8_t *ni_data) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (int64_t)write(ni_fd, ni_data->data, (size_t)ni_data->len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    append_bytes(mut ref mem, mut ref out, ref "int64_t ni_fd_read(int32_t ni_fd, ni_slice_uint8_t *ni_buf) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (int64_t)read(ni_fd, ni_buf->data, (size_t)ni_buf->len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    append_bytes(mut ref mem, mut ref out, ref "int32_t ni_fd_open(const ni_str *ni_path, int32_t ni_flags) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    char ni_tmp[4096];\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_path->len >= 4096L) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"fd_open: path too long\\n\");\n")
+    append_bytes(mut ref mem, mut ref out, ref "        exit(1);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    memcpy(ni_tmp, ni_path->data, (size_t)ni_path->len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_tmp[ni_path->len] = '\\0';\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (int32_t)open(ni_tmp, ni_flags, 0644);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    append_bytes(mut ref mem, mut ref out, ref "void ni_fd_close(int32_t ni_fd) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    close(ni_fd);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    append_bytes(mut ref mem, mut ref out, ref "int64_t ni_fd_seek(int32_t ni_fd, int64_t ni_offset, int32_t ni_whence) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (int64_t)lseek(ni_fd, (off_t)ni_offset, ni_whence);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// mem_copy lowers to memmove so overlapping byte buffers keep the stage-0 behavior.
+func append_mem_copy_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "int64_t ni_mem_copy(ni_slice_uint8_t *ni_dst, const ni_slice_uint8_t *ni_src) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    int64_t ni_n = (ni_dst->len < ni_src->len) ? ni_dst->len : ni_src->len;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    memmove(ni_dst->data, ni_src->data, (size_t)ni_n);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return ni_n;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Native exit declarations still lower through a ni_* hook name even though libc already provides exit().
+func append_exit_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "void ni_exit(int32_t ni_code) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    exit(ni_code);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Runtime helpers only emit the slices required by the scanned module graph.
+pub func runtime_helpers_dump(
+    mut ref mem: Arena,
+    needs_arena: bool,
+    needs_mem: bool,
+    needs_io: bool,
+    needs_exit: bool
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut wrote_any: bool = false
+
+    if (needs_arena) {
+        append_arena_runtime(mut ref mem, mut ref out)
+        wrote_any = true
+    }
+    if (needs_io) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_io_runtime(mut ref mem, mut ref out)
+        wrote_any = true
+    }
+    if (needs_mem) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_mem_copy_runtime(mut ref mem, mut ref out)
+        wrote_any = true
+    }
+    if (needs_exit) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_exit_runtime(mut ref mem, mut ref out)
+    }
+    out.data[0..out.count]
+}
+
 // Tests and c_main both need one stable entry point for the minimal generated-C prelude.
 pub func core_prelude_dump(mut ref mem: Arena): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out)
+    append_core_prelude(mut ref mem, mut ref out, false, false, false)
+    out.data[0..out.count]
+}
+
+// Whole-file assembly can request the richer header set once it knows which runtime helpers are needed.
+pub func runtime_prelude_dump(
+    mut ref mem: Arena,
+    needs_arena: bool,
+    needs_mem: bool,
+    needs_io: bool
+): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io)
     out.data[0..out.count]
 }

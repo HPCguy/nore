@@ -1,0 +1,19 @@
+func arena(count: i64): i64 = {
+    count + 1
+}
+
+func table_len(count: i64): i64 = {
+    count + 2
+}
+
+func table_get(count: i64): i64 = {
+    count + 3
+}
+
+func table_insert(count: i64): i64 = {
+    count + 4
+}
+
+func use_shadowed_names(): i64 = {
+    arena(1) + table_len(2) + table_get(3) + table_insert(4)
+}

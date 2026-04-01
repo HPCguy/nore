@@ -538,12 +538,18 @@ same-translation-unit user-function calls, injected `TARGET_OS` / `OS.*`
 names, ref arguments over slice-view temporaries, statement-form `if` /
 `match` / `while` with `break` / `continue`, and value-position `if` /
 `match` lowered through statement codegen for returns and local initializers.
+The current runtime/codegen slice now also lowers the first builtin calls
+(`arena`, `arena_alloc`, `arena_reset`, `table_alloc`, `table_get`,
+`table_insert`, `table_len`) to generated C helpers, emits the first shared
+arena/native runtime bodies (`ni_arena_*`, `ni_fd_*`, `ni_mem_copy`, `ni_exit`),
+and materializes per-table alloc/get/insert helpers only for table builtins used
+by the current module graph.
 Dedicated smoke tests now prove one real compiler support module
 (`compiler/support/byte_buf.nore`), one real compiler frontend module
 (`compiler/frontend/node.nore`), one real compiler parser module globals
 slice, a dedicated `assert`-lowering regression, and two real std modules
-(`std/io.nore`, `std/file.nore`) lower through the current whole-file codegen
-without asserting.
+(`std/io.nore`, `std/file.nore`) plus a focused builtin-runtime fixture lower
+through the current whole-file codegen without asserting.
 
 ### Gaps to close before starting
 
