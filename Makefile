@@ -58,5 +58,10 @@ test-std: $(TARGET)
 	@chmod +x tests/run_std_tests.sh
 	@./tests/run_std_tests.sh
 
+# Run bootstrap compiler tests
+test-bootstrap: $(TARGET)
+	@chmod +x tests/run_bootstrap_tests.sh
+	@./tests/run_bootstrap_tests.sh
+
 # Phony targets
-.PHONY: all debug clean test-errors test-success test-std test
+.PHONY: all debug clean test-errors test-success test-std test-bootstrap test

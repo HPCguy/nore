@@ -69,6 +69,7 @@ func main(): void = {
     val dumped: [u8] = cmain.c_file_dump(
         mut ref mem,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -80,7 +81,9 @@ func main(): void = {
     )
 
     mut expected_buf: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
-    append_bytes(mut ref mem, mut ref expected_buf, ref "#include <stdint.h>\n\n")
+    append_bytes(mut ref mem, mut ref expected_buf, ref "#include <stdint.h>\n")
+    append_bytes(mut ref mem, mut ref expected_buf, ref "#include <stdio.h>\n")
+    append_bytes(mut ref mem, mut ref expected_buf, ref "#include <stdlib.h>\n\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "typedef struct { uint8_t *data; int64_t len; } ni_str;\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "typedef struct { uint8_t *data; int64_t capacity; int64_t offset; } ni_Arena;\n")
     append_bytes(mut ref mem, mut ref expected_buf, ref "typedef int64_t ni_OS;\n")

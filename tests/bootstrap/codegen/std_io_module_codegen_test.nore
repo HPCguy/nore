@@ -65,6 +65,7 @@ func main(): void = {
     val dumped: [u8] = cmain.c_file_dump(
         mut ref mem,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,

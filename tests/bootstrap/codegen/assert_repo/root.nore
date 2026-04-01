@@ -1,0 +1,5 @@
+func check(flag: bool, a: i64, b: i64): void = {
+    assert flag
+    assert a == b
+    assert false
+}

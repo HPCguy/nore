@@ -674,6 +674,7 @@ func slice_helpers_dump(
 func function_definitions_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -711,6 +712,7 @@ func function_definitions_dump(
                     mut ref mem,
                     mut ref out,
                     ref sources,
+                    ref path_pool,
                     ref text_pool,
                     ref tokens,
                     ref nodes,
@@ -732,6 +734,7 @@ func function_definitions_dump(
 pub func c_file_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -811,6 +814,7 @@ pub func c_file_dump(
     val definitions: [u8] = function_definitions_dump(
         mut ref mem,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,

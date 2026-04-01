@@ -528,20 +528,22 @@ plus plain `ni_*` native hook prototypes with ref-parameter pointer lowering,
 emits stable module-prefixed C definitions for the first top-level global slice
 (`val` / `mut` bindings with currently supported initializer expressions), and
 now assembles the first whole-file C file with a minimal core prelude
-(`stdint.h`, `ni_str`, `ni_Arena`, `ni_OS`, and compile-time `NI_TARGET_OS`)
-plus native/user prototype sections and a broader early function-body subset:
-empty bodies, explicit returns, tail-value blocks, local declarations,
-assignments, literals, unary/binary/cast expressions, typed array literals,
-field/index/slice access, constructors, same-translation-unit user-function
-calls, injected `TARGET_OS` / `OS.*` names, ref arguments over slice-view
-temporaries, statement-form `if` / `match` / `while` with `break` /
-`continue`, and value-position `if` / `match` lowered through statement codegen
-for returns and local initializers. Dedicated smoke tests now prove one real
-compiler support module (`compiler/support/byte_buf.nore`), one real compiler
-frontend module (`compiler/frontend/node.nore`), one real compiler parser
-module globals slice, and two real std modules (`std/io.nore`,
-`std/file.nore`) lower through the current whole-file codegen without
-asserting.
+(`stdint.h`, `stdio.h`, `stdlib.h`, `ni_str`, `ni_Arena`, `ni_OS`, and compile-time
+`NI_TARGET_OS`) plus native/user prototype sections and a broader early
+function-body subset: empty bodies, explicit returns, stage-0-compatible
+`assert` diagnostics (`R001`, `stderr`, exit code 2), tail-value blocks, local
+declarations, assignments, literals, unary/binary/cast expressions, typed
+array literals, field/index/slice access, constructors,
+same-translation-unit user-function calls, injected `TARGET_OS` / `OS.*`
+names, ref arguments over slice-view temporaries, statement-form `if` /
+`match` / `while` with `break` / `continue`, and value-position `if` /
+`match` lowered through statement codegen for returns and local initializers.
+Dedicated smoke tests now prove one real compiler support module
+(`compiler/support/byte_buf.nore`), one real compiler frontend module
+(`compiler/frontend/node.nore`), one real compiler parser module globals
+slice, a dedicated `assert`-lowering regression, and two real std modules
+(`std/io.nore`, `std/file.nore`) lower through the current whole-file codegen
+without asserting.
 
 ### Gaps to close before starting
 

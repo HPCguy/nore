@@ -11,7 +11,9 @@ func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8])
 
 // Lowered bootstrap types currently rely on stdint plus the shared ni_str / ni_Arena / ni_OS spellings.
 pub func append_core_prelude(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
-    append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n")
+    append_bytes(mut ref mem, mut ref out, ref "#include <stdio.h>\n")
+    append_bytes(mut ref mem, mut ref out, ref "#include <stdlib.h>\n\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t len; } ni_str;\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t capacity; int64_t offset; } ni_Arena;\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef int64_t ni_OS;\n")
