@@ -120,7 +120,7 @@ The shipping compiler is still the single-file C program (`nore.c`) containing:
 Bootstrap status:
 - the committed Nore-written compiler source tree lives in [`compiler/`](compiler/)
 - Milestone 1 is frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md)
-- Milestones 2 through 6 now provide committed support, diagnostics, token, lexer, parser, and multi-module frontend loading modules
+- Milestones 2 through 10 now provide committed support, diagnostics, frontend, sema, codegen, the `compiler/main.nore` bootstrap pipeline, a real stage-0 -> bootstrap-compiler -> Clang smoke path for sample programs, and a repeatable self-compile chain
 - the detailed milestone plan lives in [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md)
 
 ## Build Requirements
@@ -207,7 +207,7 @@ make test-std      # Run stdlib tests only
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
-- Bootstrap compiler tests grow separately under `tests/bootstrap/` and will get a dedicated runner later in the bootstrap plan
+- Bootstrap compiler tests live under `tests/bootstrap/` and run with `make test-bootstrap`
 - Test runners: `tests/run_error_tests.sh`, `tests/run_success_tests.sh`, `tests/run_std_tests.sh`
 
 ## Development Roadmap

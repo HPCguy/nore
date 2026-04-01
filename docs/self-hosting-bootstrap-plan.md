@@ -592,7 +592,10 @@ Emit C for the subset used by the bootstrap compiler.
 
 ## Milestone 9: First End-to-End Bootstrap Compiler
 
-**Status:** In progress
+**Status:** Complete
+
+Committed in `compiler/main.nore`, `tests/run_bootstrap_tests.sh`, and
+`tests/bootstrap/selfhost/`.
 
 ### Gaps to close before starting
 
@@ -625,15 +628,20 @@ Produce the first usable Nore-written compiler binary, even if it is still subse
 
 The committed `compiler/main.nore` is now a real pipeline instead of a stub:
 it loads the graph, prints loader/sema diagnostics, emits C, wires `args()`
-through the generated runtime, and is already used for the current Clang smoke
-path. The remaining Milestone 9 work is mostly about hardening and packaging
-that flow rather than inventing it from scratch.
+through the generated runtime, and `tests/bootstrap/selfhost/smoke_test.sh`
+now proves the full stage-0 -> bootstrap compiler -> emitted C -> Clang ->
+native binary path for representative sample programs using the same basic
+Clang mode that stage-0 already uses for compiled Nore programs.
 
 This is the first real milestone where "compiler in Nore" exists, but it is not self-hosted yet.
 
 ---
 
 ## Milestone 10: Self-Compile
+
+**Status:** Complete
+
+Committed in `tests/bootstrap/selfhost/self_compile_test.sh`.
 
 ### Gaps to close before starting
 
@@ -660,6 +668,13 @@ Have the Nore-written compiler compile itself.
 
 - `nore1` successfully compiles the compiler source tree
 - the produced compiler can repeat the build
+
+The committed selfhost test now proves:
+
+- stage-0 `nore` compiles the bootstrap compiler to `nore1`
+- `nore1` compiles `compiler/main.nore` to `nore_stage2.c`, which Clang builds to `nore2`
+- `nore2` compiles `compiler/main.nore` again to `nore_stage3.c`, which Clang builds to `nore3`
+- `nore_stage2.c` and `nore_stage3.c` compare identical for the current compiler tree
 
 ### This is the actual "start of self-hosting"
 

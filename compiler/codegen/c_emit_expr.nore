@@ -1526,7 +1526,7 @@ func append_builtin_call_expr(
     }
 
     if (builtin_kind == CEXPR_BUILTIN_CALL_TABLE_LEN) {
-        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_bytes(mut ref mem, mut ref out, ref "((")
         append_ref_arg_expr(
             mut ref mem,
             mut ref out,
@@ -1538,7 +1538,7 @@ func append_builtin_call_expr(
             ref types_table,
             node.node_child_at(ref nodes, node_id, 1)
         )
-        append_bytes(mut ref mem, mut ref out, ref "->ni__len)")
+        append_bytes(mut ref mem, mut ref out, ref ")->ni__len)")
         return
     }
 

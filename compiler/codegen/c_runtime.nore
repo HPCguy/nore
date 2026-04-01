@@ -44,7 +44,7 @@ pub func append_core_prelude(
 
 // Emit the shared arena helper slice once so builtin lowering can target stable C spellings.
 func append_arena_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
-    append_bytes(mut ref mem, mut ref out, ref "#define NI_ALIGNOF(T) offsetof(struct { char c; T value; }, value)\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "#define NI_ALIGNOF(T) __alignof__(T)\n\n")
     append_bytes(mut ref mem, mut ref out, ref "static ni_Arena ni_arena_new(int64_t ni_capacity) {\n")
     append_bytes(mut ref mem, mut ref out, ref "    ni_Arena ni_arena;\n")
     append_bytes(mut ref mem, mut ref out, ref "    ni_arena.data = (uint8_t *)malloc((size_t)ni_capacity);\n")

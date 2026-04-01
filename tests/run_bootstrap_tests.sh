@@ -1,7 +1,6 @@
 #!/bin/bash
-# Bootstrap test runner for Nore compiler
-# Tests that bootstrap compiler modules compile, run, and exit successfully
-# Only runs *_test.nore files (skips fixtures and sample modules)
+# Bootstrap test runner for the Nore-written compiler.
+# Runs Nore bootstrap unit tests plus shell-based selfhost smoke tests.
 
 PASS=0
 FAIL=0
@@ -14,32 +13,54 @@ if [ ! -x "$NORE" ]; then
     exit 1
 fi
 
-for dir in support lexer parser imports sema codegen selfhost; do
-    test_dir="$SCRIPT_DIR/bootstrap/$dir"
-    [ -d "$test_dir" ] || continue
-
+# mode: "nore" runs via the stage-0 compiler, "shell" runs the script directly.
+run_test_dir() {
+    test_dir="$1"
+    label="$2"
+    mode="$3"
     found=0
-    for f in "$test_dir"/*_test.nore; do
+
+    if [ "$mode" = "shell" ]; then
+        pattern="*_test.sh"
+    else
+        pattern="*_test.nore"
+    fi
+
+    for f in "$test_dir"/$pattern; do
         [ -f "$f" ] || continue
         found=1
 
-        output=$("$NORE" --run "$f" 2>&1)
+        if [ "$mode" = "shell" ]; then
+            chmod +x "$f"
+            output=$("$f" 2>&1)
+        else
+            output=$("$NORE" --run "$f" 2>&1)
+        fi
         exit_code=$?
 
         if [ $exit_code -eq 0 ]; then
-            echo "PASS: $dir/$(basename "$f")"
+            echo "PASS: $label/$(basename "$f")"
             ((PASS++))
         else
-            echo "FAIL: $dir/$(basename "$f") (exit code $exit_code)"
+            echo "FAIL: $label/$(basename "$f") (exit code $exit_code)"
             echo "  Output: $output"
             ((FAIL++))
         fi
     done
 
     if [ $found -eq 0 ]; then
-        echo "SKIP: $dir/ (no tests yet)"
+        echo "SKIP: $label/ (no tests yet)"
     fi
+}
+
+for dir in support lexer parser imports sema codegen; do
+    test_dir="$SCRIPT_DIR/bootstrap/$dir"
+    [ -d "$test_dir" ] || continue
+    run_test_dir "$test_dir" "$dir" "nore"
 done
+
+test_dir="$SCRIPT_DIR/bootstrap/selfhost"
+[ -d "$test_dir" ] && run_test_dir "$test_dir" "selfhost" "shell"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
