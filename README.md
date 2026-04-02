@@ -195,6 +195,12 @@ Bootstrap wrapper path:
 
 # Compatibility shim: rebuild if needed, then forward to ./norec
 ./bootstrap/bootstrap.sh --run program.nore -- arg1 arg2
+
+# Benchmark stage-0 nore vs self-hosted norec compiling compiler/main.nore
+make bench-compiler
+
+# Increase the sample size for a steadier comparison
+RUNS=5 make bench-compiler
 ```
 
 ## Language Guide

@@ -115,5 +115,10 @@ test-compiler-stage0: $(TARGET)
 	@chmod +x tests/run_compiler_tests.sh
 	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" COMPILER_TEST_MODE="stage0" ./tests/run_compiler_tests.sh
 
+# Compare end-to-end compiler compile time under the stage-0 and self-hosted drivers.
+bench-compiler: $(TARGET) $(NOREC)
+	@chmod +x benchmark/compile_compiler.sh
+	@CC="$(CC)" ./benchmark/compile_compiler.sh
+
 # Phony targets
-.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-compiler test-compiler-stage0 test test-stage0 test-parity
+.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-compiler test-compiler-stage0 bench-compiler test test-stage0 test-parity
