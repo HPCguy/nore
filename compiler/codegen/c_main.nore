@@ -90,7 +90,8 @@ func collect_runtime_usage(
     mut ref needs_mem: bool,
     mut ref needs_io: bool,
     mut ref needs_exit: bool,
-    mut ref needs_args: bool
+    mut ref needs_args: bool,
+    mut ref needs_driver: bool
 ): void = {
     if (node_id < 0) {
         return
@@ -140,6 +141,17 @@ func collect_runtime_usage(
             needs_arena = true
             needs_args = true
         }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "shell_run")) {
+            needs_driver = true
+        }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "exe_dir")) {
+            needs_arena = true
+            needs_args = true
+            needs_driver = true
+        }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "pid")) {
+            needs_driver = true
+        }
         if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write") ||
             cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read") ||
             cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_open") ||
@@ -162,7 +174,8 @@ func collect_runtime_usage(
             mut ref needs_mem,
             mut ref needs_io,
             mut ref needs_exit,
-            mut ref needs_args
+            mut ref needs_args,
+            mut ref needs_driver
         )
         child_id = nodes.next_sibling[child_id]
     }
@@ -1369,6 +1382,7 @@ pub func c_file_dump(
     mut needs_io: bool = false
     mut needs_exit: bool = false
     mut needs_args: bool = false
+    mut needs_driver: bool = false
     mut module_id: i64 = module_range.start
     val module_end: i64 = span.range_end(ref module_range)
     while (module_id < module_end && module_id < table_len(ref modules)) {
@@ -1383,12 +1397,20 @@ pub func c_file_dump(
             mut ref needs_mem,
             mut ref needs_io,
             mut ref needs_exit,
-            mut ref needs_args
+            mut ref needs_args,
+            mut ref needs_driver
         )
         module_id += 1
     }
 
-    val prelude: [u8] = cruntime.runtime_prelude_dump(mut ref mem, needs_arena, needs_mem, needs_io, needs_args)
+    val prelude: [u8] = cruntime.runtime_prelude_dump(
+        mut ref mem,
+        needs_arena,
+        needs_mem,
+        needs_io,
+        needs_args,
+        needs_driver
+    )
     append_section(mut ref mem, mut ref out, ref prelude)
 
     val type_defs: [u8] = ctypes.type_defs_dump(
@@ -1408,7 +1430,8 @@ pub func c_file_dump(
         needs_mem,
         needs_io,
         needs_exit,
-        needs_args
+        needs_args,
+        needs_driver
     )
 
     val globals: [u8] = global_definitions_dump(

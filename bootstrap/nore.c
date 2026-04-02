@@ -1390,6 +1390,7 @@ static bool g_has_casts = false;
 static bool g_has_io = false;
 static bool g_has_mem = false;
 static bool g_has_args = false;
+static bool g_has_driver = false;
 
 /* Native declaration table (separate from function table to avoid name collisions) */
 typedef struct {
@@ -1408,7 +1409,7 @@ static bool is_known_native(const char *name, size_t length) {
     static const struct { const char *name; size_t len; } known[] = {
         {"fd_write", 8}, {"fd_read", 7}, {"fd_open", 7},
         {"fd_close", 8}, {"fd_seek", 7}, {"mem_copy", 8}, {"exit", 4},
-        {"args", 4}
+        {"args", 4}, {"shell_run", 9}, {"exe_dir", 7}, {"pid", 3}
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (length == known[i].len && memcmp(name, known[i].name, length) == 0)
@@ -1833,6 +1834,9 @@ typedef enum {
     AST_EXIT,
     AST_MEM_COPY,
     AST_ARGS,
+    AST_SHELL_RUN,
+    AST_EXE_DIR,
+    AST_PID,
     AST_ENUM_DECL,
     AST_ENUM_VARIANT,
     AST_MATCH,
@@ -2079,6 +2083,9 @@ typedef struct Ast {
         struct { struct Ast *code; } exit_call;
         struct { struct Ast *dst; struct Ast *src; } mem_copy;
         struct { struct Ast *arena; } args;
+        struct { struct Ast *command; } shell_run;
+        struct { struct Ast *arena; } exe_dir;
+        struct { int unused; } pid_call;
 
         struct {
             const char *name_start;
@@ -2764,6 +2771,33 @@ static Ast *ast_make_args(Ast *arena, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_shell_run(Ast *command, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_SHELL_RUN;
+    node->loc = loc;
+    node->as.shell_run.command = command;
+    return node;
+}
+
+static Ast *ast_make_exe_dir(Ast *arena, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_EXE_DIR;
+    node->loc = loc;
+    node->as.exe_dir.arena = arena;
+    return node;
+}
+
+/* Keep pid() seed-local until stage-0 can resolve ordinary native calls. */
+static Ast *ast_make_pid(SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_PID;
+    node->loc = loc;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2935,6 +2969,14 @@ static void ast_free(Ast *node) {
             break;
         case AST_ARGS:
             ast_free(node->as.args.arena);
+            break;
+        case AST_SHELL_RUN:
+            ast_free(node->as.shell_run.command);
+            break;
+        case AST_EXE_DIR:
+            ast_free(node->as.exe_dir.arena);
+            break;
+        case AST_PID:
             break;
         case AST_ENUM_DECL:
             break;
@@ -3964,6 +4006,66 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_args(arena, loc);
         }
 
+        /* shell_run(ref command) — built-in shell bridge for the self-hosted driver */
+        if (name_length == 9 && memcmp(name_start, "shell_run", 9) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' before command argument in shell_run()");
+                return NULL;
+            }
+            Ast *command = parser_parse_expression(parser);
+            if (!command) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after shell_run command");
+                ast_free(command);
+                return NULL;
+            }
+            return ast_make_shell_run(command, loc);
+        }
+
+        /* exe_dir(mut ref arena) — built-in argv-based compiler-root recovery */
+        if (name_length == 7 && memcmp(name_start, "exe_dir", 7) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_MUT)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'mut ref' before arena argument in exe_dir()");
+                return NULL;
+            }
+            if (!parser_match(parser, TOKEN_REF)) {
+                diagnostic(g_source_file, ERR_P036_EXPECTED_REF_PARAM, parser->current.line,
+                           parser->current.column,
+                           "Expected 'ref' after 'mut' in exe_dir()");
+                return NULL;
+            }
+            Ast *arena = parser_parse_expression(parser);
+            if (!arena) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after exe_dir arena");
+                ast_free(arena);
+                return NULL;
+            }
+            return ast_make_exe_dir(arena, loc);
+        }
+
+        /* pid() — built-in per-process identifier for driver temp paths */
+        if (name_length == 3 && memcmp(name_start, "pid", 3) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after pid()");
+                return NULL;
+            }
+            return ast_make_pid(loc);
+        }
+
         /* Check for module-qualified access: alias.name */
         if (parser_check(parser, TOKEN_DOT)) {
             int mod_id = module_lookup_alias(name_start, name_length);
@@ -4631,7 +4733,8 @@ static Ast *parser_parse_block(Parser *parser) {
                            expr->kind == AST_FD_SEEK ||
                            expr->kind == AST_MEM_COPY ||
                            expr->kind == AST_EXIT ||
-                           expr->kind == AST_ARGS) {
+                           expr->kind == AST_ARGS ||
+                           expr->kind == AST_SHELL_RUN) {
                     /* Bare function call or built-in as statement */
                     ast_block_add_statement(block, expr);
                 } else {
@@ -6375,6 +6478,24 @@ static void parser_print_ast_step(Ast *node, int indent) {
             for (int i = 0; i < indent + 1; i++) printf("  ");
             printf("ARENA:\n");
             parser_print_ast_step(node->as.args.arena, indent + 2);
+            break;
+
+        case AST_SHELL_RUN:
+            printf("SHELL_RUN\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("COMMAND:\n");
+            parser_print_ast_step(node->as.shell_run.command, indent + 2);
+            break;
+
+        case AST_EXE_DIR:
+            printf("EXE_DIR\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("ARENA:\n");
+            parser_print_ast_step(node->as.exe_dir.arena, indent + 2);
+            break;
+
+        case AST_PID:
+            printf("PID\n");
             break;
 
         case AST_ENUM_DECL:
@@ -8922,6 +9043,59 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             return args_type;
         }
 
+        case AST_SHELL_RUN: {
+            require_native_decl(node, "shell_run", 9,
+                "native func shell_run(ref command: str): i32");
+            Type command_type = typecheck_expression(node->as.shell_run.command, scope, func_table);
+            if (!type_is_byte_buffer(command_type)) {
+                diagnostic(node->as.shell_run.command->loc.file, ERR_S065_IO_DATA_TYPE,
+                           node->as.shell_run.command->loc.line,
+                           node->as.shell_run.command->loc.column,
+                           "shell_run() command must be []u8, got %s",
+                           type_name(command_type));
+            }
+            g_has_driver = true;
+            node->expr_type = TYPE_I32;
+            return TYPE_I32;
+        }
+
+        case AST_EXE_DIR: {
+            require_native_decl(node, "exe_dir", 7,
+                "native func exe_dir(mut ref mem: Arena): str");
+            Type arena_type = typecheck_expression(node->as.exe_dir.arena, scope, func_table);
+            if (!type_is_arena(arena_type)) {
+                diagnostic(node->as.exe_dir.arena->loc.file, ERR_S051_ARENA_ALLOC_TYPE,
+                           node->as.exe_dir.arena->loc.line,
+                           node->as.exe_dir.arena->loc.column,
+                           "exe_dir() requires Arena, got %s",
+                           type_name(arena_type));
+            }
+            if (node->as.exe_dir.arena->kind == AST_IDENTIFIER) {
+                Variable *v = scope_lookup(scope,
+                    node->as.exe_dir.arena->as.identifier.start,
+                    node->as.exe_dir.arena->as.identifier.length);
+                if (v && !v->is_mutable) {
+                    diagnostic(node->as.exe_dir.arena->loc.file, ERR_S052_ARENA_IMMUTABLE,
+                               node->as.exe_dir.arena->loc.line,
+                               node->as.exe_dir.arena->loc.column,
+                               "Cannot exe_dir() from immutable Arena, use 'mut'");
+                }
+            }
+            g_has_arena = true;
+            g_has_args = true;
+            g_has_driver = true;
+            Type str_slice = slice_table_intern(TYPE_U8);
+            node->expr_type = str_slice;
+            return str_slice;
+        }
+
+        case AST_PID:
+            require_native_decl(node, "pid", 3,
+                "native func pid(): i64");
+            g_has_driver = true;
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+
         default:
             break;
     }
@@ -9162,6 +9336,16 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                 break;
             }
 
+            /* Slice local via exe_dir() — returns str from arena */
+            if (type_is_slice(declared) &&
+                node->as.val_decl.initializer->kind == AST_EXE_DIR) {
+                Variable *sv = scope_add(*scope, node->as.val_decl.name_start,
+                          node->as.val_decl.name_length, false, declared, node->loc);
+                typecheck_mark_arena_locality(sv,
+                    node->as.val_decl.initializer->as.exe_dir.arena, *scope);
+                break;
+            }
+
             /* String literal exemption: val s: str = "..." */
             if (type_is_str(declared) &&
                 node->as.val_decl.initializer->kind == AST_STRING_LITERAL) {
@@ -9287,6 +9471,16 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
                           node->as.mut_decl.name_length, true, declared, node->loc);
                 typecheck_mark_arena_locality(sv,
                     node->as.mut_decl.initializer->as.args.arena, *scope);
+                break;
+            }
+
+            /* Slice local via exe_dir() — returns str from arena */
+            if (type_is_slice(declared) &&
+                node->as.mut_decl.initializer->kind == AST_EXE_DIR) {
+                Variable *sv = scope_add(*scope, node->as.mut_decl.name_start,
+                          node->as.mut_decl.name_length, true, declared, node->loc);
+                typecheck_mark_arena_locality(sv,
+                    node->as.mut_decl.initializer->as.exe_dir.arena, *scope);
                 break;
             }
 
@@ -9543,6 +9737,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_MEM_COPY:
         case AST_EXIT:
         case AST_ARGS:
+        case AST_SHELL_RUN:
+        case AST_EXE_DIR:
             typecheck_expression(node, *scope, func_table);
             break;
 
@@ -10899,6 +11095,22 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
 
+        case AST_SHELL_RUN:
+            fprintf(out, "ni_shell_run(");
+            codegen_emit_byte_buf(out, node->as.shell_run.command);
+            fprintf(out, ")");
+            break;
+
+        case AST_EXE_DIR:
+            fprintf(out, "ni_exe_dir(&");
+            codegen_emit_lvalue(out, node->as.exe_dir.arena);
+            fprintf(out, ")");
+            break;
+
+        case AST_PID:
+            fprintf(out, "ni_pid()");
+            break;
+
         case AST_VAL_DECL:
         case AST_MUT_DECL:
         case AST_RETURN:
@@ -11578,6 +11790,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_MEM_COPY:
         case AST_EXIT:
         case AST_ARGS:
+        case AST_SHELL_RUN:
             codegen_indent(out, indent);
             codegen_emit_expression(out, node);
             fprintf(out, ";\n");
@@ -11865,10 +12078,15 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     fprintf(out, "#include <stdint.h>\n");
     if (g_has_arena) fprintf(out, "#include <stddef.h>\n");
     if (g_has_casts) fprintf(out, "#include <limits.h>\n");
-    if (g_has_arena || g_has_io || g_has_mem || g_has_args) fprintf(out, "#include <string.h>\n");
-    if (g_has_io) {
+    if (g_has_arena || g_has_io || g_has_mem || g_has_args || g_has_driver) fprintf(out, "#include <string.h>\n");
+    if (g_has_io || g_has_driver) {
         fprintf(out, "#include <unistd.h>\n");
+    }
+    if (g_has_io) {
         fprintf(out, "#include <fcntl.h>\n");
+    }
+    if (g_has_driver) {
+        fprintf(out, "#include <sys/wait.h>\n");
     }
     fprintf(out, "\n");
 
@@ -12112,6 +12330,79 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "}\n\n");
     }
 
+    if (g_has_driver) {
+        fprintf(out, "static int32_t ni_shell_run(ni_slice_0 command) {\n");
+        fprintf(out, "    char *buf = (char *)malloc((size_t)command.len + 1U);\n");
+        fprintf(out, "    if (!buf) { fprintf(stderr, \"shell_run: out of memory\\n\"); exit(1); }\n");
+        fprintf(out, "    memcpy(buf, command.data, (size_t)command.len);\n");
+        fprintf(out, "    buf[command.len] = '\\0';\n");
+        fprintf(out, "    int status = system(buf);\n");
+        fprintf(out, "    free(buf);\n");
+        fprintf(out, "    if (status < 0) return -1;\n");
+        fprintf(out, "    if (WIFEXITED(status)) return (int32_t)WEXITSTATUS(status);\n");
+        fprintf(out, "    return 1;\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static int64_t ni_pid(void) {\n");
+        fprintf(out, "    return (int64_t)getpid();\n");
+        fprintf(out, "}\n");
+        fprintf(out, "static ni_slice_0 ni_exe_dir(ni_Arena *mem) {\n");
+        fprintf(out, "    const char *src = \".\";\n");
+        fprintf(out, "    char real_buf[4096];\n");
+        fprintf(out, "    char candidate[4096];\n");
+        fprintf(out, "    if (ni_argc > 0 && ni_argv && ni_argv[0] && ni_argv[0][0] != '\\0') {\n");
+        fprintf(out, "        src = ni_argv[0];\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    if (strchr(src, '/')) {\n");
+        fprintf(out, "        if (realpath(src, real_buf)) src = real_buf;\n");
+        fprintf(out, "    } else {\n");
+        fprintf(out, "        const char *path_env = getenv(\"PATH\");\n");
+        fprintf(out, "        size_t name_len = strlen(src);\n");
+        fprintf(out, "        if (path_env) {\n");
+        fprintf(out, "            const char *part = path_env;\n");
+        fprintf(out, "            while (1) {\n");
+        fprintf(out, "                const char *end = part;\n");
+        fprintf(out, "                while (*end != '\\0' && *end != ':') end++;\n");
+        fprintf(out, "                size_t dir_len = (size_t)(end - part);\n");
+        fprintf(out, "                size_t copy_len = dir_len == 0 ? 1 : dir_len;\n");
+        fprintf(out, "                if ((copy_len + 1 + name_len + 1) <= sizeof(candidate)) {\n");
+        fprintf(out, "                    if (dir_len == 0) candidate[0] = '.';\n");
+        fprintf(out, "                    else memcpy(candidate, part, dir_len);\n");
+        fprintf(out, "                    candidate[copy_len] = '/';\n");
+        fprintf(out, "                    memcpy(candidate + copy_len + 1, src, name_len);\n");
+        fprintf(out, "                    candidate[copy_len + 1 + name_len] = '\\0';\n");
+        fprintf(out, "                    if (access(candidate, X_OK) == 0) {\n");
+        fprintf(out, "                        if (realpath(candidate, real_buf)) src = real_buf;\n");
+        fprintf(out, "                        else src = candidate;\n");
+        fprintf(out, "                        break;\n");
+        fprintf(out, "                    }\n");
+        fprintf(out, "                }\n");
+        fprintf(out, "                if (*end == '\\0') break;\n");
+        fprintf(out, "                part = end + 1;\n");
+        fprintf(out, "            }\n");
+        fprintf(out, "        }\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    size_t len = strlen(src);\n");
+        fprintf(out, "    size_t slash = len;\n");
+        fprintf(out, "    while (slash > 0) {\n");
+        fprintf(out, "        if (src[slash - 1] == '/') { slash--; break; }\n");
+        fprintf(out, "        slash--;\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    if (len > 0 && src[0] == '/' && slash == 0) {\n");
+        fprintf(out, "        uint8_t *root = (uint8_t *)ni_arena_alloc(mem, 1, 1, NI_ALIGNOF(uint8_t));\n");
+        fprintf(out, "        root[0] = '/';\n");
+        fprintf(out, "        return (ni_slice_0){.data = root, .len = 1};\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    if (slash == 0) {\n");
+        fprintf(out, "        uint8_t *dot = (uint8_t *)ni_arena_alloc(mem, 1, 1, NI_ALIGNOF(uint8_t));\n");
+        fprintf(out, "        dot[0] = '.';\n");
+        fprintf(out, "        return (ni_slice_0){.data = dot, .len = 1};\n");
+        fprintf(out, "    }\n");
+        fprintf(out, "    uint8_t *data = (uint8_t *)ni_arena_alloc(mem, (int64_t)slash, 1, NI_ALIGNOF(uint8_t));\n");
+        fprintf(out, "    memcpy(data, src, slash);\n");
+        fprintf(out, "    return (ni_slice_0){.data = data, .len = (int64_t)slash};\n");
+        fprintf(out, "}\n\n");
+    }
+
     /* Emit per-table helper functions */
     for (size_t ti = 0; ti < g_table_decl_count; ti++) {
         TableDeclEntry *te = &g_table_decls[ti];
@@ -12258,9 +12549,11 @@ static void codegen_print_ir(Ast *ast) {
 
 static void codegen_compile_with_clang(const char *c_source_path, const char *binary_path) {
     char command[1024];
+    const char *compiler = getenv("CC");
+    if (!compiler || compiler[0] == '\0') compiler = "clang";
     int written = snprintf(command, sizeof(command),
-                          "clang -std=c99 -O2 -fwrapv -o '%s' '%s' 2>&1",
-                          binary_path, c_source_path);
+                          "%s -std=c99 -O2 -fwrapv -o '%s' '%s' 2>&1",
+                          compiler, binary_path, c_source_path);
 
     if (written < 0 || written >= (int)sizeof(command)) {
         panic(ERR_I002_INTERNAL_ERROR, "command buffer too small");

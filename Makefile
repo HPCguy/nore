@@ -51,8 +51,8 @@ clean:
 
 # Run error code tests through the default self-hosted path
 test-errors: $(NOREC)
-	@chmod +x $(BOOTSTRAP_BIN) tests/run_error_tests.sh
-	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_error_tests.sh
+	@chmod +x tests/run_error_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_error_tests.sh
 
 # Run error code tests with the explicit stage-0 fallback compiler
 test-errors-stage0: $(TARGET)
@@ -64,8 +64,8 @@ test-errors-norec: test-errors
 
 # Run success tests through the default self-hosted path
 test-success: $(NOREC)
-	@chmod +x $(BOOTSTRAP_BIN) tests/run_success_tests.sh
-	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_success_tests.sh
+	@chmod +x tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_success_tests.sh
 
 # Run success tests with the explicit stage-0 fallback compiler
 test-success-stage0: $(TARGET)
@@ -77,10 +77,10 @@ test-success-norec: test-success
 
 # Run all language suites through the default self-hosted path
 test: $(NOREC)
-	@chmod +x $(BOOTSTRAP_BIN) tests/run_error_tests.sh tests/run_success_tests.sh
-	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_error_tests.sh
+	@chmod +x tests/run_error_tests.sh tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_error_tests.sh
 	@echo ""
-	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_success_tests.sh
 
 # Run all language suites with the explicit stage-0 fallback compiler
 test-stage0: $(TARGET)
@@ -94,8 +94,8 @@ test-parity: test
 
 # Run stdlib tests only through the default self-hosted path
 test-std: $(NOREC)
-	@chmod +x $(BOOTSTRAP_BIN) tests/run_std_tests.sh
-	@NORE_BIN="$(BOOTSTRAP_BIN)" ./tests/run_std_tests.sh
+	@chmod +x tests/run_std_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_std_tests.sh
 
 # Run stdlib tests only with the explicit stage-0 fallback compiler
 test-std-stage0: $(TARGET)
@@ -107,8 +107,8 @@ test-std-norec: test-std
 
 # Run compiler-specific bootstrap/selfhost tests through the default self-hosted path
 test-compiler: $(NOREC)
-	@chmod +x $(BOOTSTRAP_BIN) tests/run_compiler_tests.sh
-	@NORE_BIN="$(BOOTSTRAP_BIN)" COMPILER_TEST_MODE="selfhost" ./tests/run_compiler_tests.sh
+	@chmod +x tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="selfhost" ./tests/run_compiler_tests.sh
 
 # Run compiler-specific tests with the explicit stage-0 fallback compiler
 test-compiler-stage0: $(TARGET)

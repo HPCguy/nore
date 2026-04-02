@@ -16,7 +16,8 @@ pub func append_core_prelude(
     needs_arena: bool,
     needs_mem: bool,
     needs_io: bool,
-    needs_args: bool
+    needs_args: bool,
+    needs_driver: bool
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n")
     append_bytes(mut ref mem, mut ref out, ref "#include <stdio.h>\n")
@@ -24,12 +25,17 @@ pub func append_core_prelude(
     if (needs_arena) {
         append_bytes(mut ref mem, mut ref out, ref "#include <stddef.h>\n")
     }
-    if (needs_arena || needs_mem || needs_io || needs_args) {
+    if (needs_arena || needs_mem || needs_io || needs_args || needs_driver) {
         append_bytes(mut ref mem, mut ref out, ref "#include <string.h>\n")
     }
-    if (needs_io) {
+    if (needs_io || needs_driver) {
         append_bytes(mut ref mem, mut ref out, ref "#include <unistd.h>\n")
+    }
+    if (needs_io) {
         append_bytes(mut ref mem, mut ref out, ref "#include <fcntl.h>\n")
+    }
+    if (needs_driver) {
+        append_bytes(mut ref mem, mut ref out, ref "#include <sys/wait.h>\n")
     }
     append_bytes(mut ref mem, mut ref out, ref "\n")
     append_bytes(mut ref mem, mut ref out, ref "typedef struct { uint8_t *data; int64_t len; } ni_str;\n")
@@ -143,6 +149,102 @@ func append_args_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = 
     append_bytes(mut ref mem, mut ref out, ref "}\n")
 }
 
+// The direct driver uses one narrow shell bridge plus a PATH-aware executable lookup.
+func append_driver_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "int32_t ni_shell_run(const ni_str *ni_command) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    char *ni_buf = (char *)malloc((size_t)ni_command->len + 1UL);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (!ni_buf) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"shell_run: out of memory\\n\");\n")
+    append_bytes(mut ref mem, mut ref out, ref "        exit(1);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    memcpy(ni_buf, ni_command->data, (size_t)ni_command->len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_buf[ni_command->len] = '\\0';\n")
+    append_bytes(mut ref mem, mut ref out, ref "    int ni_status = system(ni_buf);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    free(ni_buf);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_status < 0) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        return -1;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (WIFEXITED(ni_status)) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        return (int32_t)WEXITSTATUS(ni_status);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return 1;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    append_bytes(mut ref mem, mut ref out, ref "int64_t ni_pid(void) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (int64_t)getpid();\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    append_bytes(mut ref mem, mut ref out, ref "ni_str ni_exe_dir(ni_Arena *ni_mem) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    const char *ni_src = \".\";\n")
+    append_bytes(mut ref mem, mut ref out, ref "    char ni_real[4096];\n")
+    append_bytes(mut ref mem, mut ref out, ref "    char ni_candidate[4096];\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_argc > 0 && ni_argv && ni_argv[0] && ni_argv[0][0] != '\\0') {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_src = ni_argv[0];\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (strchr(ni_src, '/')) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        if (realpath(ni_src, ni_real)) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "            ni_src = ni_real;\n")
+    append_bytes(mut ref mem, mut ref out, ref "        }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    } else {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        const char *ni_path_env = getenv(\"PATH\");\n")
+    append_bytes(mut ref mem, mut ref out, ref "        size_t ni_name_len = strlen(ni_src);\n")
+    append_bytes(mut ref mem, mut ref out, ref "        if (ni_path_env) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "            const char *ni_part = ni_path_env;\n")
+    append_bytes(mut ref mem, mut ref out, ref "            while (1) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                const char *ni_end = ni_part;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                while (*ni_end != '\\0' && *ni_end != ':') {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    ni_end += 1;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                }\n")
+    append_bytes(mut ref mem, mut ref out, ref "                size_t ni_dir_len = (size_t)(ni_end - ni_part);\n")
+    append_bytes(mut ref mem, mut ref out, ref "                size_t ni_copy_len = (ni_dir_len == 0UL) ? 1UL : ni_dir_len;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                if ((ni_copy_len + 1UL + ni_name_len + 1UL) <= sizeof(ni_candidate)) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    if (ni_dir_len == 0UL) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                        ni_candidate[0] = '.';\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    } else {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                        memcpy(ni_candidate, ni_part, ni_dir_len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    ni_candidate[ni_copy_len] = '/';\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    memcpy(ni_candidate + ni_copy_len + 1UL, ni_src, ni_name_len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    ni_candidate[ni_copy_len + 1UL + ni_name_len] = '\\0';\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    if (access(ni_candidate, X_OK) == 0) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                        if (realpath(ni_candidate, ni_real)) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                            ni_src = ni_real;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                        } else {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                            ni_src = ni_candidate;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                        }\n")
+    append_bytes(mut ref mem, mut ref out, ref "                        break;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "                }\n")
+    append_bytes(mut ref mem, mut ref out, ref "                if (*ni_end == '\\0') {\n")
+    append_bytes(mut ref mem, mut ref out, ref "                    break;\n")
+    append_bytes(mut ref mem, mut ref out, ref "                }\n")
+    append_bytes(mut ref mem, mut ref out, ref "                ni_part = ni_end + 1;\n")
+    append_bytes(mut ref mem, mut ref out, ref "            }\n")
+    append_bytes(mut ref mem, mut ref out, ref "        }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    size_t ni_len = strlen(ni_src);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    size_t ni_slash = ni_len;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    while (ni_slash > 0UL) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        if (ni_src[ni_slash - 1UL] == '/') {\n")
+    append_bytes(mut ref mem, mut ref out, ref "            ni_slash -= 1UL;\n")
+    append_bytes(mut ref mem, mut ref out, ref "            break;\n")
+    append_bytes(mut ref mem, mut ref out, ref "        }\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_slash -= 1UL;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_len > 0UL && ni_src[0] == '/' && ni_slash == 0UL) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        uint8_t *ni_root = (uint8_t *)ni_arena_alloc(ni_mem, 1L, sizeof(uint8_t), NI_ALIGNOF(uint8_t));\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_root[0] = '/';\n")
+    append_bytes(mut ref mem, mut ref out, ref "        return (ni_str){.data = ni_root, .len = 1L};\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_slash == 0UL) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        uint8_t *ni_dot = (uint8_t *)ni_arena_alloc(ni_mem, 1L, sizeof(uint8_t), NI_ALIGNOF(uint8_t));\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_dot[0] = '.';\n")
+    append_bytes(mut ref mem, mut ref out, ref "        return (ni_str){.data = ni_dot, .len = 1L};\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    uint8_t *ni_data = (uint8_t *)ni_arena_alloc(ni_mem, (int64_t)ni_slash, sizeof(uint8_t), NI_ALIGNOF(uint8_t));\n")
+    append_bytes(mut ref mem, mut ref out, ref "    memcpy(ni_data, ni_src, ni_slash);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (ni_str){.data = ni_data, .len = (int64_t)ni_slash};\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
 // Runtime helpers only emit the slices required by the scanned module graph.
 pub func runtime_helpers_dump(
     mut ref mem: Arena,
@@ -150,7 +252,8 @@ pub func runtime_helpers_dump(
     needs_mem: bool,
     needs_io: bool,
     needs_exit: bool,
-    needs_args: bool
+    needs_args: bool,
+    needs_driver: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
     mut wrote_any: bool = false
@@ -185,6 +288,13 @@ pub func runtime_helpers_dump(
             append_bytes(mut ref mem, mut ref out, ref "\n")
         }
         append_args_runtime(mut ref mem, mut ref out)
+        wrote_any = true
+    }
+    if (needs_driver) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_driver_runtime(mut ref mem, mut ref out)
     }
     out.data[0..out.count]
 }
@@ -192,7 +302,7 @@ pub func runtime_helpers_dump(
 // Tests and c_main both need one stable entry point for the minimal generated-C prelude.
 pub func core_prelude_dump(mut ref mem: Arena): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out, false, false, false, false)
+    append_core_prelude(mut ref mem, mut ref out, false, false, false, false, false)
     out.data[0..out.count]
 }
 
@@ -202,9 +312,10 @@ pub func runtime_prelude_dump(
     needs_arena: bool,
     needs_mem: bool,
     needs_io: bool,
-    needs_args: bool
+    needs_args: bool,
+    needs_driver: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io, needs_args)
+    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io, needs_args, needs_driver)
     out.data[0..out.count]
 }

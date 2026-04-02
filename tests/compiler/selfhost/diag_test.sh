@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-COMPILER_BIN="${NORE_BIN:-$ROOT_DIR/bootstrap/bootstrap.sh}"
+COMPILER_BIN="${NORE_BIN:-$ROOT_DIR/norec}"
 COMPILER_TEST_MODE="${COMPILER_TEST_MODE:-selfhost}"
 
 run_expect_code() {

@@ -1,17 +1,456 @@
-// Bootstrap compiler driver helpers.
-// Responsibility: own the user-facing executable contract for bootstrap compilation entrypoints.
-// Owns: root-module `main` validation and its bootstrap diagnostics.
-// Does not own: frontend/sema/codegen internals, emitted-C layout, or Clang invocation.
+// Compiler driver helpers.
+// Responsibility: own the user-facing executable contract plus root-`main` validation.
+// Owns: CLI parsing, shell command construction, and the final Clang/run bridge for `norec`.
+// Does not own: frontend/sema/codegen internals, emitted-C layout, or diagnostic formatting.
 
 import bbuf "../support/byte_buf.nore"
 import diag "../support/diag.nore"
 import loader "../frontend/loader.nore"
 import node "../frontend/node.nore"
+import path "../support/path.nore"
 import source "../support/source.nore"
 import span "../support/span.nore"
 import token "../frontend/token.nore"
 import types "../sema/types.nore"
+import file "std/file.nore"
+import io "std/io.nore"
 import string "std/string.nore"
+
+native func shell_run(ref command: str): i32
+native func exe_dir(mut ref mem: Arena): str
+native func pid(): i64
+
+val SINGLE_QUOTE: u8 = 39
+val BACKSLASH: u8 = 92
+
+pub enum CliMode { EmitC, Driver }
+
+pub value CliConfig {
+    mode: CliMode,
+    input_path: span.Span,
+    output_path: span.Span,
+    compiler_root: span.Span,
+    output_given: bool,
+    run_after_compile: bool,
+    print_tokens: bool,
+    print_ast: bool,
+    print_codegen: bool,
+    program_arg_start: i64
+}
+
+pub enum CliParseResult { Ok(CliConfig), Exit(i32) }
+
+func append_bytes(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
+    bbuf.byte_buf_append(mut ref mem, mut ref out, ref data)
+}
+
+func append_quoted_arg(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref text: str): void = {
+    bbuf.byte_buf_push(mut ref mem, mut ref out, SINGLE_QUOTE)
+
+    mut i: i64 = 0
+    while (i < text.len) {
+        if (text[i] == SINGLE_QUOTE) {
+            bbuf.byte_buf_push(mut ref mem, mut ref out, SINGLE_QUOTE)
+            bbuf.byte_buf_push(mut ref mem, mut ref out, BACKSLASH)
+            bbuf.byte_buf_push(mut ref mem, mut ref out, SINGLE_QUOTE)
+            bbuf.byte_buf_push(mut ref mem, mut ref out, SINGLE_QUOTE)
+        } else {
+            bbuf.byte_buf_push(mut ref mem, mut ref out, text[i])
+        }
+        i += 1
+    }
+
+    bbuf.byte_buf_push(mut ref mem, mut ref out, SINGLE_QUOTE)
+}
+
+func arg_is_flag(ref arg: str): bool = {
+    arg.len > 0 && arg[0] == '-'
+}
+
+func argv_item(ref argv: [str], index: i64): str = {
+    argv[index]
+}
+
+func empty_cli_text(): span.Span = {
+    span.span(0, 0)
+}
+
+func store_cli_text(mut ref mem: Arena, mut ref pool: bbuf.ByteBuf, ref text: [u8]): span.Span = {
+    bbuf.byte_buf_append(mut ref mem, mut ref pool, ref text)
+}
+
+pub func cli_text(ref pool: bbuf.ByteBuf, ref stored: span.Span): [u8] = {
+    pool.data[stored.start..span.span_end(ref stored)]
+}
+
+func path_basename(ref path_text: [u8]): [u8] = {
+    val slash: i64 = string.str_rfind_byte(ref path_text, '/')
+    if (slash < 0) {
+        return path_text
+    }
+    path_text[slash + 1..path_text.len]
+}
+
+func default_output_path(mut ref mem: Arena, ref input_path: str): str = {
+    val base: [u8] = path_basename(ref input_path)
+    val dot: i64 = string.str_rfind_byte(ref base, '.')
+    if (dot > 0 && string.str_eq(ref base[dot..base.len], ref ".nore")) {
+        return string.str_copy(mut ref mem, ref base[0..dot])
+    }
+    "a.out"
+}
+
+// Driver-owned temp artifacts only need per-process uniqueness to avoid overlapping norec runs.
+func build_driver_temp_path(mut ref mem: Arena, ref dir: str, ref stem: str, ref suffix: str): str = {
+    val pid_text: str = string.i64_to_str(mut ref mem, pid())
+    val file_name: str = string.str_concat3(mut ref mem, ref stem, ref pid_text, ref suffix)
+    path.path_join(mut ref mem, ref dir, ref file_name)
+}
+
+func print_usage(): void = {
+    io.eprintln(ref "usage:")
+    io.eprintln(ref "  norec <input.nore> [--run] [--lexer] [--parser] [--codegen] [-o output] [-- <program args>]")
+    io.eprintln(ref "  norec --emit-c <input.nore> <output.c> [compiler_root]")
+}
+
+func emit_driver_error(mut ref mem: Arena, ref code: str, ref message: str): void = {
+    val prefix: str = string.str_concat3(mut ref mem, ref "error[", ref code, ref "]: ")
+    val line: str = string.str_concat(mut ref mem, ref prefix, ref message)
+    io.eprintln(ref line)
+}
+
+func emit_missing_output_error(mut ref mem: Arena): CliParseResult = {
+    emit_driver_error(mut ref mem, ref "D004", ref "Expected output path after -o")
+    CliParseResult.Exit(1)
+}
+
+func emit_unknown_flag_error(mut ref mem: Arena, ref flag: str): CliParseResult = {
+    val message: str = string.str_concat(mut ref mem, ref "Unknown flag: ", ref flag)
+    emit_driver_error(mut ref mem, ref "D002", ref message)
+    CliParseResult.Exit(1)
+}
+
+func emit_multiple_inputs_error(mut ref mem: Arena): CliParseResult = {
+    emit_driver_error(mut ref mem, ref "D003", ref "Multiple input files specified")
+    CliParseResult.Exit(1)
+}
+
+func emit_missing_input_error(mut ref mem: Arena): CliParseResult = {
+    emit_driver_error(mut ref mem, ref "D001", ref "No input file specified")
+    print_usage()
+    CliParseResult.Exit(1)
+}
+
+func argv_is_legacy_emit_mode(ref argv: [str]): bool = {
+    if (argv.len != 3 && argv.len != 4) {
+        return false
+    }
+
+    mut i: i64 = 1
+    while (i < argv.len) {
+        val arg: str = argv_item(ref argv, i)
+        if (arg_is_flag(ref arg)) {
+            return false
+        }
+        i += 1
+    }
+    true
+}
+
+func parse_emit_mode(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv: [str], explicit_flag: bool): CliParseResult = {
+    if (explicit_flag) {
+        if (argv.len < 4 || argv.len > 5) {
+            print_usage()
+            return CliParseResult.Exit(1)
+        }
+        mut compiler_root_span: span.Span = empty_cli_text()
+        if (argv.len == 5) {
+            val compiler_root_arg: str = argv_item(ref argv, 4)
+            compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root_arg)
+        } else {
+            compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref ".")
+        }
+        val input_arg: str = argv_item(ref argv, 2)
+        val output_arg: str = argv_item(ref argv, 3)
+        return CliParseResult.Ok(CliConfig {
+            mode: CliMode.EmitC,
+            input_path: store_cli_text(mut ref mem, mut ref cli_pool, ref input_arg),
+            output_path: store_cli_text(mut ref mem, mut ref cli_pool, ref output_arg),
+            compiler_root: compiler_root_span,
+            output_given: true,
+            run_after_compile: false,
+            print_tokens: false,
+            print_ast: false,
+            print_codegen: false,
+            program_arg_start: -1
+        })
+    }
+
+    mut compiler_root_span: span.Span = empty_cli_text()
+    if (argv.len == 4) {
+        val compiler_root_arg: str = argv_item(ref argv, 3)
+        compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root_arg)
+    } else {
+        compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref ".")
+    }
+    val input_arg: str = argv_item(ref argv, 1)
+    val output_arg: str = argv_item(ref argv, 2)
+    CliParseResult.Ok(CliConfig {
+        mode: CliMode.EmitC,
+        input_path: store_cli_text(mut ref mem, mut ref cli_pool, ref input_arg),
+        output_path: store_cli_text(mut ref mem, mut ref cli_pool, ref output_arg),
+        compiler_root: compiler_root_span,
+        output_given: true,
+        run_after_compile: false,
+        print_tokens: false,
+        print_ast: false,
+        print_codegen: false,
+        program_arg_start: -1
+    })
+}
+
+// Keep the raw bootstrap contract intact while the ordinary driver path grows richer around it.
+pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv: [str]): CliParseResult = {
+    if (argv.len < 2) {
+        print_usage()
+        return CliParseResult.Exit(1)
+    }
+
+    val first_arg: str = argv_item(ref argv, 1)
+    if (string.str_eq(ref first_arg, ref "--help")) {
+        print_usage()
+        return CliParseResult.Exit(0)
+    }
+
+    if (string.str_eq(ref first_arg, ref "--emit-c")) {
+        return parse_emit_mode(mut ref mem, mut ref cli_pool, ref argv, true)
+    }
+
+    if (argv_is_legacy_emit_mode(ref argv)) {
+        return parse_emit_mode(mut ref mem, mut ref cli_pool, ref argv, false)
+    }
+
+    val compiler_root: str = exe_dir(mut ref mem)
+    mut input_path: span.Span = empty_cli_text()
+    mut output_path: span.Span = empty_cli_text()
+    mut output_given: bool = false
+    mut run_after_compile: bool = false
+    mut print_tokens: bool = false
+    mut print_ast: bool = false
+    mut print_codegen: bool = false
+    mut program_arg_start: i64 = -1
+    mut i: i64 = 1
+
+    while (i < argv.len) {
+        val arg: str = argv_item(ref argv, i)
+        if (string.str_eq(ref arg, ref "--")) {
+            program_arg_start = i + 1
+            i = argv.len
+        } else {
+            if (string.str_eq(ref arg, ref "--help")) {
+                print_usage()
+                return CliParseResult.Exit(0)
+            } else {
+                if (string.str_eq(ref arg, ref "--run")) {
+                    run_after_compile = true
+                    i += 1
+                } else {
+                    if (string.str_eq(ref arg, ref "--lexer")) {
+                        print_tokens = true
+                        i += 1
+                    } else {
+                        if (string.str_eq(ref arg, ref "--parser")) {
+                            print_ast = true
+                            i += 1
+                        } else {
+                            if (string.str_eq(ref arg, ref "--codegen")) {
+                                print_codegen = true
+                                i += 1
+                            } else {
+                                if (string.str_eq(ref arg, ref "-o")) {
+                                    if (i + 1 >= argv.len) {
+                                        return emit_missing_output_error(mut ref mem)
+                                    }
+                                    val output_arg: str = argv_item(ref argv, i + 1)
+                                    output_path = store_cli_text(mut ref mem, mut ref cli_pool, ref output_arg)
+                                    output_given = true
+                                    i += 2
+                                } else {
+                                    if (arg_is_flag(ref arg)) {
+                                        return emit_unknown_flag_error(mut ref mem, ref arg)
+                                    }
+                                    if (input_path.len != 0) {
+                                        return emit_multiple_inputs_error(mut ref mem)
+                                    }
+                                    input_path = store_cli_text(mut ref mem, mut ref cli_pool, ref arg)
+                                    i += 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (input_path.len == 0) {
+        return emit_missing_input_error(mut ref mem)
+    }
+
+    if (!output_given) {
+        val input_text: [u8] = cli_text(ref cli_pool, ref input_path)
+        val default_path: str = default_output_path(mut ref mem, ref input_text)
+        output_path = store_cli_text(mut ref mem, mut ref cli_pool, ref default_path)
+    }
+
+    CliParseResult.Ok(CliConfig {
+        mode: CliMode.Driver,
+        input_path: input_path,
+        output_path: output_path,
+        compiler_root: store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root),
+        output_given: output_given,
+        run_after_compile: run_after_compile,
+        print_tokens: print_tokens,
+        print_ast: print_ast,
+        print_codegen: print_codegen,
+        program_arg_start: program_arg_start
+    })
+}
+
+pub func debug_requested(ref config: CliConfig): bool = {
+    config.print_tokens || config.print_ast || config.print_codegen
+}
+
+func build_mkdir_command(
+    mut ref mem: Arena,
+    ref output_dir: str,
+    ref generated_dir: str,
+    ref bin_dir: str
+): str = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, output_dir.len + generated_dir.len + bin_dir.len + 32)
+    append_bytes(mut ref mem, mut ref out, ref "mkdir -p ")
+    append_quoted_arg(mut ref mem, mut ref out, ref output_dir)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_quoted_arg(mut ref mem, mut ref out, ref generated_dir)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_quoted_arg(mut ref mem, mut ref out, ref bin_dir)
+    out.data[0..out.count]
+}
+
+func build_clang_command(mut ref mem: Arena, ref generated_c: str, ref output_path: str): str = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, generated_c.len + output_path.len + 80)
+    append_bytes(mut ref mem, mut ref out, ref "${CC:-clang} -std=c99 -O2 -fwrapv -x c ")
+    append_quoted_arg(mut ref mem, mut ref out, ref generated_c)
+    append_bytes(mut ref mem, mut ref out, ref " -o ")
+    append_quoted_arg(mut ref mem, mut ref out, ref output_path)
+    out.data[0..out.count]
+}
+
+func build_run_command(
+    mut ref mem: Arena,
+    ref output_path: str,
+    ref argv: [str],
+    arg_start: i64
+): str = {
+    mut capacity: i64 = output_path.len + 8
+    if (arg_start >= 0) {
+        mut i: i64 = arg_start
+        while (i < argv.len) {
+            val arg: str = argv_item(ref argv, i)
+            capacity += arg.len + 8
+            i += 1
+        }
+    }
+
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, capacity)
+    append_quoted_arg(mut ref mem, mut ref out, ref output_path)
+
+    if (arg_start >= 0) {
+        mut i: i64 = arg_start
+        while (i < argv.len) {
+            val arg: str = argv_item(ref argv, i)
+            append_bytes(mut ref mem, mut ref out, ref " ")
+            append_quoted_arg(mut ref mem, mut ref out, ref arg)
+            i += 1
+        }
+    }
+
+    out.data[0..out.count]
+}
+
+func build_cleanup_command(mut ref mem: Arena, ref generated_c: str, ref temp_output: str): str = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, generated_c.len + temp_output.len + 24)
+    append_bytes(mut ref mem, mut ref out, ref "rm -f ")
+    append_quoted_arg(mut ref mem, mut ref out, ref generated_c)
+    if (temp_output.len > 0) {
+        append_bytes(mut ref mem, mut ref out, ref " ")
+        append_quoted_arg(mut ref mem, mut ref out, ref temp_output)
+    }
+    out.data[0..out.count]
+}
+
+func cleanup_temp_outputs(mut ref mem: Arena, ref generated_c: str, ref temp_output: str): void = {
+    val command: str = build_cleanup_command(mut ref mem, ref generated_c, ref temp_output)
+    shell_run(ref command)
+}
+
+// The direct driver only needs a small shell bridge: mkdir, clang, optional run, then cleanup.
+pub func compile_program(
+    mut ref mem: Arena,
+    ref cli_pool: bbuf.ByteBuf,
+    ref config: CliConfig,
+    ref dumped: [u8],
+    ref argv: [str]
+): i32 = {
+    val compiler_root: [u8] = cli_text(ref cli_pool, ref config.compiler_root)
+    val configured_output: [u8] = cli_text(ref cli_pool, ref config.output_path)
+    val generated_dir: str = path.path_join(mut ref mem, ref compiler_root, ref "tmp/generated-c")
+    val bin_dir: str = path.path_join(mut ref mem, ref compiler_root, ref "tmp/bins")
+    val generated_c: str = build_driver_temp_path(mut ref mem, ref generated_dir, ref "norec-driver-", ref ".c")
+    mut temp_output: str = string.str_copy(mut ref mem, ref "")
+    mut output_path: str = string.str_copy(mut ref mem, ref configured_output)
+    if (config.run_after_compile && !(config.output_given)) {
+        temp_output = build_driver_temp_path(mut ref mem, ref bin_dir, ref "norec-run-", ref "")
+        output_path = temp_output
+    }
+
+    val output_dir: str = path.path_dirname(mut ref mem, ref output_path)
+    val mkdir_command: str = build_mkdir_command(mut ref mem, ref output_dir, ref generated_dir, ref bin_dir)
+    if (shell_run(ref mkdir_command) != 0) {
+        emit_driver_error(mut ref mem, ref "D006", ref "Could not prepare build directories")
+        return 1
+    }
+
+    match (file.write_file(ref generated_c, ref dumped)) {
+        Ok(written) = { }
+        Err(code) = {
+            cleanup_temp_outputs(mut ref mem, ref generated_c, ref temp_output)
+            emit_driver_error(mut ref mem, ref "D006", ref "Could not write generated C file")
+            return 1
+        }
+    }
+
+    val clang_command: str = build_clang_command(mut ref mem, ref generated_c, ref output_path)
+    val clang_status: i32 = shell_run(ref clang_command)
+    if (clang_status != 0) {
+        cleanup_temp_outputs(mut ref mem, ref generated_c, ref temp_output)
+        val code_text: str = string.i64_to_str(mut ref mem, i64(clang_status))
+        val message: str = string.str_concat(mut ref mem, ref "Clang compilation failed with exit code ", ref code_text)
+        emit_driver_error(mut ref mem, ref "D006", ref message)
+        return clang_status
+    }
+
+    cleanup_temp_outputs(mut ref mem, ref generated_c, ref "")
+
+    if (!(config.run_after_compile)) {
+        return 0
+    }
+
+    val run_command: str = build_run_command(mut ref mem, ref output_path, ref argv, config.program_arg_start)
+    val run_status: i32 = shell_run(ref run_command)
+    cleanup_temp_outputs(mut ref mem, ref generated_c, ref temp_output)
+    run_status
+}
 
 // The driver only cares whether a root declaration is the executable `main`.
 func decl_name_is_main(
@@ -28,7 +467,7 @@ func decl_name_is_main(
     string.str_eq(ref name_text, ref "main")
 }
 
-// Stage-0 treats missing or invalid root `main` as semantic diagnostics, so the bootstrap driver does too.
+// Stage-0 treats missing or invalid root `main` as semantic diagnostics, so the driver does too.
 pub func validate_root_main(
     mut ref mem: Arena,
     ref sources: source.Sources,

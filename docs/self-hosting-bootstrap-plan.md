@@ -736,14 +736,15 @@ The frontend is the hard part. The driver is plumbing.
 
 ## Milestone 12: Grow from Bootstrap Subset to Full Parity
 
-**Status:** In progress
+**Status:** Complete
 
-Started with the committed `bootstrap/` seed path, `tests/compiler/` suite rename,
-and `make norec` rebuild entrypoint. The language-suite `make test*` targets now
-default to `bootstrap/bootstrap.sh`, while explicit `*-stage0` targets keep the
-trusted C seed available as a fallback path. `make` now rebuilds `./norec` by
-default, and `make test-compiler` now follows the same self-hosted default with
-an explicit `test-compiler-stage0` fallback target.
+Completed with the committed `bootstrap/` seed path, `tests/compiler/` suite rename,
+the durable `./norec` artifact name, direct `norec` driver parity (`-o`, `--run`,
+`--lexer`, `--parser`, `--codegen`, plus the legacy raw emit mode needed by bootstrap
+internals), and default `make test*` / `make test-compiler` entrypoints that now
+execute `./norec` directly while explicit `*-stage0` targets keep the trusted C seed
+available as a fallback path. `bootstrap/bootstrap.sh` remains as the rebuild-from-seed
+entrypoint and a compatibility forward to `./norec`.
 
 ### Gaps to close before starting
 

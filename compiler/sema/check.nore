@@ -239,7 +239,10 @@ func native_builtin_name_known(
     token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "fd_seek") ||
     token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "mem_copy") ||
     token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "exit") ||
-    token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "args")
+    token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "args") ||
+    token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "shell_run") ||
+    token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "exe_dir") ||
+    token_name_is(ref sources, ref text_pool, ref tokens, token_id, ref "pid")
 }
 
 // Native hook signatures are fixed by the stage-0 runtime boundary and must stay consistent across modules.
@@ -379,6 +382,17 @@ func check_native_decl_signature(
         valid = param_count == 1 &&
             return_type == str_slice_type &&
             native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.arena_type, true, true)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "shell_run")) {
+        valid = param_count == 1 &&
+            return_type == builtins.i32_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.str_type, true, false)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "exe_dir")) {
+        valid = param_count == 1 &&
+            return_type == builtins.str_type &&
+            native_param_matches(ref nodes, node.node_child_at(ref nodes, decl_id, 0), builtins.arena_type, true, true)
+    } else if (token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "pid")) {
+        valid = param_count == 0 &&
+            return_type == builtins.i64_type
     }
 
     if (!valid) {

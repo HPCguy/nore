@@ -9,10 +9,12 @@ import check "sema/check.nore"
 import driver "driver/cli.nore"
 import diag "support/diag.nore"
 import file "std/file.nore"
+import lexer "frontend/lexer.nore"
 import ibuf "support/i64_buf.nore"
 import io "std/io.nore"
 import loader "frontend/loader.nore"
 import node "frontend/node.nore"
+import parser "frontend/parser.nore"
 import scopes "sema/scopes.nore"
 import source "support/source.nore"
 import span "support/span.nore"
@@ -38,12 +40,6 @@ val DIAG_POOL_CAPACITY: i64 = 16384
 val SCOPES_CAPACITY: i64 = 16384
 val SYMBOLS_CAPACITY: i64 = 65536
 val TYPES_CAPACITY: i64 = 32768
-
-// Keep the first bootstrap CLI contract explicit until a richer driver exists.
-func print_usage(): void = {
-    io.eprintln(ref "usage: bootstrap-compiler <input.nore> <output.c> [compiler_root]")
-    io.eprintln(ref "compiler_root defaults to '.' and should point at the repo root for std/ imports")
-}
 
 // Diagnostics already know how to format themselves; the driver only needs to stream one range in order.
 func emit_diag_range(
@@ -84,36 +80,41 @@ func write_output_or_exit(mut ref mem: Arena, ref output_path: str, ref dumped: 
     }
 }
 
-// Stage-0 still prefers slice locals that come from function calls, so keep argv indexing behind helpers.
-func cli_input_path(ref argv: [str]): str = {
-    argv[1]
-}
-
-// The output-path accessor keeps the entrypoint source inside the currently self-compilable subset.
-func cli_output_path(ref argv: [str]): str = {
-    argv[2]
-}
-
-// compiler_root remains optional while std-import resolution still uses the current bootstrap path policy.
-func cli_compiler_root(ref argv: [str]): str = {
-    if (argv.len == 4) {
-        return argv[3]
+// Root-module dumps still use the root module row even when imports were loaded transitively.
+func root_module_token_range(ref modules: loader.Modules, root_module: i64): span.Range = {
+    if (root_module < 0 || root_module >= table_len(ref modules)) {
+        return span.range(0, 0)
     }
-    "."
+    span.range(modules.token_start[root_module], modules.token_count[root_module])
 }
 
-// The bootstrap pipeline is intentionally linear: decode args, load graph, typecheck, emit C, write file.
+// The entrypoint keeps one linear pipeline and branches only after the final C dump is ready.
 func main(): void = {
     mut mem: Arena = arena(MAIN_ARENA_CAPACITY)
     val argv: [str] = args(mut ref mem)
-    if (argv.len < 3 || argv.len > 4) {
-        print_usage()
-        exit(1)
-    }
+    mut cli_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
+    val parsed: driver.CliParseResult = driver.parse_cli(mut ref mem, mut ref cli_pool, ref argv)
 
-    val input_path: str = cli_input_path(ref argv)
-    val output_path: str = cli_output_path(ref argv)
-    val compiler_root: str = cli_compiler_root(ref argv)
+    mut config: driver.CliConfig = driver.CliConfig {
+        mode: driver.CliMode.EmitC,
+        input_path: span.span(0, 0),
+        output_path: span.span(0, 0),
+        compiler_root: span.span(0, 0),
+        output_given: true,
+        run_after_compile: false,
+        print_tokens: false,
+        print_ast: false,
+        print_codegen: false,
+        program_arg_start: -1
+    }
+    match (parsed) {
+        Ok(parsed_config) = {
+            config = parsed_config
+        }
+        Exit(code) = {
+            exit(code)
+        }
+    }
 
     mut sources: source.Sources = table_alloc(mut ref mem, SOURCES_CAPACITY)
     mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, PATH_POOL_CAPACITY)
@@ -128,6 +129,8 @@ func main(): void = {
     mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, SCOPES_CAPACITY)
     mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, SYMBOLS_CAPACITY)
     mut types_table: types.Types = table_alloc(mut ref mem, TYPES_CAPACITY)
+    val compiler_root: [u8] = driver.cli_text(ref cli_pool, ref config.compiler_root)
+    val input_path: [u8] = driver.cli_text(ref cli_pool, ref config.input_path)
 
     val loaded: loader.LoadResult = loader.load_graph(
         mut ref mem,
@@ -157,6 +160,24 @@ func main(): void = {
         exit(1)
     }
 
+    if (config.print_tokens) {
+        val token_range: span.Range = root_module_token_range(ref modules, loaded.root_module)
+        val dump: [u8] = lexer.lex_dump(mut ref mem, ref tokens, ref sources, ref text_pool, ref token_range)
+        io.print(ref dump)
+    }
+
+    if (config.print_ast && loaded.root_module >= 0 && loaded.root_module < table_len(ref modules)) {
+        val dump: [u8] = parser.parse_dump(
+            mut ref mem,
+            ref nodes,
+            ref tokens,
+            ref sources,
+            ref text_pool,
+            modules.root_node[loaded.root_module]
+        )
+        io.print(ref dump)
+    }
+
     val checked: check.CheckResult = check.check_modules(
         mut ref mem,
         ref sources,
@@ -184,29 +205,31 @@ func main(): void = {
         exit(1)
     }
 
-    val main_diags: span.Range = driver.validate_root_main(
-        mut ref mem,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        ref nodes,
-        ref modules,
-        ref types_table,
-        mut ref diags,
-        mut ref diag_pool,
-        ref loaded.modules
-    )
-    if (main_diags.count > 0) {
-        emit_diag_range(
+    if (config.mode == driver.CliMode.Driver) {
+        val main_diags: span.Range = driver.validate_root_main(
             mut ref mem,
-            ref diags,
-            ref diag_pool,
             ref sources,
-            ref path_pool,
-            ref line_starts,
-            ref main_diags
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref modules,
+            ref types_table,
+            mut ref diags,
+            mut ref diag_pool,
+            ref loaded.modules
         )
-        exit(1)
+        if (main_diags.count > 0) {
+            emit_diag_range(
+                mut ref mem,
+                ref diags,
+                ref diag_pool,
+                ref sources,
+                ref path_pool,
+                ref line_starts,
+                ref main_diags
+            )
+            exit(1)
+        }
     }
 
     val dumped: [u8] = cmain.c_file_dump(
@@ -222,5 +245,22 @@ func main(): void = {
         ref checked.types,
         ref loaded.modules
     )
-    write_output_or_exit(mut ref mem, ref output_path, ref dumped)
+
+    if (config.print_codegen) {
+        io.print(ref dumped)
+    }
+
+    if (driver.debug_requested(ref config)) {
+        exit(0)
+    }
+
+    if (config.mode == driver.CliMode.EmitC) {
+        val output_path: [u8] = driver.cli_text(ref cli_pool, ref config.output_path)
+        write_output_or_exit(mut ref mem, ref output_path, ref dumped)
+    } else {
+        val driver_status: i32 = driver.compile_program(mut ref mem, ref cli_pool, ref config, ref dumped, ref argv)
+        if (driver_status != 0) {
+            exit(driver_status)
+        }
+    }
 }

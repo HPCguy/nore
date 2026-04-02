@@ -28,7 +28,5 @@ Current wrapper mode:
 - `make` rebuilds `./norec` as the default compiler artifact
 - `make stage0` rebuilds the explicit C-seed fallback at `./nore`
 - `./bootstrap/bootstrap.sh` rebuilds `./norec`
-- `./bootstrap/bootstrap.sh program.nore`
-- `./bootstrap/bootstrap.sh --run program.nore -- arg1 arg2`
-
-That wrapper mode is transitional. It keeps the self-hosted compiler path usable while native driver parity is still in progress.
+- `./norec` is now the normal self-hosted compiler driver
+- `./bootstrap/bootstrap.sh program.nore` still works as a compatibility forward to `./norec`

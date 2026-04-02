@@ -4,11 +4,11 @@ This tree holds compiler-specific coverage for the Nore-written compiler.
 
 Current status:
 
-- the default compiler path now goes through `bootstrap/bootstrap.sh`
+- the default compiler path now goes through `./norec`
 - the trusted C seed remains available as the explicit `make stage0` fallback
 - the committed source layout lives under `compiler/`
 - support, lexer, parser, imports, sema, and codegen tests cover the committed bootstrap compiler slices
-- selfhost tests cover smoke compilation, self-compile stability, and the transitional wrapper path
+- selfhost tests cover smoke compilation, self-compile stability, direct `norec` driver behavior, and the bootstrap rebuild path
 - the trusted C seed and rebuild-from-seed flow now live under `bootstrap/`
 
 Planned subdirectories:
