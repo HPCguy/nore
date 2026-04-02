@@ -71,7 +71,7 @@ The stdlib follows Nore's memory philosophy: **the caller owns the memory**.
 
 Any stdlib function that allocates takes an `Arena` parameter:
 
-```nore
+```rust
 // The caller decides where the string lives
 val result: str = i64_to_str(mut ref my_arena, 42)
 

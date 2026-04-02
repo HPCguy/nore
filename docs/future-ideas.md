@@ -12,7 +12,7 @@ Replace auto-generated `ParticlesRow` with explicit `Particles.Row` syntax. This
 
 Allow grouping fields within a table for interleaved storage, while ungrouped fields stay columnar:
 
-```nore
+```rust
 table Particles {
     group { pos: Vec2, velocity: Vec2 },  // stored interleaved (AoS)
     life: i64,                             // separate column (SoA)

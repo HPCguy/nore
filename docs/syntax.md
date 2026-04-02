@@ -6,7 +6,7 @@ Terse lookup companion for the Nore language. For the full narrative (philosophy
 
 ## Comments
 
-```nore
+```rust
 // single-line comment
 val x: i64 = 42  // inline comment
 /* multi-line
@@ -18,7 +18,7 @@ val x: i64 = 42  // inline comment
 
 ## Imports
 
-```nore
+```rust
 import math "std/math.nore"
 import file "std/file.nore"
 import utils "../shared/utils.nore"
@@ -31,7 +31,7 @@ import utils "../shared/utils.nore"
 
 ## Qualified Access
 
-```nore
+```rust
 val x: i64 = math.min_i64(3, 7)                    // function
 val r: file.ReadResult = file.read_file(mut ref m, ref p) // type
 val fd: i32 = fd_open(ref path, file.O_RDONLY)      // constant
@@ -50,7 +50,7 @@ val p: types.Vec2 = types.Vec2 { x: 1.0, y: 2.0 }  // value constructor
 
 ## Visibility (`pub`)
 
-```nore
+```rust
 pub func add(a: i64, b: i64): i64 = { a + b }
 pub val MAX_SIZE: i64 = 1024
 pub value Point { x: i64, y: i64 }
@@ -89,7 +89,7 @@ pub table Particles { x: f64, y: f64 }
 
 ## Literals
 
-```nore
+```rust
 42              // comptime_int, coerces to any integer type or f64
 -17             // negative integer
 3.14            // comptime_float, coerces to f64 only
@@ -104,7 +104,7 @@ true / false    // boolean
 
 ## Type Coercion
 
-```nore
+```rust
 val x: i64 = 42      // comptime_int -> i64
 val y: f64 = 42      // comptime_int -> f64
 val z: f64 = 3.14    // comptime_float -> f64
@@ -120,7 +120,7 @@ val b: u8 = 256      // ERROR: out of range
 
 ## Type Casting
 
-```nore
+```rust
 val x: i64 = 42
 val y: u8 = u8(x)          // narrowing: runtime bounds check (R003)
 val z: f64 = f64(x)        // widening: always safe
@@ -138,7 +138,7 @@ Supported: `u8()`, `i32()`, `u32()`, `i64()`, `f64()`
 
 ## Constant Folding
 
-```nore
+```rust
 val x: i64 = 3 + 5 * 2      // folded to 13
 val y: bool = 10 > 5         // folded to true
 val z: i64 = 5 / 0           // ERROR: division by zero
@@ -153,7 +153,7 @@ val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }  // comptime i
 ## Variables
 
 **Immutable** (`val`):
-```nore
+```rust
 val x: i64 = 42         // explicit type, concrete
 val y = 42              // comptime: type inferred as comptime_int
 val z = y + 1           // comptime: propagates through expressions
@@ -161,7 +161,7 @@ val z = y + 1           // comptime: propagates through expressions
 
 **Comptime constants** (untyped `val`): stay flexible until consumed. Each use site decides the concrete type.
 
-```nore
+```rust
 val width = 800
 val a: i64 = width       // comptime_int -> i64
 val b: i32 = width       // comptime_int -> i32
@@ -170,14 +170,14 @@ val d: u8 = width        // ERROR: 800 out of range for u8
 ```
 
 **Mutable** (`mut`):
-```nore
+```rust
 mut counter: i64 = 0    // explicit type required
 counter = counter + 1
 ```
 
 ## Global Variables
 
-```nore
+```rust
 val PI = 3.14159              // comptime constant (inlined)
 val MAX_SIZE: i64 = 1024      // typed constant
 val GREETING: str = "hello"   // string constant
@@ -196,7 +196,7 @@ mut mem: Arena = arena(4096)  // global arena (auto-init/free in main)
 
 ## Functions
 
-```nore
+```rust
 func name(param1: type1, param2: type2): returnType = {
     body
 }
@@ -208,14 +208,14 @@ func name(param1: type1, param2: type2): returnType = {
 - Mutual recursion is supported
 - Last expression in block is the block's value (implicit return)
 
-```nore
+```rust
 func add(a: i64, b: i64): i64 = { a + b }
 func min(a: i64, b: i64): i64 = { if (a < b) { a } else { b } }
 ```
 
 ## Function Calls
 
-```nore
+```rust
 val sum: i64 = add(10, 20)
 val nested: i64 = add(mul(2, 3), 4)
 process()                              // bare call statement
@@ -224,13 +224,13 @@ process()                              // bare call statement
 ## Ref Parameters
 
 **Read-only** (`ref`):
-```nore
+```rust
 func length_sq(ref v: Vec2): f64 = { v.x * v.x + v.y * v.y }
 val lsq: f64 = length_sq(ref p)
 ```
 
 **Mutable** (`mut ref`):
-```nore
+```rust
 func scale(mut ref v: Vec2, factor: f64): void = { v.x = v.x * factor }
 scale(mut ref q, 2.0)
 ```
@@ -245,12 +245,12 @@ scale(mut ref q, 2.0)
 
 ## Value Types
 
-```nore
+```rust
 value Vec2 { x: f64, y: f64 }
 value Color { r: u8, g: u8, b: u8, a: u8 }
 ```
 
-```nore
+```rust
 val p: Vec2 = Vec2 { x: 1.0, y: 2.0 }    // constructor (all fields, any order)
 val x: f64 = p.x                           // field access
 mut q: Vec2 = Vec2 { x: 0.0, y: 0.0 }
@@ -264,11 +264,11 @@ mut b: Vec2 = p                            // copy semantics
 
 ## Struct Types
 
-```nore
+```rust
 struct Entity { x: f64, y: f64, health: i64 }
 ```
 
-```nore
+```rust
 val e: Entity = Entity { x: 1.0, y: 2.0, health: 100 }
 val hp: i64 = e.health
 ```
@@ -281,7 +281,7 @@ val hp: i64 = e.health
 
 ## Enum Types
 
-```nore
+```rust
 enum Color { Red, Green, Blue }
 val c: Color = Color.Red
 assert c == Color.Red           // == and != only
@@ -297,19 +297,19 @@ assert i64(Color.Blue) == 2     // cast to integer
 
 ## Tagged Unions
 
-```nore
+```rust
 enum Option { Some(i64), None }
 enum ReadResult { Ok([u8]), Err(i32) }
 ```
 
 **Construction**:
-```nore
+```rust
 val x: Option = Option.Some(42)
 val y: Option = Option.None
 ```
 
 **Match** (statement and expression):
-```nore
+```rust
 enum Color { Red, Green, Blue }
 match (Color.Green) {
     Red = { }
@@ -366,7 +366,7 @@ val x: i64 = match (opt) {
 
 ## Arrays
 
-```nore
+```rust
 val arr: [i64; 3] = [1, 2, 3]
 val grid: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]]
 ```
@@ -379,7 +379,7 @@ val grid: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]]
 
 ## Slices
 
-```nore
+```rust
 mut mem: Arena = arena(4096)
 val data: [i64] = arena_alloc(mut ref mem, 10)
 val result: [i64] = get_data(mut ref mem, 5)
@@ -393,7 +393,7 @@ val sub: [i64] = data[2..5]
 - Locals initialized via `arena_alloc()`, function call, or sub-slice only (S046)
 
 **Sub-slicing** (`expr[start..end]`):
-```nore
+```rust
 val sub: [i64] = data[2..5]    // elements 2, 3, 4
 val head: [i64] = data[..3]    // same as data[0..3]
 val tail: [i64] = data[2..]    // same as data[2..data.len]
@@ -408,7 +408,7 @@ val all: [i64] = data[..]      // full slice
 
 ## Strings
 
-```nore
+```rust
 val greeting: str = "hello"    // static memory, zero cost
 val h: u8 = greeting[0]       // 104 (ASCII 'h')
 assert greeting.len == 5
@@ -423,7 +423,7 @@ assert greeting.len == 5
 
 ## Arenas
 
-```nore
+```rust
 mut mem: Arena = arena(4096)
 val data: [i64] = arena_alloc(mut ref mem, 10)
 arena_reset(mut ref mem)       // invalidates all slices from mem (S056)
@@ -442,14 +442,14 @@ arena_reset(mut ref mem)       // invalidates all slices from mem (S056)
 
 ## Tables
 
-```nore
+```rust
 value Vec2 { x: f64, y: f64 }
 table Particles { pos: Vec2, life: i64 }
 ```
 
 Generates: struct `Particles` (`pos: [Vec2]`, `life: [i64]`, `_len: i64`) + value `Particles.Row` (`pos: Vec2`, `life: i64`).
 
-```nore
+```rust
 mut mem: Arena = arena(65536)
 mut p: Particles = table_alloc(mut ref mem, 100)
 table_insert(mut ref p, Particles.Row { pos: Vec2 { x: 1.0, y: 2.0 }, life: 100 })
@@ -467,7 +467,7 @@ p.life[0] = 50                             // direct column access
 ## Control Flow
 
 **If/else**:
-```nore
+```rust
 if (condition) { ... }
 if (condition) { ... } else { ... }
 if (condition) { ... } else if (other) { ... } else { ... }
@@ -481,14 +481,14 @@ return if (x < 0) { 0 - x } else { x }     // after return
 - Comptime conditions folded at compile time
 
 **While**:
-```nore
+```rust
 while (condition) { ... }
 ```
 
 - `break` exits, `continue` skips to next iteration
 
 **For** (range-based):
-```nore
+```rust
 for i in 0..n { ... }
 ```
 
@@ -499,7 +499,7 @@ for i in 0..n { ... }
 - `break` and `continue` work
 
 **Expression blocks**:
-```nore
+```rust
 val y: i64 = {
     val a: i64 = 10
     a + 5       // last expression is the block's value
@@ -517,7 +517,7 @@ val y: i64 = {
 **Assignment**: `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` (mutable only)
 
 **Compound assignment**:
-```nore
+```rust
 counter += 1
 mask &= 15
 arr[i] <<= 1
@@ -562,7 +562,7 @@ arr[i] <<= 1
 
 ## Native Declarations
 
-```nore
+```rust
 native func fd_write(fd: i32, ref data: [u8]): i64
 native func exit(code: i32): void
 ```
@@ -587,25 +587,25 @@ native func exit(code: i32): void
 ## I/O Built-in Functions
 
 **fd_write(fd, ref data)**: write bytes to fd. Returns `i64` bytes written (negative on error).
-```nore
+```rust
 val n: i64 = fd_write(io.STDOUT, ref "Hello\n")
 ```
 
 **fd_read(fd, mut ref buf)**: read bytes from fd. Returns `i64` bytes read (0 = EOF).
-```nore
+```rust
 mut buf: [u8; 256] = [0, 0, ...]
 val n: i64 = fd_read(io.STDIN, mut ref buf)
 ```
 
 **fd_open(ref path, flags)**: open file. Returns `i32` fd (negative on error). Null-terminated, max 4095 bytes, perms 0644.
-```nore
+```rust
 val fd: i32 = fd_open(ref "file.txt", file.O_RDONLY)
 ```
 
 **fd_close(fd)**: close fd. Returns `void`.
 
 **fd_seek(fd, offset, whence)**: seek. Returns `i64` new position.
-```nore
+```rust
 val size: i64 = fd_seek(fd, 0, file.SEEK_END)
 ```
 

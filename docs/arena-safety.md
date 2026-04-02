@@ -31,7 +31,7 @@ All of these are checked uniformly by `type_return_has_slices()` and `type_is_no
 
 S053 only catches **direct** escape, a return statement with a struct constructor whose fields are slices from a local arena. It does not catch **indirect** escape through function calls:
 
-```nore
+```rust
 func build(mut ref mem: Arena): Result = {
     mut items: [i64] = arena_alloc(mut ref mem, 10)
     return Result { items: items }   // OK, mem is ref param, safe to return
@@ -81,7 +81,7 @@ The gap is only at **function call boundaries**, where the caller cannot see ins
 
 When a match expression destructures a slice-bearing tagged union, the extracted slice binding inherits the scrutinee's arena tracking. This ensures that arena reset invalidation and escape analysis work correctly through match arms:
 
-```nore
+```rust
 val result: ReadResult = read_file(mut ref mem, ref path)
 match (result) {
     Ok(data) = {
@@ -116,7 +116,7 @@ At **call sites**, the check becomes:
 
 A function may not directly return an `alloc` result but instead return the result of calling another function that does:
 
-```nore
+```rust
 func level2(mut ref mem: Arena): [i64] = {
     return arena_alloc(mut ref mem, 10)       // direct: returns_arena_slices = true
 }
@@ -199,7 +199,7 @@ The existing reset invalidation (S056) is per-function and flow-sensitive. It co
 
 ### Direct slice return (allowed after S048 removal)
 
-```nore
+```rust
 func get_data(mut ref mem: Arena, n: i64): [i64] = {
     mut data: [i64] = arena_alloc(mut ref mem, n)
     return data   // OK, mem is ref param
@@ -214,7 +214,7 @@ func bad(): [i64] = {
 
 ### Indirect escape via function call (caught by deferred check)
 
-```nore
+```rust
 func build(mut ref mem: Arena): Table = {
     mut keys: [i64] = arena_alloc(mut ref mem, 100)
     return Table { keys: keys }   // marks build as returns_arena_slices=true
@@ -232,7 +232,7 @@ func bad(): Table = {
 
 ### Transitive chain (caught via propagation)
 
-```nore
+```rust
 func level2(mut ref mem: Arena): [i64] = {
     return arena_alloc(mut ref mem, 10)           // direct: returns_arena_slices = true
 }
@@ -249,7 +249,7 @@ func bad(): [i64] = {
 
 ### Slice-bearing tagged union escape
 
-```nore
+```rust
 enum ReadResult { Ok([u8]), Err(i32) }
 
 func read_data(mut ref mem: Arena): ReadResult = {
@@ -269,7 +269,7 @@ func bad(): ReadResult = {
 
 ### False negative that becomes a true negative
 
-```nore
+```rust
 func analyze(mut ref mem: Arena, ref data: [f64]): Stats = {
     mut tmp: [f64] = arena_alloc(mut ref mem, 100)  // scratch, not returned
     return Stats { samples: data, count: 50 } // slices from data, not mem
@@ -289,7 +289,7 @@ func main(): void = {
 
 With a single boolean per function, the analysis cannot distinguish *which* arena parameter the return slices come from:
 
-```nore
+```rust
 func build(mut ref scratch: Arena, mut ref storage: Arena): Table = {
     mut tmp: [i64] = arena_alloc(mut ref scratch, 100)    // scratch only, not returned
     mut keys: [i64] = arena_alloc(mut ref storage, 100)   // returned
@@ -329,7 +329,7 @@ With this spec fully implemented, Nore is **memory-safe for arena-scoped allocat
 
 **1. Cross-function reset.** A callee that receives both `mut ref Arena` and a slice from that arena as separate parameters can reset the arena and invalidate the slice without the compiler noticing. This is a genuine use-after-free:
 
-```nore
+```rust
 func process(mut ref mem: Arena, ref data: [i64]): void = {
     arena_reset(mut ref mem)   // invalidates data, compiler doesn't know
     val x = data[0]      // use-after-free
@@ -340,7 +340,7 @@ Closable with a conservative call-site check: warn when both a `mut ref Arena` a
 
 **2. Mutable aliasing.** Two `mut ref` parameters can point to the same data. Rust prevents this entirely (one `&mut` OR many `&`, never both). Nore doesn't check:
 
-```nore
+```rust
 func bad(mut ref a: [i64], mut ref b: [i64]): void = {
     a[0] = b[0]   // if a and b alias, this is surprising but not caught
 }

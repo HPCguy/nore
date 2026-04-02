@@ -4,7 +4,7 @@ Nore is a systems programming language that makes data-oriented design the path 
 
 The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
 
-```nore
+```rust
 value Vec2 { x: f64, y: f64 }
 
 table Particles {
@@ -84,7 +84,7 @@ Every composite type in Nore falls into one of three categories: `value`, `struc
 
 A `value` is a fixed-size, fully inline data type. It contains only bytes: no pointers, no slices, no indirection of any kind. Values are the atoms of data layout.
 
-```nore
+```rust
 value Vec2 { x: f64, y: f64 }
 value Color { r: u8, g: u8, b: u8, a: u8 }
 value Matrix4 { elements: [f64; 16] }
@@ -103,7 +103,7 @@ A `value` is what you reach for when you want data that composes, inlines, and i
 
 **Constructors, field access, assignment:**
 
-```nore
+```rust
 val p: Vec2 = Vec2 { x: 1.0, y: 2.0 }    // all fields required, any order
 val x: f64 = p.x                           // dot notation
 mut q: Vec2 = Vec2 { x: 0.0, y: 0.0 }
@@ -112,7 +112,7 @@ q.x = 3.0                                  // field assignment on mut variables
 
 **Value semantics:** values are assigned by copy. Copies are independent:
 
-```nore
+```rust
 val a: Vec2 = Vec2 { x: 1.0, y: 2.0 }
 mut b: Vec2 = a       // copy, not reference
 b.x = 99.0            // does not affect a
@@ -123,7 +123,7 @@ assert a.x == 1.0     // a is unchanged
 
 A `struct` is for types that manage resources or contain indirection. It may hold slices pointing into arenas, dynamic data handles, or other indirect state. Structs are not building blocks. They are top-level containers.
 
-```nore
+```rust
 struct Mesh {
     vertices: [f64],      // slice into an arena
     indices: [u32],       // slice into an arena
@@ -144,7 +144,7 @@ struct Mesh {
 
 **No copy semantics:**
 
-```nore
+```rust
 val a: Entity = Entity { x: 1.0, y: 2.0, health: 100 }
 val b: Entity = a    // ERROR S043: Cannot copy struct
 ```
@@ -153,7 +153,7 @@ Structs can only be initialized from constructors or function return values. The
 
 **Ref-only passing:**
 
-```nore
+```rust
 func get_health(ref e: Entity): i64 = { return e.health }
 func damage(mut ref e: Entity, amount: i64): void = {
     e.health = e.health - amount
@@ -164,7 +164,7 @@ Passing a struct by value is an error (S044). Call site must match: `ref e` or `
 
 **Returning structs** (direct init, not copy):
 
-```nore
+```rust
 func make_entity(x: f64, y: f64, hp: i64): Entity = {
     return Entity { x: x, y: y, health: hp }
 }
@@ -177,7 +177,7 @@ An `enum` is a named set of variants, optionally carrying data. Plain enums (no 
 
 **Plain enums** are named integer constants:
 
-```nore
+```rust
 enum Color { Red, Green, Blue }
 
 val c: Color = Color.Red
@@ -187,7 +187,7 @@ assert i64(Color.Blue) == 2 // cast to integer
 
 **Tagged unions** carry data payloads. Plain and data variants can be mixed:
 
-```nore
+```rust
 enum Option { Some(i64), None }
 enum ReadResult { Ok([u8]), Err(i32) }
 enum Mixed { A(bool), B, C(f64) }
@@ -195,7 +195,7 @@ enum Mixed { A(bool), B, C(f64) }
 
 **Construction:**
 
-```nore
+```rust
 val x: Option = Option.Some(42)     // data variant: requires (expr)
 val y: Option = Option.None          // non-data variant: bare syntax
 ```
@@ -211,7 +211,7 @@ Type annotation is required. Tagged unions can be assigned to mutable variables 
 **Match expressions** branch on enums, destructure tagged unions, and dispatch
 on small scalar values with exhaustive pattern matching:
 
-```nore
+```rust
 enum Color { Red, Green, Blue }
 
 match (Color.Green) {
@@ -301,7 +301,7 @@ Match rules:
 
 A `table` is not a separate fundamental type. It is syntactic sugar that generates a `struct` (for columnar storage) plus a `value` (for row access).
 
-```nore
+```rust
 table Particles {
     pos: Vec2,
     life: i64,
@@ -315,7 +315,7 @@ This generates two types:
 
 Table field constraints: fields must be value-compatible (scalars, fixed arrays, or value types). No slices, no structs, no Arena. For strings and other indirect data, use scalar indices into a separate table.
 
-```nore
+```rust
 mut mem: Arena = arena(65536)
 mut p: Particles = table_alloc(mut ref mem, 1000)
 
@@ -352,7 +352,7 @@ No general-purpose heap by default.
 
 Fixed-size arrays are value-compatible. They have a known size at compile time and contain no indirection.
 
-```nore
+```rust
 val arr: [i64; 3] = [1, 2, 3]
 val grid: [[i64; 2]; 3] = [[1, 2], [3, 4], [5, 6]]
 value Matrix4 { elements: [f64; 16] }
@@ -366,7 +366,7 @@ value Matrix4 { elements: [f64; 16] }
 - Can appear in values, structs, and as standalone variables
 - Sub-slicing: `arr[1..4]` produces a slice
 
-```nore
+```rust
 val a: [i64; 3] = [1, 2, 3]
 mut b: [i64; 3] = a       // copy, not reference
 b[0] = 99                 // does not affect a
@@ -377,7 +377,7 @@ assert a[0] == 1           // a is unchanged
 
 A slice (`[T]`) is a fat pointer: `{pointer, length}`. The data lives elsewhere, in an arena. Because slices contain indirection:
 
-```nore
+```rust
 struct Image {
     pixels: [u8],        // ok: structs allow indirection
     width: i64,
@@ -392,7 +392,7 @@ Slices are allowed in structs, as tagged union payloads, and as standalone varia
 
 **Slice parameters** must use `ref` or `mut ref`:
 
-```nore
+```rust
 func sum(ref data: [i64]): i64 = {
     mut total: i64 = 0
     for i in 0..data.len { total = total + data[i] }
@@ -402,7 +402,7 @@ func sum(ref data: [i64]): i64 = {
 
 **Call-site coercion** (array to slice): fixed-size arrays coerce to slices at `ref`/`mut ref` call sites:
 
-```nore
+```rust
 val a: [i64; 3] = [1, 2, 3]
 val b: [i64; 5] = [10, 20, 30, 40, 50]
 assert sum(ref a) == 6       // [i64; 3] coerces to [i64]
@@ -411,7 +411,7 @@ assert sum(ref b) == 150     // [i64; 5] coerces to [i64]
 
 **Mutable slices:**
 
-```nore
+```rust
 func double_all(mut ref data: [i64]): void = {
     for i in 0..data.len { data[i] = data[i] * 2 }
 }
@@ -422,7 +422,7 @@ assert arr[0] == 2
 
 **Slice passthrough:** a slice parameter can be passed directly to another function expecting a slice:
 
-```nore
+```rust
 func first(ref data: [i64]): i64 = { return data[0] }
 func get_first(ref data: [i64]): i64 = { return first(ref data) }
 ```
@@ -436,7 +436,7 @@ func get_first(ref data: [i64]): i64 = { return first(ref data) }
 
 **Slice locals** must be initialized via `arena_alloc()`, a function call returning a slice, or a sub-slice expression (S046). Copying a slice variable to another is an error:
 
-```nore
+```rust
 mut mem: Arena = arena(4096)
 val data: [i64] = arena_alloc(mut ref mem, 10)    // from arena
 val result: [i64] = get_data(mut ref mem, 5)       // from function call
@@ -448,7 +448,7 @@ val bad: [i64] = data                              // ERROR S046
 
 `str` is a byte slice (`[u8]`). String literals create fat pointers to static memory at zero cost.
 
-```nore
+```rust
 val greeting: str = "hello"    // points to static memory, no arena needed
 val h: u8 = greeting[0]       // 104 (ASCII 'h')
 assert greeting.len == 5
@@ -463,7 +463,7 @@ assert greeting.len == 5
 
 References exist **only as function parameters**. They cannot be stored: not in variables, not in values, not in structs.
 
-```nore
+```rust
 // Allowed: reference as function parameter
 func normalize(mut ref v: Vec2): void = {
     val len: f64 = sqrt(v.x * v.x + v.y * v.y)
@@ -507,7 +507,7 @@ No other cases exist. No nested ownership. No lifetime chains.
 
 **Arena basics:**
 
-```nore
+```rust
 // Create with explicit capacity
 mut scratch: Arena = arena(4096)
 
@@ -522,7 +522,7 @@ arena_reset(mut ref scratch)
 
 **Passing arenas to functions:**
 
-```nore
+```rust
 func build_greeting(mut ref a: Arena): str = {
     mut buf: [u8] = arena_alloc(mut ref a, 11)
     // fill buf...
@@ -538,7 +538,7 @@ func main(): void = {
 
 **Global arenas** have program lifetime:
 
-```nore
+```rust
 mut level_mem: Arena = arena(1024 * 1024)
 
 func load_level(): void = {
@@ -557,7 +557,7 @@ func load_level(): void = {
 
 ### Functions
 
-```nore
+```rust
 func name(param1: type1, param2: type2): returnType = {
     body
 }
@@ -569,7 +569,7 @@ func name(param1: type1, param2: type2): returnType = {
 - Mutual recursion is supported
 - The last expression in a block (without trailing statement) becomes the block's value, enabling implicit return:
 
-```nore
+```rust
 func min(a: i64, b: i64): i64 = {
     if (a < b) { a } else { b }
 }
@@ -577,7 +577,7 @@ func min(a: i64, b: i64): i64 = {
 
 ### Imports and Qualified Access
 
-```nore
+```rust
 import math "std/math.nore"
 import file "std/file.nore"
 ```
@@ -587,7 +587,7 @@ import file "std/file.nore"
 - Each file is imported at most once
 - Imported declarations are accessed through the alias:
 
-```nore
+```rust
 val x: i64 = math.min_i64(3, 7)                           // function
 val r: file.ReadResult = file.read_file(mut ref mem, ref p) // type + function
 val fd: i32 = fd_open(ref path, file.O_RDONLY)              // constant
@@ -598,7 +598,7 @@ No transitive visibility: if A imports B and B imports C, A cannot access C's de
 
 ### Visibility (`pub`)
 
-```nore
+```rust
 pub func add(a: i64, b: i64): i64 = { a + b }
 pub val MAX_SIZE: i64 = 1024
 pub value Point { x: i64, y: i64 }
@@ -613,7 +613,7 @@ pub enum Color { Red, Green, Blue }
 
 The `native` keyword declares a function whose implementation is provided by the compiler. Each module must declare the native functions it uses:
 
-```nore
+```rust
 native func fd_write(fd: i32, ref data: [u8]): i64
 native func exit(code: i32): void
 ```
@@ -647,7 +647,7 @@ Internal compile-time types: `comptime_int` (integer literal, coerces to any int
 
 ### Literals
 
-```nore
+```rust
 42              // comptime_int
 -17             // negative integer
 3.14            // comptime_float
@@ -668,7 +668,7 @@ String escape sequences: `\n`, `\t`, `\r`, `\\`, `\"`, `\0`. Character escape se
 
 **In expressions**, coercion follows the same rules:
 
-```nore
+```rust
 val x: i64 = 10
 val y: i64 = x + 5     // OK: comptime_int 5 coerces to i64
 val z: f64 = x + 5     // ERROR: result is i64, cannot assign to f64
@@ -677,7 +677,7 @@ val w: f64 = x + 5.0   // ERROR: cannot mix i64 and f64
 
 **Casting** (explicit, function-call syntax):
 
-```nore
+```rust
 val x: i64 = 42
 val y: u8 = u8(x)          // narrowing: runtime bounds check (R003)
 val z: f64 = f64(x)        // widening: always safe
@@ -699,7 +699,7 @@ Supported casts: `u8()`, `i32()`, `u32()`, `i64()`, `f64()`.
 
 **Immutable** (`val`):
 
-```nore
+```rust
 val x: i64 = 42         // explicit type, concrete i64
 val y = 42              // no type: comptime constant
 val z = y + 1           // comptime: folded to 43
@@ -707,7 +707,7 @@ val z = y + 1           // comptime: folded to 43
 
 **Comptime constants** (untyped `val`): when you omit the type annotation, the variable stays comptime, meaning it behaves like a named literal. The compiler inlines its value at every use site, and the concrete type is decided at the point of consumption, not at the point of definition:
 
-```nore
+```rust
 val width = 800
 val height = 600
 val area = width * height    // folded to 480000 at compile time
@@ -722,7 +722,7 @@ val e: u8 = width            // ERROR: 800 out of range for u8
 
 Compare with a typed declaration, where the concrete type is locked at definition:
 
-```nore
+```rust
 val width: i64 = 800         // concrete i64, not comptime
 val ratio: f64 = width       // ERROR: i64 cannot coerce to f64
 val small: i32 = width       // ERROR: i64 cannot coerce to i32
@@ -732,7 +732,7 @@ In short: untyped `val` gives you a type-safe named constant that stays flexible
 
 **Mutable** (`mut`):
 
-```nore
+```rust
 mut counter: i64 = 0    // explicit type required
 counter = counter + 1    // reassignable
 ```
@@ -741,7 +741,7 @@ Mutable variables must have an explicit type annotation. They can be reassigned 
 
 **Global variables** are declared at the top level and have program lifetime:
 
-```nore
+```rust
 val PI = 3.14159              // comptime constant (inlined)
 val MAX_SIZE: i64 = 1024      // typed constant
 val GREETING: str = "hello"   // string constant
@@ -763,7 +763,7 @@ mut mem: Arena = arena(4096)  // global arena (auto-init in main, auto-free at e
 
 Expressions involving only literals or comptime variables are evaluated at compile time:
 
-```nore
+```rust
 val x: i64 = 3 + 5 * 2      // folded to 13
 val y: bool = 10 > 5         // folded to true
 val w: i64 = 5 / 0           // ERROR: division by zero at compile time
@@ -771,7 +771,7 @@ val w: i64 = 5 / 0           // ERROR: division by zero at compile time
 
 Comptime if/else expressions with enum conditions are also folded:
 
-```nore
+```rust
 val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
 ```
 
@@ -787,7 +787,7 @@ val O_CREAT: i32 = if (TARGET_OS == OS.MacOS) { 512 } else { 64 }
 
 **Assignment** (mutable targets only): `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
-```nore
+```rust
 counter += 1
 mask &= 15
 p.life[i] -= 1
@@ -816,7 +816,7 @@ Bitwise operators bind tighter than comparisons: `a & mask == 0` means `(a & mas
 
 **If/else** (statement and expression):
 
-```nore
+```rust
 if (condition) {
     // then
 } else {
@@ -852,7 +852,7 @@ func abs(x: i64): i64 = {
 
 **While loops:**
 
-```nore
+```rust
 while (condition) {
     // body
 }
@@ -862,7 +862,7 @@ while (condition) {
 
 **For loops** (range-based):
 
-```nore
+```rust
 for i in 0..n {
     // i goes from 0 to n-1
 }
@@ -877,7 +877,7 @@ for i in 0..n {
 
 **Expression blocks:**
 
-```nore
+```rust
 val y: i64 = {
     val a: i64 = 10
     val b: i64 = 20
@@ -1022,7 +1022,7 @@ The rule: **slices cannot outlive their arena.** Since arenas can only be locals
 
 **Local arenas:** slices are bound to the enclosing scope.
 
-```nore
+```rust
 func process(): void = {
     mut scratch: Arena = arena(4096)
     mut s: [u8] = arena_alloc(mut ref scratch, 32)
@@ -1032,7 +1032,7 @@ func process(): void = {
 
 **Returning slices from local arenas is a compile error:**
 
-```nore
+```rust
 func bad(): [u8] = {
     mut tmp: Arena = arena(256)
     mut data: [u8] = arena_alloc(mut ref tmp, 10)
@@ -1042,7 +1042,7 @@ func bad(): [u8] = {
 
 **Slices from ref-param arenas are safe to return** (the arena lives in the caller's scope):
 
-```nore
+```rust
 func get_data(mut ref mem: Arena, n: i64): [i64] = {
     mut data: [i64] = arena_alloc(mut ref mem, n)
     return data   // OK: mem is ref param, outlives callee
@@ -1051,7 +1051,7 @@ func get_data(mut ref mem: Arena, n: i64): [i64] = {
 
 **Arena reset invalidation:** after `arena_reset()`, all slices from that arena are invalid:
 
-```nore
+```rust
 mut a: Arena = arena(1024)
 mut s: [u8] = arena_alloc(mut ref a, 32)
 arena_reset(mut ref a)
@@ -1062,7 +1062,7 @@ arena_reset(mut ref a)
 
 The compiler tracks whether functions return slices that originate from arena parameters. This catches indirect escape through function calls:
 
-```nore
+```rust
 func build(mut ref mem: Arena): Mesh = {
     mut verts: [f64] = arena_alloc(mut ref mem, 100)
     return Mesh { vertices: verts }   // marks build as returning arena slices

@@ -11,7 +11,7 @@ The trusted stage-0 compiler seed is a self-contained, single-file C program at 
 
 ## A Quick Look
 
-```nore
+```rust
 value Vec2 { x: f64, y: f64 }
 
 // One declaration → columnar storage (struct-of-arrays)
