@@ -741,7 +741,9 @@ The frontend is the hard part. The driver is plumbing.
 Started with the committed `bootstrap/` seed path, `tests/compiler/` suite rename,
 and `make norec` rebuild entrypoint. The language-suite `make test*` targets now
 default to `bootstrap/bootstrap.sh`, while explicit `*-stage0` targets keep the
-trusted C seed available as a fallback path.
+trusted C seed available as a fallback path. `make` now rebuilds `./norec` by
+default, and `make test-compiler` now follows the same self-hosted default with
+an explicit `test-compiler-stage0` fallback target.
 
 ### Gaps to close before starting
 

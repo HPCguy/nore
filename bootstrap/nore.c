@@ -10156,6 +10156,15 @@ static bool codegen_is_ref(const char *name_start, size_t name_length) {
     return v && v->is_ref;
 }
 
+/* Keep signed-min literals warning-free by avoiding an oversized token. */
+static void codegen_emit_i64_literal(FILE *out, long value) {
+    if (value == LONG_MIN) {
+        fprintf(out, "((-9223372036854775807L) - 1L)");
+    } else {
+        fprintf(out, "%ldL", value);
+    }
+}
+
 /* Emit a ref-aware identifier: (*ni_X) for ref params, ni_X otherwise */
 static void codegen_emit_identifier(FILE *out, const char *name_start, size_t name_length) {
     /* Inline comptime values (they have no C variable) */
@@ -10163,7 +10172,7 @@ static void codegen_emit_identifier(FILE *out, const char *name_start, size_t na
         Variable *v = scope_lookup(g_codegen_scope, name_start, name_length);
         if (v && v->is_comptime) {
             if (v->type == TYPE_COMPTIME_INT || type_is_enum(v->type)) {
-                fprintf(out, "%ldL", v->comptime_value.int_value);
+                codegen_emit_i64_literal(out, v->comptime_value.int_value);
             } else {
                 fprintf(out, "%g", v->comptime_value.float_value);
             }
@@ -10373,7 +10382,7 @@ static void codegen_emit_byte_buf(FILE *out, Ast *arg) {
 static void codegen_emit_expression(FILE *out, Ast *node) {
     switch (node->kind) {
         case AST_NUMBER:
-            fprintf(out, "%ldL", node->as.number.value);
+            codegen_emit_i64_literal(out, node->as.number.value);
             break;
 
         case AST_FLOAT:
@@ -10389,8 +10398,9 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             if (ev_et && ev_et->has_data) {
                 /* Tagged union: compound literal */
                 long idx = node->as.enum_variant.value;
-                fprintf(out, "(%s){.tag = %ldL",
-                        codegen_type_to_c(node->as.enum_variant.enum_type), idx);
+                fprintf(out, "(%s){.tag = ",
+                        codegen_type_to_c(node->as.enum_variant.enum_type));
+                codegen_emit_i64_literal(out, idx);
                 if (node->as.enum_variant.payload) {
                     fprintf(out, ", .data = {.%.*s = ",
                             (int)ev_et->variants[idx].name_length,
@@ -10401,7 +10411,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                 fprintf(out, "}");
             } else {
                 /* Plain enum: integer literal */
-                fprintf(out, "%ldL", node->as.enum_variant.value);
+                codegen_emit_i64_literal(out, node->as.enum_variant.value);
             }
             break;
         }
@@ -11201,7 +11211,9 @@ static void codegen_emit_match_enum_switch(FILE *out, Ast *node, int assign_temp
             if (pattern->kind == MATCH_PATTERN_ELSE) {
                 fprintf(out, "default:\n");
             } else if (pattern->kind == MATCH_PATTERN_ENUM_VARIANT) {
-                fprintf(out, "case %ldL:\n", pattern->case_value);
+                fprintf(out, "case ");
+                codegen_emit_i64_literal(out, pattern->case_value);
+                fprintf(out, ":\n");
             }
         }
         codegen_indent(out, indent + 1);
@@ -11264,7 +11276,9 @@ static void codegen_emit_match_scalar_switch(FILE *out, Ast *node,
                 pattern->kind == MATCH_PATTERN_ELSE) {
                 fprintf(out, "default:\n");
             } else if (pattern->kind == MATCH_PATTERN_LITERAL) {
-                fprintf(out, "case %ldL:\n", pattern->case_value);
+                fprintf(out, "case ");
+                codegen_emit_i64_literal(out, pattern->case_value);
+                fprintf(out, ":\n");
             }
         }
         codegen_indent(out, indent + 1);

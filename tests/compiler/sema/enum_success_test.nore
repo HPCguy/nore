@@ -43,12 +43,11 @@ func find_field_access(
     if (node_id < 0) {
         return -1
     }
-    if (nodes.kind[node_id] == node.NodeKind.FieldAccess &&
-        string.str_eq(
-            ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]),
-            ref field_name
-        )) {
-        return node_id
+    if (nodes.kind[node_id] == node.NodeKind.FieldAccess) {
+        val field_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        if (string.str_eq(ref field_text, ref field_name)) {
+            return node_id
+        }
     }
 
     mut child_id: i64 = nodes.first_child[node_id]
@@ -77,13 +76,11 @@ func find_variant_call(
 
     if (nodes.kind[node_id] == node.NodeKind.CallExpr) {
         val callee_id: i64 = nodes.first_child[node_id]
-        if (callee_id >= 0 &&
-            nodes.kind[callee_id] == node.NodeKind.FieldAccess &&
-            string.str_eq(
-                ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id]),
-                ref variant_name
-            )) {
-            return node_id
+        if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.FieldAccess) {
+            val variant_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id])
+            if (string.str_eq(ref variant_text, ref variant_name)) {
+                return node_id
+            }
         }
     }
 

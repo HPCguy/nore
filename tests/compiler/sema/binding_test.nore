@@ -37,12 +37,11 @@ func find_field_access(
     if (node_id < 0) {
         return -1
     }
-    if (nodes.kind[node_id] == node.NodeKind.FieldAccess &&
-        string.str_eq(
-            ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id]),
-            ref field_name
-        )) {
-        return node_id
+    if (nodes.kind[node_id] == node.NodeKind.FieldAccess) {
+        val name_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        if (string.str_eq(ref name_text, ref field_name)) {
+            return node_id
+        }
     }
 
     mut child_id: i64 = nodes.first_child[node_id]
@@ -147,10 +146,14 @@ func main(): void = {
     assert symbols_table.kind[support_alias_symbol] == symbols.SymbolKind.ModuleAliasSymbol
     assert symbols_table.kind[support_func_symbol] == symbols.SymbolKind.FunctionSymbol
 
-    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, left_alias_symbol), ref "left")
-    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, left_func_symbol), ref "left_value")
-    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, support_alias_symbol), ref "support")
-    assert string.str_eq(ref symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, support_func_symbol), ref "support_value")
+    val left_alias_name: [u8] = symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, left_alias_symbol)
+    val left_func_name: [u8] = symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, left_func_symbol)
+    val support_alias_name: [u8] = symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, support_alias_symbol)
+    val support_func_name: [u8] = symbol_name(ref symbols_table, ref sources, ref text_pool, ref tokens, support_func_symbol)
+    assert string.str_eq(ref left_alias_name, ref "left")
+    assert string.str_eq(ref left_func_name, ref "left_value")
+    assert string.str_eq(ref support_alias_name, ref "support")
+    assert string.str_eq(ref support_func_name, ref "support_value")
 
     assert symbols.symbol_is_public(ref symbols_table, left_func_symbol)
     assert symbols.symbol_is_public(ref symbols_table, support_func_symbol)

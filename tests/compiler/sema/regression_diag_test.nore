@@ -19,7 +19,8 @@ func has_diag_code(
 ): bool = {
     mut diag_id: i64 = 0
     while (diag_id < table_len(ref diags)) {
-        if (string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, diag_id), ref wanted)) {
+        val code: [u8] = diag.diag_code(ref diag_pool, ref diags, diag_id)
+        if (string.str_eq(ref code, ref wanted)) {
             return true
         }
         diag_id += 1
@@ -36,7 +37,8 @@ func count_diag_code(
     mut count: i64 = 0
     mut diag_id: i64 = 0
     while (diag_id < table_len(ref diags)) {
-        if (string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, diag_id), ref wanted)) {
+        val code: [u8] = diag.diag_code(ref diag_pool, ref diags, diag_id)
+        if (string.str_eq(ref code, ref wanted)) {
             count += 1
         }
         diag_id += 1

@@ -32,7 +32,8 @@ func main(): void = {
     val normalized3: str = path.path_normalize(mut ref mem, ref "../compiler/../std/string.nore")
     assert string.str_eq(ref normalized3, ref "../std/string.nore")
 
-    assert string.str_eq(ref path.path_extension(ref "compiler/main.nore"), ref ".nore")
+    val main_ext: str = path.path_extension(ref "compiler/main.nore")
+    assert string.str_eq(ref main_ext, ref ".nore")
     assert path.path_has_extension(ref "compiler/main.nore", ref ".nore")
     assert !path.path_has_extension(ref "compiler/main", ref ".nore")
 

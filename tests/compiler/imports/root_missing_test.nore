@@ -41,9 +41,11 @@ func main(): void = {
     assert loaded.modules.count == 0
     assert loaded.imports.count == 0
     assert loaded.diags.count == 1
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 0), ref "D005")
+    val code: [u8] = diag.diag_code(ref diag_pool, ref diags, 0)
+    assert string.str_eq(ref code, ref "D005")
+    val display_path: [u8] = diag.diag_display_path(ref diag_pool, ref diags, 0)
     assert string.str_eq(
-        ref diag.diag_display_path(ref diag_pool, ref diags, 0),
+        ref display_path,
         ref "tests/compiler/imports/repo/app/nope.nore"
     )
 

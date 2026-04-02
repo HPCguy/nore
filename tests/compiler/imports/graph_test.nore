@@ -79,37 +79,45 @@ func main(): void = {
     assert right_import >= 0
     assert std_import >= 0
 
+    val left_alias: [u8] = loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, left_import)
+    val right_alias: [u8] = loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, right_import)
+    val std_alias: [u8] = loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, std_import)
+    val std_import_path: [u8] = loader.module_import_path_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, std_import)
     assert string.str_eq(
-        ref loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, left_import),
+        ref left_alias,
         ref "left"
     )
     assert string.str_eq(
-        ref loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, right_import),
+        ref right_alias,
         ref "right"
     )
     assert string.str_eq(
-        ref loader.module_import_alias_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, std_import),
+        ref std_alias,
         ref "support"
     )
     assert string.str_eq(
-        ref loader.module_import_path_text(ref nodes, ref tokens, ref sources, ref text_pool, ref imports, std_import),
+        ref std_import_path,
         ref "std/support.nore"
     )
 
     val left_module: i64 = imports.to_module[left_import]
     val right_module: i64 = imports.to_module[right_import]
     val std_module: i64 = imports.to_module[std_import]
-    assert string.str_eq(ref module_path(ref modules, ref sources, ref path_pool, left_module), ref "tests/compiler/imports/repo/app/left.nore")
-    assert string.str_eq(ref module_path(ref modules, ref sources, ref path_pool, right_module), ref "tests/compiler/imports/repo/app/right.nore")
-    assert string.str_eq(ref module_path(ref modules, ref sources, ref path_pool, std_module), ref "tests/compiler/imports/repo/std/support.nore")
+    val left_module_path: [u8] = module_path(ref modules, ref sources, ref path_pool, left_module)
+    val right_module_path: [u8] = module_path(ref modules, ref sources, ref path_pool, right_module)
+    val std_module_path: [u8] = module_path(ref modules, ref sources, ref path_pool, std_module)
+    assert string.str_eq(ref left_module_path, ref "tests/compiler/imports/repo/app/left.nore")
+    assert string.str_eq(ref right_module_path, ref "tests/compiler/imports/repo/app/right.nore")
+    assert string.str_eq(ref std_module_path, ref "tests/compiler/imports/repo/std/support.nore")
 
     val left_shared_import: i64 = module_import_at(ref modules, ref imports, left_module, 0)
     val right_shared_import: i64 = module_import_at(ref modules, ref imports, right_module, 0)
     assert left_shared_import >= 0
     assert right_shared_import >= 0
     assert imports.to_module[left_shared_import] == imports.to_module[right_shared_import]
+    val shared_module_path: [u8] = module_path(ref modules, ref sources, ref path_pool, imports.to_module[left_shared_import])
     assert string.str_eq(
-        ref module_path(ref modules, ref sources, ref path_pool, imports.to_module[left_shared_import]),
+        ref shared_module_path,
         ref "tests/compiler/imports/repo/app/shared.nore"
     )
 

@@ -3,15 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-STAGE0="$ROOT_DIR/nore"
+source "$SCRIPT_DIR/setup_stage0.sh"
+
 STAGE1_DIR="$ROOT_DIR/tmp/bootstrap/stage1"
 STAGE2_DIR="$ROOT_DIR/tmp/bootstrap/stage2"
 GENERATED_DIR="$ROOT_DIR/tmp/bootstrap/generated-c"
 STAGE1="$STAGE1_DIR/bootstrap-compiler"
 STAGE2="$STAGE2_DIR/nore2"
 STAGE3="$STAGE2_DIR/nore3"
-CC_BIN="${CC:-clang}"
-CLANG_FLAGS=(-std=c99 -O2 -fwrapv)
 
 mkdir -p "$STAGE1_DIR" "$STAGE2_DIR" "$GENERATED_DIR"
 

@@ -41,7 +41,8 @@ func main(): void = {
     assert loaded.modules.count == 1
     assert loaded.imports.count == 0
     assert loaded.diags.count == 1
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 0), ref "D007")
+    val code: [u8] = diag.diag_code(ref diag_pool, ref diags, 0)
+    assert string.str_eq(ref code, ref "D007")
 
     val rendered: [u8] = diag.diag_format(
         mut ref mem,

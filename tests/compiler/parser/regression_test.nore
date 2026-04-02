@@ -139,13 +139,17 @@ func main(): void = {
 
     val assign_id: i64 = child_at(ref nodes, compound_body_id, 1)
     assert nodes.kind[assign_id] == node.NodeKind.CompoundAssignStmt
-    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, assign_id), ref "counter += n + 1")
-    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[assign_id]), ref "+=")
+    val assign_span: [u8] = node_span_text(ref sources, ref text_pool, ref nodes, assign_id)
+    val assign_op: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[assign_id])
+    assert string.str_eq(ref assign_span, ref "counter += n + 1")
+    assert string.str_eq(ref assign_op, ref "+=")
 
     val rhs_id: i64 = child_at(ref nodes, assign_id, 1)
     assert nodes.kind[rhs_id] == node.NodeKind.BinaryExpr
-    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, rhs_id), ref "n + 1")
-    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[rhs_id]), ref "+")
+    val rhs_span: [u8] = node_span_text(ref sources, ref text_pool, ref nodes, rhs_id)
+    val rhs_op: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[rhs_id])
+    assert string.str_eq(ref rhs_span, ref "n + 1")
+    assert string.str_eq(ref rhs_op, ref "+")
 
     val if_id: i64 = child_at(ref nodes, compound_body_id, 2)
     assert nodes.kind[if_id] == node.NodeKind.IfStmt
@@ -164,8 +168,10 @@ func main(): void = {
     assert nodes.kind[match_id] == node.NodeKind.MatchExpr
     val arm0_id: i64 = child_at(ref nodes, match_id, 1)
     val arm1_id: i64 = child_at(ref nodes, match_id, 2)
-    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, arm0_id), ref "0 = { { 10 } }")
-    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, arm1_id), ref "else = { { 20 } }")
+    val arm0_span: [u8] = node_span_text(ref sources, ref text_pool, ref nodes, arm0_id)
+    val arm1_span: [u8] = node_span_text(ref sources, ref text_pool, ref nodes, arm1_id)
+    assert string.str_eq(ref arm0_span, ref "0 = { { 10 } }")
+    assert string.str_eq(ref arm1_span, ref "else = { { 20 } }")
 
     val arm0_body_id: i64 = child_at(ref nodes, arm0_id, 1)
     val arm1_body_id: i64 = child_at(ref nodes, arm1_id, 1)
@@ -173,7 +179,8 @@ func main(): void = {
     assert flag_has(nodes.data1[arm0_body_id], BLOCK_VALUE_FLAG)
     assert flag_has(nodes.data1[arm1_body_id], BLOCK_VALUE_FLAG)
     assert nodes.kind[arm1_pattern_id] == node.NodeKind.Identifier
-    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[arm1_pattern_id]), ref "else")
+    val arm1_pattern_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[arm1_pattern_id])
+    assert string.str_eq(ref arm1_pattern_text, ref "else")
 
     val grouped_func_id: i64 = find_func(ref sources, ref text_pool, ref tokens, ref nodes, ref "grouped_else_match")
     assert grouped_func_id >= 0
@@ -184,10 +191,12 @@ func main(): void = {
     val grouped_left_id: i64 = child_at(ref nodes, grouped_pattern_id, 0)
     val grouped_right_id: i64 = child_at(ref nodes, grouped_pattern_id, 1)
     assert nodes.kind[grouped_pattern_id] == node.NodeKind.BinaryExpr
-    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[grouped_pattern_id]), ref "|")
+    val grouped_op: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[grouped_pattern_id])
+    assert string.str_eq(ref grouped_op, ref "|")
     assert nodes.kind[grouped_left_id] == node.NodeKind.NumberLit
     assert nodes.kind[grouped_right_id] == node.NodeKind.Identifier
-    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[grouped_right_id]), ref "else")
+    val grouped_right_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[grouped_right_id])
+    assert string.str_eq(ref grouped_right_text, ref "else")
 
     val lower_func_id: i64 = find_func(ref sources, ref text_pool, ref tokens, ref nodes, ref "lower_constructor")
     assert lower_func_id >= 0
@@ -197,7 +206,9 @@ func main(): void = {
     val lower_callee_id: i64 = child_at(ref nodes, lower_init_id, 0)
     assert nodes.kind[lower_decl_id] == node.NodeKind.VarDecl
     assert nodes.kind[lower_init_id] == node.NodeKind.ConstructorExpr
-    assert string.str_eq(ref node_span_text(ref sources, ref text_pool, ref nodes, lower_init_id), ref "foo { x: 1 }")
+    val lower_init_span: [u8] = node_span_text(ref sources, ref text_pool, ref nodes, lower_init_id)
+    assert string.str_eq(ref lower_init_span, ref "foo { x: 1 }")
     assert nodes.kind[lower_callee_id] == node.NodeKind.Identifier
-    assert string.str_eq(ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[lower_callee_id]), ref "foo")
+    val lower_callee_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[lower_callee_id])
+    assert string.str_eq(ref lower_callee_text, ref "foo")
 }

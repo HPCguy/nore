@@ -76,7 +76,8 @@ func expect_main_diag(ref root_path: str, ref wanted_code: [u8], ref wanted_mess
         ref loaded.modules
     )
     assert root_diags.count >= 1
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, root_diags.start), ref wanted_code)
+    val code: [u8] = diag.diag_code(ref diag_pool, ref diags, root_diags.start)
+    assert string.str_eq(ref code, ref wanted_code)
 
     val rendered: [u8] = diag.diag_format(
         mut ref mem,

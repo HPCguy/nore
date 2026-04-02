@@ -26,13 +26,11 @@ func find_call_by_name(
 
     if (nodes.kind[node_id] == node.NodeKind.CallExpr) {
         val callee_id: i64 = nodes.first_child[node_id]
-        if (callee_id >= 0 &&
-            nodes.kind[callee_id] == node.NodeKind.Identifier &&
-            string.str_eq(
-                ref token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id]),
-                ref wanted
-            )) {
-            return node_id
+        if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier) {
+            val callee_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id])
+            if (string.str_eq(ref callee_name, ref wanted)) {
+                return node_id
+            }
         }
     }
 

@@ -120,12 +120,18 @@ func main(): void = {
     )
 
     assert table_len(ref diags) == 6
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 0), ref "L001")
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 1), ref "L002")
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 2), ref "L003")
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 3), ref "L004")
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 4), ref "L005")
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 5), ref "L006")
+    val code0: [u8] = diag.diag_code(ref diag_pool, ref diags, 0)
+    val code1: [u8] = diag.diag_code(ref diag_pool, ref diags, 1)
+    val code2: [u8] = diag.diag_code(ref diag_pool, ref diags, 2)
+    val code3: [u8] = diag.diag_code(ref diag_pool, ref diags, 3)
+    val code4: [u8] = diag.diag_code(ref diag_pool, ref diags, 4)
+    val code5: [u8] = diag.diag_code(ref diag_pool, ref diags, 5)
+    assert string.str_eq(ref code0, ref "L001")
+    assert string.str_eq(ref code1, ref "L002")
+    assert string.str_eq(ref code2, ref "L003")
+    assert string.str_eq(ref code3, ref "L004")
+    assert string.str_eq(ref code4, ref "L005")
+    assert string.str_eq(ref code5, ref "L006")
 
     val rendered: [u8] = diag.diag_format(
         mut ref mem,
@@ -169,9 +175,11 @@ func main(): void = {
     assert payload_result.tokens.count == 2
     assert payload_result.diags.count == 1
     assert payload_tokens.kind[payload_result.tokens.start] == token.TokenKind.Char
-    assert string.str_eq(ref diag.diag_code(ref payload_diag_pool, ref payload_diags, 0), ref "L006")
+    val payload_code: [u8] = diag.diag_code(ref payload_diag_pool, ref payload_diags, 0)
+    assert string.str_eq(ref payload_code, ref "L006")
+    val payload_text: [u8] = token.token_payload_text(ref sources, ref text_pool, ref payload_tokens, payload_result.tokens.start)
     assert string.str_eq(
-        ref token.token_payload_text(ref sources, ref text_pool, ref payload_tokens, payload_result.tokens.start),
+        ref payload_text,
         ref "ab"
     )
 }

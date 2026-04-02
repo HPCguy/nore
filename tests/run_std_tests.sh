@@ -5,17 +5,7 @@
 PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEFAULT_NORE_BIN="${SCRIPT_DIR}/../bootstrap/bootstrap.sh"
-if [ ! -x "$DEFAULT_NORE_BIN" ]; then
-    DEFAULT_NORE_BIN="${SCRIPT_DIR}/../nore"
-fi
-NORE_BIN="${NORE_BIN:-$DEFAULT_NORE_BIN}"
-
-if [ ! -x "$NORE_BIN" ]; then
-    echo "Error: compiler entrypoint not found at $NORE_BIN"
-    echo "Run 'make' first to build the compiler"
-    exit 1
-fi
+source "$SCRIPT_DIR/test_setup.sh"
 
 for f in "$SCRIPT_DIR"/std/*.nore; do
     output=$("$NORE_BIN" --run "$f" 2>&1)

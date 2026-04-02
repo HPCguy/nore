@@ -5,15 +5,13 @@
 PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-NORE_BIN="${NORE_BIN:-${SCRIPT_DIR}/../nore}"
+source "$SCRIPT_DIR/test_setup.sh"
+COMPILER_TEST_MODE="${COMPILER_TEST_MODE:-selfhost}"
+export NORE_BIN
+export COMPILER_TEST_MODE
 
-if [ ! -x "$NORE_BIN" ]; then
-    echo "Error: compiler entrypoint not found at $NORE_BIN"
-    echo "Run 'make' first to build the compiler"
-    exit 1
-fi
-
-# mode: "nore" runs via the configured compiler entrypoint, "shell" runs the script directly.
+# mode: "nore" runs via the configured compiler entrypoint, "shell" runs the script directly
+# but still inherits NORE_BIN so shell selfhost tests can honor the selected path.
 run_test_dir() {
     test_dir="$1"
     label="$2"

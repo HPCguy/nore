@@ -7,7 +7,7 @@ Nore is a systems programming language that makes data-oriented design the path 
 
 Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
 
-The stage-0 compiler is currently a self-contained, single-file C program whose trusted seed now lives at [`bootstrap/nore.c`](bootstrap/nore.c). It translates Nore source code into native executables via C as an intermediate representation. The self-hosting compiler source tree lives under [`compiler/`](compiler/) and is being grown incrementally from the bootstrap plan.
+The trusted stage-0 compiler seed is a self-contained, single-file C program at [`bootstrap/nore.c`](bootstrap/nore.c). The default compiler path now goes through the self-hosted rebuild flow in [`bootstrap/bootstrap.sh`](bootstrap/bootstrap.sh), which rebuilds [`./norec`](norec) from that seed and uses C as an intermediate representation. The self-hosting compiler source tree lives under [`compiler/`](compiler/) and is being grown incrementally from the bootstrap plan.
 
 ## A Quick Look
 
@@ -108,9 +108,9 @@ The compiler follows a multi-stage pipeline:
 
 ## Project Status
 
-**Current Phase**: Early self-hosting, with Milestone 12 switchover work started around an explicit bootstrap seed and `norec` rebuild path
+**Current Phase**: Milestone 12 parity/switchover, with the default build and language-test paths now going through the self-hosted compiler
 
-The shipping compiler is still the single-file C seed at [`bootstrap/nore.c`](bootstrap/nore.c), containing:
+The trusted bootstrap seed is still the single-file C compiler at [`bootstrap/nore.c`](bootstrap/nore.c), containing:
 - Lexer implementation
 - Parser implementation
 - AST data structures
@@ -121,6 +121,8 @@ Bootstrap status:
 - the committed Nore-written compiler source tree lives in [`compiler/`](compiler/)
 - Milestone 1 is frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md)
 - Milestones 2 through 11 now provide committed support, diagnostics, frontend, sema, codegen, the `compiler/main.nore` bootstrap pipeline, a real stage-0 -> bootstrap-compiler -> Clang smoke path for sample programs, a repeatable self-compile chain, and a thin wrapper for building ordinary programs with the self-hosted compiler
+- `make` now rebuilds the self-hosted compiler artifact at [`./norec`](norec) by default
+- the stage-0 C seed remains available as an explicit fallback via `make stage0` and [`./nore`](nore)
 - the detailed milestone plan lives in [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md)
 
 ## Build Requirements
@@ -132,54 +134,61 @@ Bootstrap status:
 ## Build & Usage
 
 ```bash
-# Build the Nore compiler (optimized)
+# Rebuild the default self-hosted compiler artifact at ./norec
 make
 
-# Build with debug symbols
+# Rebuild ./norec directly
+make norec
+
+# Build the explicit stage-0 fallback compiler at ./nore
+make stage0
+
+# Build the stage-0 fallback with debug symbols
 make debug
 
 # Clean build artifacts
 make clean
 
-# Compile a Nore program (outputs ./program by default)
-./nore program.nore
+# Build a program with the default self-hosted compiler path
+./bootstrap/bootstrap.sh program.nore
 
 # Specify output path explicitly
-./nore program.nore -o build/program
+./bootstrap/bootstrap.sh program.nore -o build/program
 
 # Compile and run immediately (temp binary, auto-cleaned)
-./nore --run program.nore
-
-# Debug flags (inspect compiler stages)
-./nore program.nore --lexer    # Print lexer tokens
-./nore program.nore --parser   # Print AST structure
-./nore program.nore --codegen  # Print generated C code (IR)
-
-# Combine flags
-./nore program.nore --parser --codegen -o program
+./bootstrap/bootstrap.sh --run program.nore
 ```
 
 Bootstrap rebuild path:
 
 ```bash
-# Rebuild the self-hosted compiler artifact at ./norec
-make norec
-
 # Equivalent direct seed rebuild entrypoint
 ./bootstrap/bootstrap.sh
+```
+
+Explicit stage-0 fallback path:
+
+```bash
+# Build a program with the C seed directly
+./nore program.nore
+
+# Compile and run immediately with the C seed
+./nore --run program.nore
+
+# Debug flags currently still live on the stage-0 seed
+./nore program.nore --lexer
+./nore program.nore --parser
+./nore program.nore --codegen
 ```
 
 Bootstrap wrapper path:
 
 ```bash
-# Build a program with the default self-hosted compiler path
-./bootstrap/bootstrap.sh program.nore
-
-# Build to an explicit output path
-./bootstrap/bootstrap.sh program.nore -o build/program
-
 # Build and run immediately, forwarding argv after --
 ./bootstrap/bootstrap.sh --run program.nore -- arg1 arg2
+
+# Equivalent explicit rebuild step before using ./norec as the raw C emitter
+./bootstrap/bootstrap.sh
 ```
 
 `./norec` is currently the raw self-hosted C emitter. The default user-facing
@@ -235,11 +244,13 @@ make test-success  # Run success tests through bootstrap/bootstrap.sh (includes 
 make test-success-stage0 # Run success tests through the C seed fallback
 make test-std      # Run stdlib tests through bootstrap/bootstrap.sh
 make test-std-stage0     # Run stdlib tests through the C seed fallback
+make test-compiler # Run compiler-specific tests through bootstrap/bootstrap.sh
+make test-compiler-stage0 # Run compiler-specific tests through the C seed fallback
 ```
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
-- Compiler-specific selfhost/bootstrap tests live under `tests/compiler/` and run with `make test-compiler`
+- Compiler-specific selfhost/bootstrap tests live under `tests/compiler/`
 - Test runners: `tests/run_error_tests.sh`, `tests/run_success_tests.sh`, `tests/run_std_tests.sh`
 
 ## Development Roadmap

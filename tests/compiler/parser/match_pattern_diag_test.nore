@@ -62,5 +62,6 @@ func main(): void = {
     )
 
     assert parsed.diags.count >= 1
-    assert string.str_eq(ref diag.diag_code(ref diag_pool, ref diags, 0), ref "P052")
+    val code: [u8] = diag.diag_code(ref diag_pool, ref diags, 0)
+    assert string.str_eq(ref code, ref "P052")
 }
