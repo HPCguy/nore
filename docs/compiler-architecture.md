@@ -2,8 +2,6 @@
 
 This document describes the current architecture of the Nore self-hosted compiler in `compiler/`. It defines the main pipeline, module ownership boundaries, and dependency direction used by the current implementation.
 
-Historical bootstrap planning and milestone documents live under [history/](history/README.md).
-
 ## Pipeline Overview
 
 1. Source loading and module discovery
@@ -104,5 +102,3 @@ The implementation favors ids, spans, ranges, and side arrays over recursive own
 
 - [compiler.md](compiler.md)
 - [../compiler/README.md](../compiler/README.md)
-- [history/compiler-bootstrap-architecture.md](history/compiler-bootstrap-architecture.md)
-- [history/self-hosting-bootstrap-plan.md](history/self-hosting-bootstrap-plan.md)

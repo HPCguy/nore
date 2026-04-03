@@ -84,5 +84,3 @@ For deeper module ownership and dependency direction, see [compiler-architecture
 
 - [compiler-architecture.md](compiler-architecture.md)
 - [../compiler/README.md](../compiler/README.md)
-- [history/compiler-bootstrap-architecture.md](history/compiler-bootstrap-architecture.md)
-- [history/self-hosting-bootstrap-plan.md](history/self-hosting-bootstrap-plan.md)

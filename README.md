@@ -163,7 +163,6 @@ make test-compiler-stage0 # Run compiler-specific tests through the C seed fallb
 - [docs/compiler-architecture.md](docs/compiler-architecture.md) for compiler internals and module ownership
 - [docs/error-codes.md](docs/error-codes.md) for diagnostic codes
 - [editors/nvim/README.md](editors/nvim/README.md) for the Neovim runtime package
-- [docs/history/README.md](docs/history/README.md) for archived bootstrap-era records
 
 ## Repository Layout
 
@@ -182,10 +181,6 @@ make test-compiler-stage0 # Run compiler-specific tests through the C seed fallb
 - continued language evolution
 - tooling and editor support
 - packaging and release discipline
-
-## Historical Notes
-
-Earlier self-hosting and bootstrap planning documents are preserved in [docs/history/README.md](docs/history/README.md). They remain useful as project history, but they no longer describe the canonical current structure of the compiler or repository.
 
 ## Contributing
 
