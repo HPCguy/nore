@@ -6,8 +6,8 @@
 *.exe
 *.out
 a.out
-nore
 norec
+norec-stage0
 
 # Libraries
 *.a
