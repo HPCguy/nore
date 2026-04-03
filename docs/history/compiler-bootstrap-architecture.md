@@ -1,5 +1,9 @@
 # Bootstrap Compiler Architecture
 
+> Historical note:
+> This document is preserved as the frozen Milestone 1 architecture note for the bootstrap compiler.
+> It is useful as project history, but the canonical current architecture documentation now lives in [../compiler-architecture.md](../compiler-architecture.md).
+
 This document freezes Milestone 1 from [self-hosting-bootstrap-plan.md](self-hosting-bootstrap-plan.md): the bootstrap subset, the module layout, and the table-oriented data model for the Nore-written compiler.
 
 The purpose of this document is to let support, frontend, semantic-analysis, and codegen work proceed without reopening the same architectural arguments on every module.

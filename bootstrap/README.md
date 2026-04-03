@@ -1,32 +1,26 @@
 # Bootstrap Seed
 
-This directory holds the trusted stage-0 compiler seed and the rebuild-from-seed entrypoint.
+This directory holds the trusted stage-0 compiler seed and the rebuild-from-seed entrypoint for the self-hosted compiler.
 
-Contents:
+## Contents
 
-- `nore.c`: the current C bootstrap compiler source
-- `Makefile`: builds a temporary stage-0 compiler binary
-- `bootstrap.sh`: rebuilds the self-hosted compiler as `./norec`
+- `nore.c`: the trusted C seed
+- `Makefile`: builds the explicit stage-0 fallback compiler
+- `bootstrap.sh`: rebuilds the repo-root `./norec` from the trusted seed
 
-Bootstrap flow:
+## Rebuild Flow
 
 1. Build a temporary stage-0 compiler under `tmp/bootstrap/stage0/`
-2. Use that temporary compiler to build a temporary bootstrap compiler under `tmp/bootstrap/stage1/`
-3. Use the bootstrap compiler to emit `tmp/bootstrap/generated-c/norec.c`
-4. Compile that C file with Clang to the repo-root `./norec`
+2. Use that temporary compiler to build a temporary stage-1 compiler under `tmp/bootstrap/stage1/`
+3. Use the stage-1 compiler to emit `tmp/bootstrap/generated-c/norec.c`
+4. Compile that generated C file with Clang to the repo-root `./norec`
 
-Important:
+## Usage
 
-- `tmp/bootstrap/stage1/bootstrap-compiler` and `./norec` are different build artifacts from different bootstrap stages
-- `bootstrap-compiler` is the stage-1 native binary produced directly by the trusted C seed
-- `./norec` is the later native binary produced from C emitted by that stage-1 compiler
-- matching native binary size is not an expected invariant
-- the current fixed-point check is emitted-C stability (`nore_stage2.c` vs `nore_stage3.c`), not native-binary identity
+```bash
+make stage0
+./nore program.nore
+./bootstrap/bootstrap.sh
+```
 
-Current wrapper mode:
-
-- `make` rebuilds `./norec` as the default compiler artifact
-- `make stage0` rebuilds the explicit C-seed fallback at `./nore`
-- `./bootstrap/bootstrap.sh` rebuilds `./norec`
-- `./norec` is now the normal self-hosted compiler driver
-- `./bootstrap/bootstrap.sh program.nore` still works as a compatibility forward to `./norec`
+`./norec` is the normal compiler path. This directory exists to preserve the trusted seed and the rebuild-from-seed workflow.

@@ -1,17 +1,17 @@
 #!/bin/bash
 # Compiler test runner for the Nore-written compiler.
-# Runs compiler unit tests plus shell-based selfhost/bootstrap tests.
+# Runs compiler unit tests plus shell-based integration and rebuild tests.
 
 PASS=0
 FAIL=0
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/test_setup.sh"
-COMPILER_TEST_MODE="${COMPILER_TEST_MODE:-selfhost}"
+COMPILER_TEST_MODE="${COMPILER_TEST_MODE:-norec}"
 export NORE_BIN
 export COMPILER_TEST_MODE
 
 # mode: "nore" runs via the configured compiler entrypoint, "shell" runs the script directly
-# but still inherits NORE_BIN so shell selfhost tests can honor the selected path.
+# but still inherits NORE_BIN so shell integration tests can honor the selected path.
 run_test_dir() {
     test_dir="$1"
     label="$2"
@@ -57,8 +57,8 @@ for dir in support lexer parser imports sema codegen; do
     run_test_dir "$test_dir" "$dir" "nore"
 done
 
-test_dir="$SCRIPT_DIR/compiler/selfhost"
-[ -d "$test_dir" ] && run_test_dir "$test_dir" "selfhost" "shell"
+test_dir="$SCRIPT_DIR/compiler/integration"
+[ -d "$test_dir" ] && run_test_dir "$test_dir" "integration" "shell"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

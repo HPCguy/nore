@@ -2,29 +2,26 @@
 
 This tree holds compiler-specific coverage for the Nore-written compiler.
 
-Current status:
+Current groups:
 
-- the default compiler path now goes through `./norec`
-- the trusted C seed remains available as the explicit `make stage0` fallback
-- the committed source layout lives under `compiler/`
-- support, lexer, parser, imports, sema, and codegen tests cover the committed bootstrap compiler slices
-- selfhost tests cover smoke compilation, self-compile stability, direct `norec` driver behavior, and the bootstrap rebuild path
-- the trusted C seed and rebuild-from-seed flow now live under `bootstrap/`
-
-Planned subdirectories:
-
-- `support/`
-- `lexer/`
-- `parser/`
-- `imports/`
-- `sema/`
-- `codegen/`
-- `selfhost/`
+- `support/`: low-level compiler support coverage
+- `lexer/`: tokenization and lexer behavior
+- `parser/`: parser behavior and AST or node-table shape
+- `imports/`: module loading and import resolution
+- `sema/`: semantic checks and diagnostics
+- `codegen/`: generated-C regressions and codegen fixtures
+- `integration/`: end-to-end rebuild, self-compile, diagnostics, and driver coverage
 
 Naming convention:
 
 - runnable compiler test entrypoints end with `_test.nore`
 - fixtures, golden inputs, and imported support modules do not use the `_test.nore` suffix
 
-Run these tests with `make test-compiler` or `tests/run_compiler_tests.sh`.
-Use `make test-compiler-stage0` to force the C-seed fallback path.
+Run these tests with:
+
+```bash
+make test-compiler
+make test-compiler-stage0
+```
+
+The default path goes through `./norec`. The `-stage0` variant forces the explicit trusted-seed fallback compiler.

@@ -1,5 +1,9 @@
 # Self-Hosting Bootstrap Plan
 
+> Historical note:
+> This document is preserved as an archived planning record for the bootstrap and self-hosting phase completed by the `selfhost-parity` milestone.
+> For the current compiler documentation, see [../compiler.md](../compiler.md) and [../compiler-architecture.md](../compiler-architecture.md).
+
 ## Goal
 
 Build a new multi-module Nore compiler in Nore, in Nore's own style:
@@ -187,7 +191,7 @@ That is the wrong foundation.
 
 **Status:** Complete
 
-Frozen in `docs/compiler-bootstrap-architecture.md` and the committed `compiler/`
+Frozen in `compiler-bootstrap-architecture.md` and the committed `compiler/`
 tree.
 
 ### Gaps to close before starting

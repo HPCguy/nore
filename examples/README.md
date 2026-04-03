@@ -9,7 +9,7 @@ Example programs that showcase what Nore can do. These are not tests, they are r
 make
 
 # Run an example
-./nore --run examples/cat.nore -- <args>
+./norec --run examples/cat.nore -- <args>
 ```
 
 ## Programs
@@ -20,13 +20,13 @@ A clone of the Unix `cat` utility. Reads files and writes their contents to stdo
 
 ```bash
 # Single file
-./nore --run examples/cat.nore -- file.txt
+./norec --run examples/cat.nore -- file.txt
 
 # Multiple files
-./nore --run examples/cat.nore -- file1.txt file2.txt
+./norec --run examples/cat.nore -- file1.txt file2.txt
 
 # No arguments prints usage
-./nore --run examples/cat.nore
+./norec --run examples/cat.nore
 ```
 
 Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`
@@ -37,13 +37,13 @@ A clone of the Unix `wc` utility. Counts lines, words, and bytes in files.
 
 ```bash
 # Single file
-./nore --run examples/wc.nore -- file.txt
+./norec --run examples/wc.nore -- file.txt
 
 # Multiple files (prints per-file counts and totals)
-./nore --run examples/wc.nore -- file1.txt file2.txt
+./norec --run examples/wc.nore -- file1.txt file2.txt
 
 # No arguments prints usage
-./nore --run examples/wc.nore
+./norec --run examples/wc.nore
 ```
 
 Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`, `std/string.nore`
@@ -54,10 +54,10 @@ A JSON parser and tree printer. Reads a JSON file, parses it into a flat node ta
 
 ```bash
 # Parse and print a JSON file
-./nore --run examples/json.nore -- data.json
+./norec --run examples/json.nore -- data.json
 
 # No arguments prints usage
-./nore --run examples/json.nore
+./norec --run examples/json.nore
 ```
 
 Uses: `std/io.nore`, `std/file.nore`, `std/sys.nore`, `std/json.nore`

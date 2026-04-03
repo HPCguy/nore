@@ -5,9 +5,7 @@
 
 Nore is a systems programming language that makes data-oriented design the path of least resistance. 
 
-Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
-
-The trusted stage-0 compiler seed is a self-contained, single-file C program at [`bootstrap/nore.c`](bootstrap/nore.c). The default compiler is now the self-hosted [`./norec`](norec) binary, rebuilt from that seed by [`bootstrap/bootstrap.sh`](bootstrap/bootstrap.sh). The self-hosting compiler source tree lives under [`compiler/`](compiler/) and is being grown incrementally from the bootstrap plan.
+It gives you direct control over data layout, arena-based memory management, and explicit value vs resource semantics, with compile-time safety guarantees and no runtime overhead.
 
 ## A Quick Look
 
@@ -97,34 +95,12 @@ The mind shift is real: instead of "this object contains its data," you think "d
 
 That said, if your natural model is trees of objects and your dataset is small, Nore will feel like unnecessary ceremony. It's not the right tool for everything, and that's okay.
 
-## Architecture
+## Current State
 
-The compiler follows a multi-stage pipeline:
-
-1. **Frontend**: Lexer tokenizes source, parser builds an AST
-2. **Semantic analysis**: Type checking, escape analysis, arena lifetime validation
-3. **Code generation**: AST translates to C99 code
-4. **Native compilation**: Clang compiles generated C to a native binary
-
-## Project Status
-
-**Current Phase**: Milestone 12 parity/switchover, with `./norec` now acting as the default direct compiler driver
-
-The trusted bootstrap seed is still the single-file C compiler at [`bootstrap/nore.c`](bootstrap/nore.c), containing:
-- Lexer implementation
-- Parser implementation
-- AST data structures
-- C code generator
-- Clang integration layer
-
-Bootstrap status:
-- the committed Nore-written compiler source tree lives in [`compiler/`](compiler/)
-- Milestone 1 is frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md)
-- Milestones 2 through 11 now provide committed support, diagnostics, frontend, sema, codegen, the `compiler/main.nore` bootstrap pipeline, a real stage-0 -> bootstrap-compiler -> Clang smoke path for sample programs, a repeatable self-compile chain, and a thin wrapper for building ordinary programs with the self-hosted compiler
-- `make` now rebuilds the self-hosted compiler artifact at [`./norec`](norec) by default
-- `./norec` now owns the normal compile/run/debug-driver path directly
-- the stage-0 C seed remains available as an explicit fallback via `make stage0` and [`./nore`](nore)
-- the detailed milestone plan lives in [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md)
+- [`compiler/`](compiler/) is the canonical self-hosted compiler source tree
+- [`bootstrap/nore.c`](bootstrap/nore.c) remains the trusted stage-0 seed used to rebuild and verify the compiler
+- the compiler emits C as its backend IR and relies on Clang for native code generation
+- the language, standard library, tooling, and documentation are still evolving
 
 ## Build Requirements
 
@@ -135,117 +111,35 @@ Bootstrap status:
 ## Build & Usage
 
 ```bash
-# Rebuild the default self-hosted compiler artifact at ./norec
 make
-
-# Rebuild ./norec directly
-make norec
-
-# Build the explicit stage-0 fallback compiler at ./nore
-make stage0
-
-# Build the stage-0 fallback with debug symbols
-make debug
-
-# Clean build artifacts
-make clean
-
-# Build a program with the default self-hosted compiler
 ./norec program.nore
-
-# Specify output path explicitly
 ./norec program.nore -o build/program
-
-# Compile and run immediately (temp binary, auto-cleaned)
 ./norec --run program.nore
-
-# Debug dumps from the self-hosted compiler
 ./norec --lexer program.nore
 ./norec --parser program.nore
 ./norec --codegen program.nore
 ```
 
-Bootstrap rebuild path:
+Maintainer and rebuild paths:
 
 ```bash
-# Equivalent direct seed rebuild entrypoint
-./bootstrap/bootstrap.sh
-```
-
-Explicit stage-0 fallback path:
-
-```bash
-# Build a program with the C seed directly
+make stage0
 ./nore program.nore
-
-# Compile and run immediately with the C seed
-./nore --run program.nore
-
-# Debug flags are also still available on the stage-0 seed
-./nore program.nore --lexer
-./nore program.nore --parser
-./nore program.nore --codegen
-```
-
-Bootstrap wrapper path:
-
-```bash
-# Rebuild ./norec from the trusted seed
 ./bootstrap/bootstrap.sh
-
-# Compatibility shim: rebuild if needed, then forward to ./norec
-./bootstrap/bootstrap.sh --run program.nore -- arg1 arg2
-
-# Benchmark stage-0 nore vs self-hosted norec compiling compiler/main.nore
-make bench-compiler
-
-# Increase the sample size for a steadier comparison
-RUNS=5 make bench-compiler
 ```
 
-## Language Guide
-
-See [docs/nore.md](docs/nore.md) for the holistic language guide (philosophy, type model, memory model, syntax, safety). For a terse quick-reference, see [docs/syntax.md](docs/syntax.md).
-
-## Editor Support
-
-Editor integrations live in [`editors/`](editors/) so they can evolve alongside the language syntax.
-
-Current support:
-- [`editors/nvim/`](editors/nvim/) — Neovim runtime package with filetype detection for `*.nore`, syntax highlighting, basic comment settings, and simple brace-based indentation
-
-Quick start with `lazy.nvim`:
-
-```lua
-{
-  dir = "/absolute/path/to/nore/editors/nvim",
-  name = "nore.nvim",
-}
-```
-
-Replace the path with your local checkout. For manual installation and package layout details, see [`editors/nvim/README.md`](editors/nvim/README.md).
-
-## Error Handling
-
-The compiler uses structured error codes (e.g., `S053`, `P014`) with source locations and collects up to 10 errors before stopping. See [docs/error-codes.md](docs/error-codes.md) for the full reference.
-
-## Examples
-
-The [examples/](examples/) directory contains real programs built on the standard library. 
+The [examples/](examples/) directory contains real programs built on the standard library.
 
 ```bash
-# Run the cat clone
 ./norec --run examples/cat.nore -- file1.txt file2.txt
-
-# Parse and print a JSON file as an indented tree
 ./norec --run examples/json.nore -- data.json
 ```
 
 ## Testing
+
 ```bash
 make test          # Run language suites through ./norec
 make test-stage0   # Run the same language suites through the C seed fallback
-make test-parity   # Alias for the self-hosted language-suite path
 make test-errors   # Run error code tests through ./norec
 make test-errors-stage0  # Run error tests through the C seed fallback
 make test-success  # Run success tests through ./norec (includes stdlib)
@@ -258,35 +152,44 @@ make test-compiler-stage0 # Run compiler-specific tests through the C seed fallb
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
-- Compiler-specific selfhost/bootstrap tests live under `tests/compiler/`
-- Test runners: `tests/run_error_tests.sh`, `tests/run_success_tests.sh`, `tests/run_std_tests.sh`
+- Compiler-specific tests live under `tests/compiler/`
+- For compiler build details, rebuild paths, and the benchmark command, see [docs/compiler.md](docs/compiler.md)
 
-## Development Roadmap
+## Documentation
 
-1. **Phase 1**: Lexer and basic tokenization
-2. **Phase 2**: Parser and AST construction
-3. **Phase 3**: C code generation for basic constructs
-4. **Phase 4**: Clang integration and native compilation
-5. **Phase 5**: Language feature expansion
-6. **Phase 6**: Standard library development
-7. **Phase 7**: Self-hosting (writing the Nore compiler in Nore)
+- [docs/nore.md](docs/nore.md) for the language guide
+- [docs/syntax.md](docs/syntax.md) for the syntax quick reference
+- [docs/compiler.md](docs/compiler.md) for the current compiler overview
+- [docs/compiler-architecture.md](docs/compiler-architecture.md) for compiler internals and module ownership
+- [docs/error-codes.md](docs/error-codes.md) for diagnostic codes
+- [editors/nvim/README.md](editors/nvim/README.md) for the Neovim runtime package
+- [docs/history/README.md](docs/history/README.md) for archived bootstrap-era records
 
-The self-hosting work is currently following [`docs/self-hosting-bootstrap-plan.md`](docs/self-hosting-bootstrap-plan.md), with the bootstrap architecture frozen in [`docs/compiler-bootstrap-architecture.md`](docs/compiler-bootstrap-architecture.md).
+## Repository Layout
 
-## Technical Decisions
+- [`compiler/`](compiler/) — canonical self-hosted compiler source tree
+- [`bootstrap/`](bootstrap/) — trusted stage-0 seed and rebuild-from-seed tooling
+- [`std/`](std/) — standard library modules
+- [`tests/`](tests/) — language, stdlib, and compiler-specific coverage
+- [`examples/`](examples/) — example programs built on the standard library
+- [`editors/`](editors/) — editor integrations
 
-### Why a single-file compiler?
-Simplifies building, distribution, and studying the compiler. Can be refactored into modules later if needed.
+## Roadmap
 
-### Why C as intermediate representation?
-Avoids platform-specific backends, inherits Clang's optimization passes, and enables rapid compiler development. Proven approach (used by early C++, Nim, and others).
+- documentation cleanup and consolidation
+- compiler diagnostics, reliability, and performance work
+- standard library expansion
+- continued language evolution
+- tooling and editor support
+- packaging and release discipline
 
-### Why Clang?
-Modern, actively maintained, with strong cross-compilation support and excellent error messages.
+## Historical Notes
+
+Earlier self-hosting and bootstrap planning documents are preserved in [docs/history/README.md](docs/history/README.md). They remain useful as project history, but they no longer describe the canonical current structure of the compiler or repository.
 
 ## Contributing
 
-This project is in early development. Design discussions and architecture feedback are welcome.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and development workflow details.
 
 ## About the Name and the Logo
 

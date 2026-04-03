@@ -2,8 +2,6 @@
 
 Nore is a systems programming language that makes data-oriented design the path of least resistance. Instead of hiding memory layout behind objects, Nore gives you direct control over how data is organized: columnar tables, arena allocation, explicit value vs resource semantics. All with compile-time safety guarantees and zero runtime overhead.
 
-The compiler is a self-contained, single-file C program that translates Nore source code into native executables via C as an intermediate representation.
-
 ```rust
 value Vec2 { x: f64, y: f64 }
 
@@ -1135,16 +1133,10 @@ Clear, predictable code at runtime boundaries. No type inference surprises. Exce
 
 Functions are values (Scala/Kotlin style). Consistent with variable assignment syntax. Enables future function expressions.
 
-### Why C as Intermediate Representation?
-
-C is the universal systems language. Every platform has a C compiler. Using C as IR gives Nore access to mature optimization passes, platform-specific code generation, and easy debugging (the generated C is readable). The tradeoff is compile speed (two compilation steps), which is acceptable for a bootstrapping compiler.
-
----
-
 ## Further Reading
 
 - [syntax.md](syntax.md) for the complete syntax quick-reference
 - [arena-safety.md](arena-safety.md) for compiler-internal escape analysis details
 - [error-codes.md](error-codes.md) for all compiler error codes
 - [stdlib-design.md](stdlib-design.md) for standard library design principles
-- `examples/` directory for real programs (cat clone, word count, JSON parser)
+- [../examples/README.md](../examples/README.md) for example programs

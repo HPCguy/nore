@@ -21,7 +21,7 @@ if [ "$hello_output" != "$expected_hello" ]; then
     exit 1
 fi
 
-if [ "${COMPILER_TEST_MODE:-selfhost}" = "selfhost" ]; then
+if [ "${COMPILER_TEST_MODE:-norec}" = "norec" ]; then
     (
         cd /tmp
         PATH="$ROOT_DIR:$PATH" norec "$ROOT_DIR/tests/success/print_hello.nore" -o "$PATH_HELLO_BIN"

@@ -105,10 +105,10 @@ test-std-stage0: $(TARGET)
 # Backward-compatible alias for the self-hosted default path
 test-std-norec: test-std
 
-# Run compiler-specific bootstrap/selfhost tests through the default self-hosted path
+# Run compiler-specific integration and rebuild tests through the default compiler path
 test-compiler: $(NOREC)
 	@chmod +x tests/run_compiler_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="selfhost" ./tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="norec" ./tests/run_compiler_tests.sh
 
 # Run compiler-specific tests with the explicit stage-0 fallback compiler
 test-compiler-stage0: $(TARGET)
