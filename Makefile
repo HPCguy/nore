@@ -20,24 +20,24 @@ DEBUGFLAGS += -O0      # Disable optimizations for accurate debugging
 
 ROOT_DIR := $(CURDIR)
 BOOTSTRAP_DIR := $(ROOT_DIR)/bootstrap
-TARGET := nore
+STAGE0_BIN := norec-stage0
 NOREC := norec
 BOOTSTRAP_BIN := $(BOOTSTRAP_DIR)/bootstrap.sh
-STAGE0_SOURCE := $(BOOTSTRAP_DIR)/nore.c
+STAGE0_SOURCE := $(BOOTSTRAP_DIR)/norec-stage0.c
 
 # Default target: rebuild the self-hosted compiler from the trusted seed.
 all: $(NOREC)
 
 # Build the stage-0 compiler from the bootstrap seed.
-$(TARGET): $(STAGE0_SOURCE) $(BOOTSTRAP_DIR)/Makefile
-	$(MAKE) -C $(BOOTSTRAP_DIR) CC="$(CC)" STAGE0="$(ROOT_DIR)/$(TARGET)" stage0
+$(STAGE0_BIN): $(STAGE0_SOURCE) $(BOOTSTRAP_DIR)/Makefile
+	$(MAKE) -C $(BOOTSTRAP_DIR) CC="$(CC)" STAGE0="$(ROOT_DIR)/$(STAGE0_BIN)" stage0
 
 # Explicit fallback entrypoint for the trusted C seed.
-stage0: $(TARGET)
+stage0: $(STAGE0_BIN)
 
 # Debug build
 debug: $(STAGE0_SOURCE) $(BOOTSTRAP_DIR)/Makefile
-	$(MAKE) -C $(BOOTSTRAP_DIR) CC="$(CC)" STAGE0="$(ROOT_DIR)/$(TARGET)" debug
+	$(MAKE) -C $(BOOTSTRAP_DIR) CC="$(CC)" STAGE0="$(ROOT_DIR)/$(STAGE0_BIN)" debug
 
 # Rebuild the self-hosted compiler from the bootstrap seed.
 $(NOREC): $(BOOTSTRAP_DIR)/bootstrap.sh $(BOOTSTRAP_DIR)/Makefile $(STAGE0_SOURCE)
@@ -46,7 +46,7 @@ $(NOREC): $(BOOTSTRAP_DIR)/bootstrap.sh $(BOOTSTRAP_DIR)/Makefile $(STAGE0_SOURC
 
 # Clean build artifacts
 clean:
-	rm -f "$(ROOT_DIR)/$(TARGET)" "$(ROOT_DIR)/$(NOREC)"
+	rm -f "$(ROOT_DIR)/$(STAGE0_BIN)" "$(ROOT_DIR)/$(NOREC)" "$(ROOT_DIR)/nore"
 	rm -rf "$(ROOT_DIR)/tmp/bootstrap"
 
 # Run error code tests through the default self-hosted path
@@ -55,9 +55,9 @@ test-errors: $(NOREC)
 	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_error_tests.sh
 
 # Run error code tests with the explicit stage-0 fallback compiler
-test-errors-stage0: $(TARGET)
+test-errors-stage0: $(STAGE0_BIN)
 	@chmod +x tests/run_error_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_error_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" ./tests/run_error_tests.sh
 
 # Backward-compatible alias for the self-hosted default path
 test-errors-norec: test-errors
@@ -68,9 +68,9 @@ test-success: $(NOREC)
 	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_success_tests.sh
 
 # Run success tests with the explicit stage-0 fallback compiler
-test-success-stage0: $(TARGET)
+test-success-stage0: $(STAGE0_BIN)
 	@chmod +x tests/run_success_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" ./tests/run_success_tests.sh
 
 # Backward-compatible alias for the self-hosted default path
 test-success-norec: test-success
@@ -83,11 +83,11 @@ test: $(NOREC)
 	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_success_tests.sh
 
 # Run all language suites with the explicit stage-0 fallback compiler
-test-stage0: $(TARGET)
+test-stage0: $(STAGE0_BIN)
 	@chmod +x tests/run_error_tests.sh tests/run_success_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_error_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" ./tests/run_error_tests.sh
 	@echo ""
-	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_success_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" ./tests/run_success_tests.sh
 
 # Legacy alias for the self-hosted default language-suite path
 test-parity: test
@@ -98,9 +98,9 @@ test-std: $(NOREC)
 	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_std_tests.sh
 
 # Run stdlib tests only with the explicit stage-0 fallback compiler
-test-std-stage0: $(TARGET)
+test-std-stage0: $(STAGE0_BIN)
 	@chmod +x tests/run_std_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" ./tests/run_std_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" ./tests/run_std_tests.sh
 
 # Backward-compatible alias for the self-hosted default path
 test-std-norec: test-std
@@ -111,12 +111,12 @@ test-compiler: $(NOREC)
 	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="norec" ./tests/run_compiler_tests.sh
 
 # Run compiler-specific tests with the explicit stage-0 fallback compiler
-test-compiler-stage0: $(TARGET)
+test-compiler-stage0: $(STAGE0_BIN)
 	@chmod +x tests/run_compiler_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(TARGET)" COMPILER_TEST_MODE="stage0" ./tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" ./tests/run_compiler_tests.sh
 
 # Compare end-to-end compiler compile time under the stage-0 and self-hosted drivers.
-bench-compiler: $(TARGET) $(NOREC)
+bench-compiler: $(STAGE0_BIN) $(NOREC)
 	@chmod +x benchmark/compile_compiler.sh
 	@CC="$(CC)" ./benchmark/compile_compiler.sh
 

@@ -4,7 +4,7 @@ This directory holds the trusted stage-0 compiler seed and the rebuild-from-seed
 
 ## Contents
 
-- `nore.c`: the trusted C seed
+- `norec-stage0.c`: the trusted C seed
 - `Makefile`: builds the explicit stage-0 fallback compiler
 - `bootstrap.sh`: rebuilds the repo-root `./norec` from the trusted seed
 
@@ -19,7 +19,7 @@ This directory holds the trusted stage-0 compiler seed and the rebuild-from-seed
 
 ```bash
 make stage0
-./nore program.nore
+./norec-stage0 program.nore
 ./bootstrap/bootstrap.sh
 ```
 

@@ -7,7 +7,7 @@ STAGE0_DIR="$ROOT_DIR/tmp/bootstrap/stage0"
 STAGE1_DIR="$ROOT_DIR/tmp/bootstrap/stage1"
 GENERATED_DIR="$ROOT_DIR/tmp/bootstrap/generated-c"
 BIN_DIR="$ROOT_DIR/tmp/bootstrap/bins"
-STAGE0="$STAGE0_DIR/nore-stage0"
+STAGE0="$STAGE0_DIR/norec-stage0"
 STAGE1="$STAGE1_DIR/bootstrap-compiler"
 NOREC_C="$GENERATED_DIR/norec.c"
 NOREC="$ROOT_DIR/norec"
@@ -16,7 +16,7 @@ CLANG_FLAGS=(-std=c99 -O2 -fwrapv)
 
 build_stage0_compiler() {
     mkdir -p "$STAGE0_DIR"
-    if [ ! -x "$STAGE0" ] || [ "$SCRIPT_DIR/nore.c" -nt "$STAGE0" ] || [ "$SCRIPT_DIR/Makefile" -nt "$STAGE0" ]; then
+    if [ ! -x "$STAGE0" ] || [ "$SCRIPT_DIR/norec-stage0.c" -nt "$STAGE0" ] || [ "$SCRIPT_DIR/Makefile" -nt "$STAGE0" ]; then
         make -C "$SCRIPT_DIR" CC="$CC_BIN" STAGE0="$STAGE0" stage0 >/dev/null
     fi
     rm -rf "$STAGE0_DIR/std"
@@ -28,7 +28,7 @@ compiler_sources_newer_than_norec() {
         return 0
     fi
 
-    if [ "$SCRIPT_DIR/bootstrap.sh" -nt "$NOREC" ] || [ "$SCRIPT_DIR/Makefile" -nt "$NOREC" ] || [ "$SCRIPT_DIR/nore.c" -nt "$NOREC" ]; then
+    if [ "$SCRIPT_DIR/bootstrap.sh" -nt "$NOREC" ] || [ "$SCRIPT_DIR/Makefile" -nt "$NOREC" ] || [ "$SCRIPT_DIR/norec-stage0.c" -nt "$NOREC" ]; then
         return 0
     fi
 

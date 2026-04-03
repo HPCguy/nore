@@ -98,7 +98,7 @@ That said, if your natural model is trees of objects and your dataset is small, 
 ## Current State
 
 - [`compiler/`](compiler/) is the canonical self-hosted compiler source tree
-- [`bootstrap/nore.c`](bootstrap/nore.c) remains the trusted stage-0 seed used to rebuild and verify the compiler
+- [`bootstrap/norec-stage0.c`](bootstrap/norec-stage0.c) remains the trusted stage-0 seed used to rebuild and verify the compiler
 - the compiler emits C as its backend IR and relies on Clang for native code generation
 - the language, standard library, tooling, and documentation are still evolving
 
@@ -124,7 +124,7 @@ Maintainer and rebuild paths:
 
 ```bash
 make stage0
-./nore program.nore
+./norec-stage0 program.nore
 ./bootstrap/bootstrap.sh
 ```
 

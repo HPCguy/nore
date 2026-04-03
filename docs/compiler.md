@@ -6,7 +6,7 @@ Nore's primary compiler is the self-hosted implementation in `compiler/`, built 
 
 - `./norec` is the default compiler path used by `make` and the normal test flow
 - `compiler/` is the canonical self-hosted compiler source tree
-- `bootstrap/nore.c` is the trusted stage-0 seed
+- `bootstrap/norec-stage0.c` is the trusted stage-0 seed
 - `bootstrap/bootstrap.sh` rebuilds `./norec` from the trusted seed
 - C remains the current backend IR
 
@@ -34,11 +34,11 @@ Maintainer and fallback paths:
 
 ```bash
 make stage0
-./nore program.nore
+./norec-stage0 program.nore
 ./bootstrap/bootstrap.sh
 ```
 
-`./norec` is the normal compiler interface. `./nore` and `bootstrap/bootstrap.sh` remain explicit trusted-seed and rebuild paths.
+`./norec` is the normal compiler interface. `./norec-stage0` and `bootstrap/bootstrap.sh` remain explicit trusted-seed and rebuild paths.
 
 ## Testing
 
@@ -67,7 +67,7 @@ make bench-compiler
 RUNS=5 make bench-compiler
 ```
 
-The benchmark measures end-to-end compile time for building `compiler/main.nore` with `./nore` and `./norec`.
+The benchmark measures end-to-end compile time for building `compiler/main.nore` with `./norec-stage0` and `./norec`.
 
 ## Source Tree
 

@@ -3,13 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-STAGE0_BIN="${STAGE0_BIN:-$ROOT_DIR/nore}"
+STAGE0_BIN="${STAGE0_BIN:-$ROOT_DIR/norec-stage0}"
 SELFHOST_BIN="${NOREC_BIN:-$ROOT_DIR/norec}"
 SOURCE_PATH="${BENCH_SOURCE:-$ROOT_DIR/compiler/main.nore}"
 RUNS="${RUNS:-3}"
 OUT_DIR="$ROOT_DIR/tmp/benchmarks/compiler"
 TIME_BIN="/usr/bin/time"
-STAGE0_METRICS="$OUT_DIR/nore.metrics"
+STAGE0_METRICS="$OUT_DIR/norec-stage0.metrics"
 SELFHOST_METRICS="$OUT_DIR/norec.metrics"
 
 # Keep benchmark setup failures explicit so timing output only reflects real compile work.
@@ -92,7 +92,7 @@ require_tooling
 mkdir -p "$OUT_DIR"
 rm -f "$STAGE0_METRICS" "$SELFHOST_METRICS"
 
-warmup_compile "nore" "$STAGE0_BIN"
+warmup_compile "stage0" "$STAGE0_BIN"
 warmup_compile "norec" "$SELFHOST_BIN"
 
 echo "Benchmark target: $SOURCE_PATH"
@@ -103,7 +103,7 @@ printf "%-8s %3s %8s %8s %8s\n" "compiler" "run" "real" "user" "sys"
 
 run_id=1
 while [ "$run_id" -le "$RUNS" ]; do
-    measure_compile "nore" "$STAGE0_BIN" "$run_id" "$STAGE0_METRICS"
+    measure_compile "stage0" "$STAGE0_BIN" "$run_id" "$STAGE0_METRICS"
     measure_compile "norec" "$SELFHOST_BIN" "$run_id" "$SELFHOST_METRICS"
     run_id=$((run_id + 1))
 done
@@ -133,8 +133,8 @@ delta="$(awk -v stage0="$stage0_real" -v selfhost="$selfhost_real" 'BEGIN {
 
 echo ""
 printf "%-8s %3s %8s %8s %8s\n" "compiler" "avg" "real" "user" "sys"
-printf "%-8s %3s %8s %8s %8s\n" "nore" "avg" "$stage0_real" "$stage0_user" "$stage0_sys"
+printf "%-8s %3s %8s %8s %8s\n" "stage0" "avg" "$stage0_real" "$stage0_user" "$stage0_sys"
 printf "%-8s %3s %8s %8s %8s\n" "norec" "avg" "$selfhost_real" "$selfhost_user" "$selfhost_sys"
 echo ""
-echo "Real-time speedup (nore / norec): ${speedup}x"
-echo "Real-time delta vs nore: ${delta}%"
+echo "Real-time speedup (stage0 / norec): ${speedup}x"
+echo "Real-time delta vs stage0: ${delta}%"

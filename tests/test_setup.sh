@@ -6,7 +6,7 @@ if [ ! -x "$DEFAULT_NORE_BIN" ]; then
     DEFAULT_NORE_BIN="${SCRIPT_DIR}/../bootstrap/bootstrap.sh"
 fi
 if [ ! -x "$DEFAULT_NORE_BIN" ]; then
-    DEFAULT_NORE_BIN="${SCRIPT_DIR}/../nore"
+    DEFAULT_NORE_BIN="${SCRIPT_DIR}/../norec-stage0"
 fi
 NORE_BIN="${NORE_BIN:-$DEFAULT_NORE_BIN}"
 

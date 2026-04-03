@@ -1,4 +1,4 @@
-# Build the trusted stage-0 seed compiler from bootstrap/nore.c.
+# Build the trusted stage-0 seed compiler from bootstrap/norec-stage0.c.
 
 CC ?= clang
 
@@ -15,8 +15,8 @@ DEBUGFLAGS += -Wextra
 DEBUGFLAGS += -g
 DEBUGFLAGS += -O0
 
-STAGE0 ?= $(CURDIR)/../tmp/bootstrap/stage0/nore-stage0
-SOURCE := nore.c
+STAGE0 ?= $(CURDIR)/../tmp/bootstrap/stage0/norec-stage0
+SOURCE := norec-stage0.c
 
 stage0: $(STAGE0)
 
