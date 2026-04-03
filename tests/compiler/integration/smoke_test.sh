@@ -17,7 +17,7 @@ cd "$ROOT_DIR"
 # Keep the current bootstrap import policy simple: compile and run from repo root.
 "$STAGE0" compiler/main.nore -o "$STAGE1"
 
-"$STAGE1" tests/success/print_hello.nore "$GENERATED_DIR/bootstrap_hello.c" .
+"$STAGE1" --emit-c tests/success/print_hello.nore "$GENERATED_DIR/bootstrap_hello.c" .
 "$CC_BIN" "${CLANG_FLAGS[@]}" \
     "$GENERATED_DIR/bootstrap_hello.c" \
     -o "$BIN_DIR/bootstrap_hello"
@@ -29,7 +29,7 @@ if [ "$hello_output" != "$expected_hello" ]; then
     exit 1
 fi
 
-"$STAGE1" tests/success/args.nore "$GENERATED_DIR/bootstrap_args.c" .
+"$STAGE1" --emit-c tests/success/args.nore "$GENERATED_DIR/bootstrap_args.c" .
 "$CC_BIN" "${CLANG_FLAGS[@]}" \
     "$GENERATED_DIR/bootstrap_args.c" \
     -o "$BIN_DIR/bootstrap_args"

@@ -22,12 +22,12 @@ error[D002]: Unknown flag: --invalid
 
 ## All Error Codes
 
-- **D001**: No input file specified / usage error
+- **D001**: Missing required CLI arguments / usage error
 - **D002**: Unknown flag
 - **D003**: Multiple input files specified
 - **D004**: Missing output path after `-o`
 - **D005**: Could not open or read input file
-- **D006**: Clang compilation failed
+- **D006**: Failed to produce the requested output artifact
 - **D007**: Cannot find imported file
 - **L001**: Invalid character
 - **L002**: Unterminated block comment

@@ -18,7 +18,6 @@ import parser "frontend/parser.nore"
 import scopes "sema/scopes.nore"
 import source "support/source.nore"
 import span "support/span.nore"
-import string "std/string.nore"
 import symbols "sema/symbols.nore"
 import token "frontend/token.nore"
 import types "sema/types.nore"
@@ -73,8 +72,7 @@ func write_output_or_exit(mut ref mem: Arena, ref output_path: str, ref dumped: 
     match (file.write_file(ref output_path, ref dumped)) {
         Ok(written) = { }
         Err(code) = {
-            val message: str = string.str_concat(mut ref mem, ref "Could not write output file: ", ref output_path)
-            io.eprintln(ref message)
+            driver.emit_emit_c_write_error(mut ref mem, ref output_path)
             exit(1)
         }
     }

@@ -8,9 +8,105 @@ BIN_DIR="$ROOT_DIR/tmp/bootstrap/bins"
 HELLO_BIN="$BIN_DIR/driver_hello"
 PATH_HELLO_BIN="$BIN_DIR/driver_hello_path"
 CC_FAIL_BIN="$BIN_DIR/driver_cc_fail"
+LEGACY_EMIT_C="$BIN_DIR/driver_legacy_emit.c"
+PATH_EMIT_C="$BIN_DIR/driver_emit_std_path.c"
 
 mkdir -p "$BIN_DIR"
-rm -f "$HELLO_BIN" "$PATH_HELLO_BIN" "$CC_FAIL_BIN"
+rm -f "$HELLO_BIN" "$PATH_HELLO_BIN" "$CC_FAIL_BIN" "$LEGACY_EMIT_C" "$PATH_EMIT_C"
+
+help_output=$("$COMPILER_BIN" --help 2>&1)
+if ! printf '%s\n' "$help_output" | grep -q -- "norec --emit-c"; then
+    echo "help output does not document --emit-c"
+    exit 1
+fi
+if ! printf '%s\n' "$help_output" | grep -q -- "--help"; then
+    echo "help output does not document --help"
+    exit 1
+fi
+if ! printf '%s\n' "$help_output" | grep -q -- "--codegen"; then
+    echo "help output does not document debug dump flags"
+    exit 1
+fi
+
+unknown_flag_output=""
+if unknown_flag_output=$("$COMPILER_BIN" --unknown-flag 2>&1); then
+    echo "unknown flag unexpectedly succeeded"
+    exit 1
+fi
+if ! printf '%s\n' "$unknown_flag_output" | grep -q -- "error\\[D002\\]"; then
+    echo "unknown flag output does not include D002"
+    exit 1
+fi
+if ! printf '%s\n' "$unknown_flag_output" | grep -q -- "^usage:"; then
+    echo "unknown flag output does not include usage"
+    exit 1
+fi
+
+missing_input_output=""
+if missing_input_output=$("$COMPILER_BIN" 2>&1); then
+    echo "missing input unexpectedly succeeded"
+    exit 1
+fi
+if ! printf '%s\n' "$missing_input_output" | grep -q -- "error\\[D001\\]"; then
+    echo "missing input output does not include D001"
+    exit 1
+fi
+if ! printf '%s\n' "$missing_input_output" | grep -q -- "^usage:"; then
+    echo "missing input output does not include usage"
+    exit 1
+fi
+
+legacy_emit_output=""
+if legacy_emit_output=$("$COMPILER_BIN" tests/success/print_hello.nore "$LEGACY_EMIT_C" 2>&1); then
+    echo "legacy positional emit mode unexpectedly succeeded"
+    exit 1
+fi
+if ! printf '%s\n' "$legacy_emit_output" | grep -q -- "error\\[D003\\]"; then
+    echo "legacy positional emit output does not include D003"
+    exit 1
+fi
+if ! printf '%s\n' "$legacy_emit_output" | grep -q -- "^usage:"; then
+    echo "legacy positional emit output does not include usage"
+    exit 1
+fi
+
+missing_output_output=""
+if missing_output_output=$("$COMPILER_BIN" tests/success/print_hello.nore -o 2>&1); then
+    echo "missing output path unexpectedly succeeded"
+    exit 1
+fi
+if ! printf '%s\n' "$missing_output_output" | grep -q -- "error\\[D004\\]"; then
+    echo "missing output path output does not include D004"
+    exit 1
+fi
+if ! printf '%s\n' "$missing_output_output" | grep -q -- "^usage:"; then
+    echo "missing output path output does not include usage"
+    exit 1
+fi
+
+emit_c_usage_output=""
+if emit_c_usage_output=$("$COMPILER_BIN" --emit-c tests/success/print_hello.nore 2>&1); then
+    echo "bad --emit-c usage unexpectedly succeeded"
+    exit 1
+fi
+if ! printf '%s\n' "$emit_c_usage_output" | grep -q -- "error\\[D001\\]"; then
+    echo "bad --emit-c usage output does not include D001"
+    exit 1
+fi
+if ! printf '%s\n' "$emit_c_usage_output" | grep -q -- "^usage:"; then
+    echo "bad --emit-c usage output does not include usage"
+    exit 1
+fi
+
+emit_c_write_output=""
+if emit_c_write_output=$("$COMPILER_BIN" --emit-c tests/success/print_hello.nore tmp/no/such/dir/driver_emit_fail.c 2>&1); then
+    echo "emit-c write failure unexpectedly succeeded"
+    exit 1
+fi
+if ! printf '%s\n' "$emit_c_write_output" | grep -q -- "error\\[D006\\]"; then
+    echo "emit-c write failure output does not include D006"
+    exit 1
+fi
 
 "$COMPILER_BIN" tests/success/print_hello.nore -o "$HELLO_BIN"
 
@@ -30,6 +126,16 @@ if [ "${COMPILER_TEST_MODE:-norec}" = "norec" ]; then
     path_output=$("$PATH_HELLO_BIN")
     if [ "$path_output" != "$expected_hello" ]; then
         echo "unexpected output from PATH-invoked norec binary"
+        exit 1
+    fi
+
+    (
+        cd /tmp
+        PATH="$ROOT_DIR:$PATH" norec --emit-c "$ROOT_DIR/tests/success/import_std_math.nore" "$PATH_EMIT_C"
+    )
+
+    if [ ! -s "$PATH_EMIT_C" ]; then
+        echo "PATH-invoked norec --emit-c did not produce output"
         exit 1
     fi
 fi

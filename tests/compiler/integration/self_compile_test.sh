@@ -18,10 +18,10 @@ cd "$ROOT_DIR"
 
 "$STAGE0" compiler/main.nore -o "$STAGE1"
 
-"$STAGE1" compiler/main.nore "$GENERATED_DIR/nore_stage2.c" .
+"$STAGE1" --emit-c compiler/main.nore "$GENERATED_DIR/nore_stage2.c" .
 "$CC_BIN" "${CLANG_FLAGS[@]}" "$GENERATED_DIR/nore_stage2.c" -o "$STAGE2"
 
-"$STAGE2" compiler/main.nore "$GENERATED_DIR/nore_stage3.c" .
+"$STAGE2" --emit-c compiler/main.nore "$GENERATED_DIR/nore_stage3.c" .
 "$CC_BIN" "${CLANG_FLAGS[@]}" "$GENERATED_DIR/nore_stage3.c" -o "$STAGE3"
 
 cmp -s "$GENERATED_DIR/nore_stage2.c" "$GENERATED_DIR/nore_stage3.c"

@@ -109,8 +109,20 @@ func build_driver_temp_path(mut ref mem: Arena, ref dir: str, ref stem: str, ref
 
 func print_usage(): void = {
     io.eprintln(ref "usage:")
-    io.eprintln(ref "  norec <input.nore> [--run] [--lexer] [--parser] [--codegen] [-o output] [-- <program args>]")
+    io.eprintln(ref "  norec <input.nore> [options] [-- <program args>]")
     io.eprintln(ref "  norec --emit-c <input.nore> <output.c> [compiler_root]")
+    io.eprintln(ref "")
+    io.eprintln(ref "options:")
+    io.eprintln(ref "  --help      show this help")
+    io.eprintln(ref "  --run       compile and run the program")
+    io.eprintln(ref "  --lexer     print the token dump for the root module")
+    io.eprintln(ref "  --parser    print the parse dump for the root module")
+    io.eprintln(ref "  --codegen   print generated C instead of compiling")
+    io.eprintln(ref "  -o <path>   write the output binary to <path>")
+    io.eprintln(ref "")
+    io.eprintln(ref "notes:")
+    io.eprintln(ref "  -- passes remaining arguments to the program with --run")
+    io.eprintln(ref "  --emit-c writes generated C and skips the Clang driver")
 }
 
 func emit_driver_error(mut ref mem: Arena, ref code: str, ref message: str): void = {
@@ -121,17 +133,20 @@ func emit_driver_error(mut ref mem: Arena, ref code: str, ref message: str): voi
 
 func emit_missing_output_error(mut ref mem: Arena): CliParseResult = {
     emit_driver_error(mut ref mem, ref "D004", ref "Expected output path after -o")
+    print_usage()
     CliParseResult.Exit(1)
 }
 
 func emit_unknown_flag_error(mut ref mem: Arena, ref flag: str): CliParseResult = {
     val message: str = string.str_concat(mut ref mem, ref "Unknown flag: ", ref flag)
     emit_driver_error(mut ref mem, ref "D002", ref message)
+    print_usage()
     CliParseResult.Exit(1)
 }
 
 func emit_multiple_inputs_error(mut ref mem: Arena): CliParseResult = {
     emit_driver_error(mut ref mem, ref "D003", ref "Multiple input files specified")
+    print_usage()
     CliParseResult.Exit(1)
 }
 
@@ -141,60 +156,26 @@ func emit_missing_input_error(mut ref mem: Arena): CliParseResult = {
     CliParseResult.Exit(1)
 }
 
-func argv_is_legacy_emit_mode(ref argv: [str]): bool = {
-    if (argv.len != 3 && argv.len != 4) {
-        return false
-    }
-
-    mut i: i64 = 1
-    while (i < argv.len) {
-        val arg: str = argv_item(ref argv, i)
-        if (arg_is_flag(ref arg)) {
-            return false
-        }
-        i += 1
-    }
-    true
+func emit_emit_c_usage_error(mut ref mem: Arena): CliParseResult = {
+    emit_driver_error(mut ref mem, ref "D001", ref "Expected input and output paths after --emit-c")
+    print_usage()
+    CliParseResult.Exit(1)
 }
 
-func parse_emit_mode(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv: [str], explicit_flag: bool): CliParseResult = {
-    if (explicit_flag) {
-        if (argv.len < 4 || argv.len > 5) {
-            print_usage()
-            return CliParseResult.Exit(1)
-        }
-        mut compiler_root_span: span.Span = empty_cli_text()
-        if (argv.len == 5) {
-            val compiler_root_arg: str = argv_item(ref argv, 4)
-            compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root_arg)
-        } else {
-            compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref ".")
-        }
-        val input_arg: str = argv_item(ref argv, 2)
-        val output_arg: str = argv_item(ref argv, 3)
-        return CliParseResult.Ok(CliConfig {
-            mode: CliMode.EmitC,
-            input_path: store_cli_text(mut ref mem, mut ref cli_pool, ref input_arg),
-            output_path: store_cli_text(mut ref mem, mut ref cli_pool, ref output_arg),
-            compiler_root: compiler_root_span,
-            output_given: true,
-            run_after_compile: false,
-            print_tokens: false,
-            print_ast: false,
-            print_codegen: false,
-            program_arg_start: -1
-        })
+func parse_emit_mode(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv: [str]): CliParseResult = {
+    if (argv.len < 4 || argv.len > 5) {
+        return emit_emit_c_usage_error(mut ref mem)
     }
-
     mut compiler_root_span: span.Span = empty_cli_text()
     if (argv.len == 4) {
-        val compiler_root_arg: str = argv_item(ref argv, 3)
-        compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root_arg)
+        val compiler_root: str = exe_dir(mut ref mem)
+        compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root)
     } else {
-        compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref ".")
+        val compiler_root_arg: str = argv_item(ref argv, 4)
+        compiler_root_span = store_cli_text(mut ref mem, mut ref cli_pool, ref compiler_root_arg)
     }
-    val input_arg: str = argv_item(ref argv, 1)
-    val output_arg: str = argv_item(ref argv, 2)
+    val input_arg: str = argv_item(ref argv, 2)
+    val output_arg: str = argv_item(ref argv, 3)
     CliParseResult.Ok(CliConfig {
         mode: CliMode.EmitC,
         input_path: store_cli_text(mut ref mem, mut ref cli_pool, ref input_arg),
@@ -209,11 +190,10 @@ func parse_emit_mode(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref arg
     })
 }
 
-// Keep the raw bootstrap contract intact while the ordinary driver path grows richer around it.
+// The driver accepts one explicit C-emission mode alongside the ordinary compile-and-run path.
 pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv: [str]): CliParseResult = {
     if (argv.len < 2) {
-        print_usage()
-        return CliParseResult.Exit(1)
+        return emit_missing_input_error(mut ref mem)
     }
 
     val first_arg: str = argv_item(ref argv, 1)
@@ -223,11 +203,7 @@ pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv:
     }
 
     if (string.str_eq(ref first_arg, ref "--emit-c")) {
-        return parse_emit_mode(mut ref mem, mut ref cli_pool, ref argv, true)
-    }
-
-    if (argv_is_legacy_emit_mode(ref argv)) {
-        return parse_emit_mode(mut ref mem, mut ref cli_pool, ref argv, false)
+        return parse_emit_mode(mut ref mem, mut ref cli_pool, ref argv)
     }
 
     val compiler_root: str = exe_dir(mut ref mem)
@@ -315,6 +291,12 @@ pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv:
         print_codegen: print_codegen,
         program_arg_start: program_arg_start
     })
+}
+
+// Emit-C mode still reports through the driver error surface so tests can match stable D-codes.
+pub func emit_emit_c_write_error(mut ref mem: Arena, ref output_path: str): void = {
+    val message: str = string.str_concat(mut ref mem, ref "Could not write output file: ", ref output_path)
+    emit_driver_error(mut ref mem, ref "D006", ref message)
 }
 
 pub func debug_requested(ref config: CliConfig): bool = {

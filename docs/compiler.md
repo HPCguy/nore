@@ -23,11 +23,13 @@ Normal compiler path:
 
 ```bash
 make
+./norec --help
 ./norec program.nore
 ./norec --run program.nore
 ./norec --lexer program.nore
 ./norec --parser program.nore
 ./norec --codegen program.nore
+./norec --emit-c program.nore build/program.c
 ```
 
 Maintainer and fallback paths:

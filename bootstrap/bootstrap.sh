@@ -48,7 +48,7 @@ build_norec() {
     (
         cd "$ROOT_DIR"
         "$STAGE0" compiler/main.nore -o "$STAGE1"
-        "$STAGE1" compiler/main.nore "$NOREC_C" .
+        "$STAGE1" --emit-c compiler/main.nore "$NOREC_C" .
     )
     "$CC_BIN" "${CLANG_FLAGS[@]}" "$NOREC_C" -o "$NOREC"
 }
