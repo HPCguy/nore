@@ -120,13 +120,7 @@ make
 ./norec --codegen program.nore
 ```
 
-Maintainer and rebuild paths:
-
-```bash
-make stage0
-./norec-stage0 program.nore
-./bootstrap/bootstrap.sh
-```
+For rebuild-from-seed and maintainer workflows, see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/compiler.md](docs/compiler.md).
 
 The [examples/](examples/) directory contains real programs built on the standard library.
 

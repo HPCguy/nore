@@ -18,7 +18,7 @@ Nore makes opinionated choices (arenas over GC, value/struct split, tables as co
 Before writing code, open an issue to discuss what you want to change. This avoids wasted effort on things that don't fit the project direction.
 
 When submitting code:
-- **Read the existing code first.** The compiler is a single C file with consistent patterns. Match the style.
+- **Read the existing code first.** The primary compiler source tree lives under `compiler/`, with the trusted stage-0 seed in `bootstrap/`. Match the style of the part you are changing.
 - **C99, no extensions.** Keep it portable.
 - **Keep it simple.** No clever tricks. If you need to explain it, simplify it.
 - **Include tests.** Every new feature needs a success test in `tests/success/`. Every new error code needs an error test in `tests/errors/`.
@@ -37,6 +37,24 @@ make              # Build the compiler
 make test         # Run all tests
 make test-errors  # Run error code tests only
 make test-success # Run success tests only
+```
+
+## Maintainer Workflows
+
+The normal compiler entrypoint is `./norec`. The explicit rebuild and trusted-seed paths are:
+
+```bash
+make stage0
+./norec-stage0 program.nore
+./bootstrap/bootstrap.sh
+```
+
+Compiler-specific verification paths:
+
+```bash
+make test-compiler
+make test-stage0
+make test-compiler-stage0
 ```
 
 ## License
