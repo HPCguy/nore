@@ -24,6 +24,7 @@ Normal compiler path:
 ```bash
 make
 ./norec --help
+./norec --version
 ./norec program.nore
 ./norec --run program.nore
 ./norec --lexer program.nore
@@ -41,6 +42,19 @@ make stage0
 ```
 
 `./norec` is the normal compiler interface. `./norec-stage0` and `bootstrap/bootstrap.sh` remain explicit trusted-seed and rebuild paths.
+
+## Emit-C Mode
+
+`--emit-c` runs the normal frontend, semantic analysis, and C lowering pipeline, writes the generated C file you asked for, and stops before invoking Clang.
+
+```bash
+./norec --emit-c program.nore build/program.c
+./norec --emit-c program.nore build/program.c /path/to/compiler-root
+```
+
+The optional third argument is `compiler_root`. It is only used when resolving `std/...` imports, which are loaded relative to the compiler's own root directory. Ordinary relative imports are still resolved from the importing source file.
+
+When omitted, `compiler_root` defaults to the directory that contains the running `norec` executable. In normal use you should not need to pass it manually. It is mainly useful for bootstrap, installed-tool, and debugging workflows where you want to override which `std/` tree the compiler uses.
 
 ## Testing
 

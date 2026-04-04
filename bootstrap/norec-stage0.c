@@ -12605,6 +12605,8 @@ static void codegen_compile(Ast *ast, const char *output_path) {
 
 /* ================================ Compiler Flags ========================== */
 
+#define NOREC_STAGE0_VERSION_TEXT "norec-stage0 v0.1.0"
+
 typedef struct {
     int print_tokens;
     int print_ast;
@@ -12615,9 +12617,16 @@ typedef struct {
 /* =================================== Main ================================= */
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--version") == 0) {
+        puts(NOREC_STAGE0_VERSION_TEXT);
+        return 0;
+    }
+
     if (argc < 2) {
         error(ERR_D001_NO_INPUT_FILE,
-                     "Usage: %s <file.nore> [--run] [--lexer] [--parser] [--codegen] [-o output]",
+                     "Usage: %s <file.nore> [--run] [--lexer] [--parser] [--codegen] [-o output]\n"
+                     "       %s --version",
+                     argv[0],
                      argv[0]);
     }
 
@@ -12641,6 +12650,9 @@ int main(int argc, char **argv) {
             flags.print_ast = 1;
         } else if (strcmp(argv[i], "--codegen") == 0) {
             flags.print_ir = 1;
+        } else if (strcmp(argv[i], "--version") == 0) {
+            puts(NOREC_STAGE0_VERSION_TEXT);
+            return 0;
         } else if (strcmp(argv[i], "--run") == 0) {
             flags.run = 1;
         } else if (strcmp(argv[i], "-o") == 0) {

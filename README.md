@@ -113,13 +113,13 @@ That said, if your natural model is trees of objects and your dataset is small, 
 ```bash
 make
 ./norec --help
+./norec --version
 ./norec program.nore
 ./norec program.nore -o build/program
 ./norec --run program.nore
 ./norec --lexer program.nore
 ./norec --parser program.nore
 ./norec --codegen program.nore
-./norec --emit-c program.nore build/program.c
 ```
 
 For rebuild-from-seed and maintainer workflows, see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/compiler.md](docs/compiler.md).
