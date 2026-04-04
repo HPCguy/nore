@@ -1,6 +1,6 @@
-# Nore Neovim Support
+# Nore Vim and Neovim Support
 
-This directory is a small Neovim runtime package for editing Nore source files.
+This directory is a small Vim runtime package for editing Nore source files. The same package works in both Vim and Neovim.
 
 Version 1 includes:
 
@@ -13,20 +13,29 @@ Version 1 includes:
 
 ```lua
 {
-  dir = "/absolute/path/to/nore/editors/nvim",
-  name = "nore.nvim",
+  dir = "/absolute/path/to/nore/editors/vim",
+  name = "nore.vim",
 }
 ```
 
 Replace the path with your local checkout.
 
-## Use Without a Plugin Manager
+## Use With Vim Packages
+
+Create a symlink into a package directory Vim already loads:
+
+```bash
+mkdir -p ~/.vim/pack/nore/start
+ln -s /absolute/path/to/nore/editors/vim ~/.vim/pack/nore/start/nore.vim
+```
+
+## Use With Neovim Packages
 
 Create a symlink into a package directory Neovim already loads:
 
 ```bash
 mkdir -p ~/.local/share/nvim/site/pack/nore/start
-ln -s /absolute/path/to/nore/editors/nvim ~/.local/share/nvim/site/pack/nore/start/nore.nvim
+ln -s /absolute/path/to/nore/editors/vim ~/.local/share/nvim/site/pack/nore/start/nore.vim
 ```
 
 After that, opening a `*.nore` file should set `filetype=nore` and load `syntax/nore.vim`.
