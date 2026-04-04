@@ -95,6 +95,8 @@ The mind shift is real: instead of "this object contains its data," you think "d
 
 That said, if your natural model is trees of objects and your dataset is small, Nore will feel like unnecessary ceremony. It's not the right tool for everything, and that's okay.
 
+Nore's design is no longer just theoretical. The compiler is now written in Nore itself, supported by a small but functional standard library. Self-hosting is an important validation milestone for the language: it shows that Nore can express and sustain a non-trivial systems codebase, including its own implementation.
+
 ## Current State
 
 - [`compiler/`](compiler/) is the canonical self-hosted compiler source tree
