@@ -153,6 +153,17 @@ make test-compiler-stage0 # Run compiler-specific tests through the C seed fallb
 - Compiler-specific tests live under `tests/compiler/`
 - For compiler build details, rebuild paths, and the benchmark command, see [docs/compiler.md](docs/compiler.md)
 
+## Editor Support
+
+Nore currently includes a first Neovim runtime package with:
+
+- filetype detection for `*.nore`
+- syntax highlighting
+- basic comment settings
+- simple brace-based indentation
+
+See [editors/nvim/README.md](editors/nvim/README.md) for installation and usage.
+
 ## Documentation
 
 - [docs/nore.md](docs/nore.md) for the language guide
