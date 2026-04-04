@@ -39,7 +39,41 @@ Current arenas are append-only with bulk reset. This works well for batch worklo
 - Typed pools
 - Per-request arenas with scoped lifetimes
 
+Related direction: allocator-style APIs and clearer allocation boundaries. Arena-first allocation is still the core model, but library and interop boundaries may benefit from more explicit allocation interfaces, similar in spirit to allocator-passing styles seen in other systems languages.
+
+This does not necessarily imply general-purpose heap allocation as the default model. The question is whether a clearer allocation API can make arena-based design more composable without giving up explicitness.
+
 **Source:** r/ProgrammingLanguages feedback on arena-only memory being too restrictive.
+
+## Associated Functions / Methods
+
+Today functions are free-standing. This keeps the core model simple, but it also makes some APIs feel more distant from the types they conceptually belong to.
+
+A future direction is to allow associating functions with types, for example as type-scoped functions or methods. This could improve discoverability and ergonomics without necessarily moving toward an object-oriented model.
+
+**Open questions:**
+
+- Should this start as type-scoped functions only (`Vec2.length(ref v)`) rather than method-call syntax (`v.length()`)?
+- How should `ref` / `mut ref` remain explicit at declaration and call sites?
+- How does this interact with the current preference for free-standing, explicit APIs?
+
+**Source:** r/ProgrammingLanguages feedback asking for a way to associate functions with types.
+
+## FFI / C Interop
+
+Nore currently has a minimal native-function mechanism for compiler/runtime boundaries, but it does not yet have a broader, intentional story for foreign-function interfaces and external library interop.
+
+A future direction is to design a clearer FFI model for calling C libraries and exposing Nore code across that boundary. This would likely be the first practical step before considering deeper library-specific integration.
+
+SQLite feels like a particularly natural first interop target because of Nore's table-first direction, but the right first step would still be ordinary bindings. Only after that would it make sense to evaluate whether tighter integration around tables, rows, or queries is justified.
+
+**Open questions:**
+
+- What should the minimal safe and explicit FFI surface look like?
+- How should slices, strings, arenas, and ownership map across the C boundary?
+- Should FFI stay deliberately low-level, with higher-level wrappers living in the stdlib?
+
+**Source:** r/Compiler discussion around SQLite interop and the suggestion to start with plain bindings before language-level integration.
 
 ## Scheduling / Traversal Strategies
 
@@ -80,6 +114,8 @@ p.active()                   // starts empty, grows with spawns
 **Stdlib, not compiler.** An index set is just a `[i64]` slice. Nore already has this. A view is a struct holding a table reference + an index set. All operations (`view_create`, `view_add`, `view_remove`, `view_get`) are regular functions over existing primitives. No new compiler machinery needed.
 
 The only reasons to involve the compiler would be syntactic sugar (e.g., `foreach point in p.active`) or auto-parallelism, neither of which fits Nore's explicit philosophy. This is a stdlib feature, and reinforces the case for migrating `table` itself to the stdlib once generics or metaprogramming are available.
+
+That said, this only addresses the functional baseline. If Nore later wants TALC-style layout control, cache hints, or other deeper optimization support for stdlib-defined data structures, that may justify separate compiler directives without making views or index sets native language features.
 
 **Implementation direction: sparse sets.** Naive index sets (`[i64]` of indices) break cache locality because access becomes scattered instead of sequential. Sparse sets (as used by EnTT) solve this with two arrays:
 
@@ -176,6 +212,6 @@ A `--release` flag that trades safety checks for performance. Today Nore is safe
 
 The pattern follows C optimization levels: debug is safe and predictable, release trusts the programmer. Each relaxation should be individually toggleable if possible, so users can keep bounds checks but drop asserts, etc.
 
-**Not worth adding yet.** Today there is exactly one case (`mem_copy`) where this matters, and the performance difference is negligible. Wait until real programs reveal actual bottlenecks from safety checks. The bounds-check removal will be the real driver for this flag.
+**Not worth adding yet.** The rough shape is clear, but Nore does not yet have enough performance pressure or runtime instrumentation to justify designing this in detail. Wait until real programs reveal where safety checks are actually costly. Bounds-check removal is still the most likely driver for this flag.
 
 **Source:** Design discussion during `mem_copy` implementation (memcpy vs memmove trade-off).
