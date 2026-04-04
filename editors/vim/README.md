@@ -42,6 +42,7 @@ After that, opening a `*.nore` file should set `filetype=nore` and load `syntax/
 
 ## Layout
 
+- `plugin/nore.vim` installs first-open filetype and runtime loading for start-package users
 - `ftdetect/nore.vim` detects `*.nore`
 - `syntax/nore.vim` defines syntax groups and highlight links
 - `ftplugin/nore.vim` sets local editing options
