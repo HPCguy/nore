@@ -57,6 +57,17 @@ make test-stage0
 make test-compiler-stage0
 ```
 
+## Branch Policy
+
+Nore currently uses a simple branch model:
+
+- `main` is the default integration branch. It should stay close to the next stable release line.
+- `release/x.y.x` branches are cut for stabilization, version bumps, release-only fixes, and post-release hotfixes for that line.
+- feature branches should be short-lived and merged back into `main` promptly.
+- release tags such as `v0.1.1` should be created from the corresponding release branch tip.
+
+There is intentionally no long-lived `develop` branch right now. At the current project size it adds merge and backport overhead without enough payoff. If release work happens on a `release/x.y.x` branch, merge it back into `main` promptly so the two branches do not drift for long.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the same terms as the project: BSD 3-Clause License with patent grant. See [LICENSE](LICENSE) and [PATENTS](PATENTS).
