@@ -814,6 +814,37 @@ func append_place_expr(
         return
     }
 
+    if (kind == node.NodeKind.IndexExpr) {
+        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val index_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_array_like_data_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            object_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref "[")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            index_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref "])")
+        return
+    }
+
     assert false
 }
 

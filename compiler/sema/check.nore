@@ -2573,8 +2573,18 @@ func expr_has_ref_root(ref nodes: node.Nodes, node_id: i64): bool = {
     false
 }
 
+// Slice and str refs can still alias through indexed storage even though the path is not a plain place root.
+func type_is_slice_like_ref_target(ref types_table: types.Types, type_id: i64): bool = {
+    if (type_id < 0) {
+        return false
+    }
+
+    types_table.kind[type_id] == types.TypeKind.SliceType ||
+    types_table.kind[type_id] == types.TypeKind.StrType
+}
+
 // Ref arguments also allow sub-slices as views over an addressable root object.
-func expr_can_take_ref(ref nodes: node.Nodes, node_id: i64): bool = {
+func expr_can_take_ref(ref nodes: node.Nodes, ref types_table: types.Types, node_id: i64): bool = {
     if (node_id < 0) {
         return false
     }
@@ -2584,7 +2594,15 @@ func expr_can_take_ref(ref nodes: node.Nodes, node_id: i64): bool = {
     if (nodes.kind[node_id] == node.NodeKind.Identifier ||
         nodes.kind[node_id] == node.NodeKind.FieldAccess ||
         nodes.kind[node_id] == node.NodeKind.SliceExpr) {
-        return expr_has_ref_root(ref nodes, node_id)
+        if (expr_has_ref_root(ref nodes, node_id)) {
+            return true
+        }
+    }
+    if ((nodes.kind[node_id] == node.NodeKind.FieldAccess ||
+         nodes.kind[node_id] == node.NodeKind.IndexExpr ||
+         nodes.kind[node_id] == node.NodeKind.SliceExpr) &&
+        type_is_slice_like_ref_target(ref types_table, nodes.type_id[node_id])) {
+        return expr_has_addressable_root(ref nodes, node_id)
     }
     false
 }
@@ -6425,7 +6443,7 @@ func check_expr(
                 value_id,
                 false
             )
-            if (!expr_can_take_ref(ref nodes, value_id)) {
+            if (!expr_can_take_ref(ref nodes, ref types_table, value_id)) {
                 if (nodes.kind[value_id] == node.NodeKind.IndexExpr) {
                     diag_error_node(mut ref mem, ref nodes, mut ref diags, mut ref diag_pool, node_id, ref "S042", ref "Cannot take reference of array element")
                 } else {

@@ -1,0 +1,23 @@
+// Test indexed slice-like values passed directly to ref params.
+
+func str_len(ref text: str): i64 = {
+    text.len
+}
+
+func bytes_len(ref data: [u8]): i64 = {
+    data.len
+}
+
+func first_byte(ref data: [u8]): u8 = {
+    data[0]
+}
+
+func main(): void = {
+    val names: [str; 2] = ["zero", "abc"]
+
+    assert str_len(ref names[1]) == 3
+    assert bytes_len(ref names[1]) == 3
+    assert bytes_len(ref names[0][1..]) == 3
+    assert first_byte(ref names[1]) == 'a'
+    assert first_byte(ref names[1][..]) == 'a'
+}
