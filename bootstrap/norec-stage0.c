@@ -12605,7 +12605,7 @@ static void codegen_compile(Ast *ast, const char *output_path) {
 
 /* ================================ Compiler Flags ========================== */
 
-#define NOREC_STAGE0_VERSION_TEXT "norec-stage0 v0.1.0"
+#define NOREC_STAGE0_VERSION_TEXT "norec-stage0 v0.1.1"
 
 typedef struct {
     int print_tokens;
