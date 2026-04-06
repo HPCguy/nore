@@ -219,6 +219,16 @@ func preintern_table_column_slices(mut ref types_table: types.Types, ref nodes: 
 
 // Table rows share the original declaration fields and keep one stable name when materialized.
 func find_table_row_type(ref types_table: types.Types, table_type: i64): i64 = {
+    if (table_type >= 0 && table_type < table_len(ref types_table)) {
+        val cached_type: i64 = types_table.cached_table_row_type[table_type]
+        if (cached_type >= 0 &&
+            cached_type < table_len(ref types_table) &&
+            types_table.kind[cached_type] == types.TypeKind.TableRowType &&
+            types_table.data0[cached_type] == table_type) {
+            return cached_type
+        }
+    }
+
     mut type_id: i64 = 0
     while (type_id < table_len(ref types_table)) {
         if (types_table.kind[type_id] == types.TypeKind.TableRowType &&

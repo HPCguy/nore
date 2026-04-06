@@ -32,7 +32,9 @@ pub table Types {
     symbol_id: i64,
     data0: i64,
     data1: i64,
-    data2: i64
+    data2: i64,
+    cached_slice_type: i64,
+    cached_table_row_type: i64
 }
 
 pub value BuiltinTypes {
@@ -71,7 +73,9 @@ pub func types_push(
         symbol_id: symbol_id,
         data0: data0,
         data1: data1,
-        data2: data2
+        data2: data2,
+        cached_slice_type: invalid_type_id(),
+        cached_table_row_type: invalid_type_id()
     })
     type_id
 }
@@ -130,8 +134,7 @@ pub func builtin_type_from_token(ref builtins: BuiltinTypes, kind: token.TokenKi
     invalid_type_id()
 }
 
-// Named decl types are stable by symbol id and should not be duplicated.
-// Scan from end so recently interned types are found first.
+// Named decl rows are created only after binding a fresh type symbol, so they never need a lookup pass.
 pub func type_named(
     mut ref types: Types,
     kind: TypeKind,
@@ -139,16 +142,6 @@ pub func type_named(
     decl_node: i64,
     symbol_id: i64
 ): i64 = {
-    mut type_id: i64 = table_len(ref types) - 1
-    while (type_id >= 0) {
-        if (types.kind[type_id] == kind &&
-            types.symbol_id[type_id] == symbol_id &&
-            types.decl_node[type_id] == decl_node) {
-            return type_id
-        }
-        type_id -= 1
-    }
-
     types_push(mut ref types, kind, module_id, decl_node, symbol_id, 0, 0, 0)
 }
 
@@ -169,16 +162,33 @@ pub func type_array(mut ref types: Types, elem_type: i64, size: i64): i64 = {
 
 // Slice types are interned by element type alone.
 pub func type_slice(mut ref types: Types, elem_type: i64): i64 = {
+    if (elem_type >= 0 && elem_type < table_len(ref types)) {
+        val cached_type: i64 = types.cached_slice_type[elem_type]
+        if (cached_type >= 0 &&
+            cached_type < table_len(ref types) &&
+            types.kind[cached_type] == TypeKind.SliceType &&
+            types.data0[cached_type] == elem_type) {
+            return cached_type
+        }
+    }
+
     mut type_id: i64 = table_len(ref types) - 1
     while (type_id >= 0) {
         if (types.kind[type_id] == TypeKind.SliceType &&
             types.data0[type_id] == elem_type) {
+            if (elem_type >= 0 && elem_type < table_len(ref types)) {
+                types.cached_slice_type[elem_type] = type_id
+            }
             return type_id
         }
         type_id -= 1
     }
 
-    types_push(mut ref types, TypeKind.SliceType, -1, -1, -1, elem_type, 0, 0)
+    val slice_type: i64 = types_push(mut ref types, TypeKind.SliceType, -1, -1, -1, elem_type, 0, 0)
+    if (elem_type >= 0 && elem_type < table_len(ref types)) {
+        types.cached_slice_type[elem_type] = slice_type
+    }
+    slice_type
 }
 
 // Table declarations synthesize one stable row type for `.Row` references.
@@ -188,18 +198,31 @@ pub func type_table_row(
     decl_node: i64,
     base_table_type: i64
 ): i64 = {
+    if (base_table_type >= 0 && base_table_type < table_len(ref types)) {
+        val cached_type: i64 = types.cached_table_row_type[base_table_type]
+        if (cached_type >= 0 &&
+            cached_type < table_len(ref types) &&
+            types.kind[cached_type] == TypeKind.TableRowType &&
+            types.data0[cached_type] == base_table_type) {
+            return cached_type
+        }
+    }
+
     mut type_id: i64 = table_len(ref types) - 1
     while (type_id >= 0) {
         if (types.kind[type_id] == TypeKind.TableRowType &&
             types.module_id[type_id] == module_id &&
             types.decl_node[type_id] == decl_node &&
             types.data0[type_id] == base_table_type) {
+            if (base_table_type >= 0 && base_table_type < table_len(ref types)) {
+                types.cached_table_row_type[base_table_type] = type_id
+            }
             return type_id
         }
         type_id -= 1
     }
 
-    types_push(
+    val row_type: i64 = types_push(
         mut ref types,
         TypeKind.TableRowType,
         module_id,
@@ -209,6 +232,10 @@ pub func type_table_row(
         0,
         0
     )
+    if (base_table_type >= 0 && base_table_type < table_len(ref types)) {
+        types.cached_table_row_type[base_table_type] = row_type
+    }
+    row_type
 }
 
 // Keep dumps and tests on one spelling table for every type kind.
