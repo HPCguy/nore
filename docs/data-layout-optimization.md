@@ -2,49 +2,87 @@
 
 Focused future directions around table views, index sets, layout control, and low-level optimization. Nothing here is committed. These ideas are grouped separately because they describe a coherent path: richer stdlib-defined data views backed by explicit compiler support for optimization when needed.
 
+For a source-grounded reading of the underlying HPC material before jumping into Nore-specific future ideas, see [views-layout-and-policies.md](views-layout-and-policies.md).
+
 ## Index Sets and Table Views
 
 Today's tables are flat: N rows, every column has exactly N entries. There's no way to express subsets, partitions, or hierarchical groupings. An index set model could address this.
 
-**Core idea:** A view is a set of indices over the same underlying columns. Multiple views share the same data, no duplication.
+**Core idea:** A view has its own compact local index space `0..N-1`, and an `IndexSet` maps those local indices into the parent view's index space. Views form a hierarchy of subsets: each child view refers only to entities already present in its parent view.
 
 ```
-// 1000 particle slots allocated
-p: Particles([0, 1000))     // full index set
+// root view over all rows
+p.all()
 
-// Only some are active, a subset view
-p.active()                   // starts empty, grows with spawns
+// subset of the root view
+p.active()
 
-// "Deleting" = removing from the active set, no data movement
-// Iterating p.active only touches live particles
+// subset of a subset
+p.active.nearby()
 ```
 
 **What this enables:**
 
-- **No insert/shift cost.** "Deleting" means removing an index, not moving data.
-- **Multiple views, same data.** `p.active`, `p.dying`, `p.onscreen` all point to different subsets of the same columns.
-- **Hierarchical subsets.** A view can have sub-views (`p.active.nearby`), addressing the flat-cardinality limitation.
+- **Hierarchical subsets.** A view can have zero or more child views, and each child is a subset of its parent view rather than a fresh global index list.
+- **Local compactness.** Each view is locally packed and stride-1 in its own index space, which keeps iteration efficient.
+- **Cheap subset maintenance.** In the subset-view model, "deleting" can mean removing an index from a view rather than moving base rows.
+- **Multiple views, same entities.** `p.active`, `p.dying`, and `p.onscreen` can describe different subsets of the same underlying table entities.
 - **Partitioning for parallelism.** Index sets can be split across threads; each thread gets a chunk of indices over the same columns, no aliasing.
 
-**Stdlib, not compiler.** An index set is just a `[i64]` slice. Nore already has this. A view is a struct holding a table reference + an index set. All operations (`view_create`, `view_add`, `view_remove`, `view_get`) are regular functions over existing primitives. No new compiler machinery needed.
+Sparse memory access is only required when a child view maps sparsely into a parent or ancestor view. A lot of useful cases are much cheaper than that: if the child-to-parent mapping is stride-1 or a regular slab, parent access is still packed.
 
-The only reasons to involve the compiler would be syntactic sugar (e.g., `foreach point in p.active`) or auto-parallelism, neither of which fits Nore's explicit philosophy. This is a stdlib feature, and reinforces the case for migrating `table` itself to the stdlib once generics or metaprogramming are available.
+**TALC's `IndexSet` model is richer than "just a slice of indices".** TALC's implementation makes the representation more concrete:
+
+- **Unstructured mode:** an explicit map from local view indices to parent-view indices.
+- **Structured mode:** extents, strides, and a parent-corner offset, enough to describe a hyperslab or packed n-dimensional region inside the parent view.
+- **Materialization on demand:** TALC can turn a structured index set into an explicit map when needed.
+
+For example, in a row-major flattened `8x8` parent grid, a `4x3` tile starting at row 2, column 1 could be described as:
+
+```text
+dims = 2
+extents = [4, 3]
+strides = [1, 8]
+parentCornerOffset = 17
+```
+
+That means:
+
+- local `(0, 0)` maps to parent `17`
+- local `(1, 0)` maps to parent `18`
+- local `(0, 1)` maps to parent `25`
+
+So the structured index set describes this parent region without storing an explicit index list:
+
+```text
+17 18 19 20
+25 26 27 28
+33 34 35 36
+```
+
+In other words, structured mode stores a local shape plus the stepping rule needed to walk that shape inside the parent view.
+
+That suggests Nore should separate the **semantic model** from the **chosen representation**. Semantically, a view is a parent-relative compact subset. Representation-wise, it might be a dense range, a structured slab, an explicit map, or another internal form.
+
+**Stdlib, not compiler.** The baseline model still looks like a stdlib feature: a view is a struct over a table plus some parent-relative index-set representation, and operations such as `view_create`, `view_add`, `view_remove`, and `view_get` are regular functions over existing primitives. The only reasons to involve the compiler would be syntactic sugar (e.g. `foreach point in p.active`) or deeper optimization support.
 
 That said, this only addresses the functional baseline. If Nore later wants TALC-style layout control, cache hints, or other deeper optimization support for stdlib-defined data structures, that may justify separate compiler directives without making views or index sets native language features.
 
-**Implementation direction: sparse sets.** Naive index sets (`[i64]` of indices) break cache locality because access becomes scattered instead of sequential. Sparse sets (as used by EnTT) solve this with two arrays:
+**One possible backend: sparse sets.** Sparse sets are still interesting for highly dynamic unstructured subsets such as "active entities" or "dirty rows". They may be a useful implementation strategy for one class of views, but they are not the whole model. TALC's view hierarchy also covers structured, parent-relative subsets where sparse indirection is unnecessary.
+
+For the dynamic-unstructured case, a sparse set (as used by EnTT) looks like this:
 
 ```
 sparse: [_, _, 1, _, _, 2, _, 0, _, _]   // indexed by entity ID -> position in dense
 dense:  [7, 2, 5]                         // packed, no holes. iterate this
 ```
 
-- Iteration walks `dense` sequentially, cache-perfect, same as a flat table
+- Iteration over membership walks `dense` sequentially
 - Insert is O(1): append to dense, update sparse
 - Remove is O(1): swap last element into the hole, update sparse
 - Lookup is O(1): sparse[id] gives position in dense
 
-The sparse array can be large but unused pages are never touched (virtual memory handles this). This gives subset views with no cache penalty on iteration. Implementable entirely with slices and arenas, no compiler support.
+The sparse array can be large but unused pages are never touched (virtual memory handles this). This is a plausible backend for dynamic subsets in Nore, but it should be presented as one representation choice among several, not as the definition of views or index sets.
 
 **Prior art: TALC (Topologically-Aware Layout in C).** The View + IndexSet model has been validated by [TALC](https://www.osti.gov/biblio/1108924), a research project from Lawrence Livermore National Laboratory (~2007). TALC is a source-to-source C translator that uses Views (data layout schemas), IndexSets (traversal definitions), and Fields (arrays eligible for layout transformation) to separate data layout from algorithm. Key results:
 
@@ -63,6 +101,7 @@ TALC proved the model works, but it's a preprocessor bolted onto C. The underlyi
 - How do views interact with arena lifetime tracking?
 - What set operations are worth providing (intersection, union, difference)?
 - Should views support hierarchical nesting (sub-views of views)?
+- How should Nore model structured index sets such as slabs and tiles, instead of only explicit unstructured maps?
 - How much of the TALC model (layout-algorithm separation, parallel partitioning) can be expressed as stdlib vs requiring compiler support?
 
 **Source:** r/ProgrammingLanguages detailed feedback with pseudo-code example showing View-based model with index sets, nested views, and implicit parallelism. TALC reference from same commenter.
