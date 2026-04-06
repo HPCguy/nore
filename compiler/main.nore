@@ -24,21 +24,22 @@ import types "sema/types.nore"
 
 native func exit(code: i32): void
 native func args(mut ref mem: Arena): [str]
+native func time_ns(): i64
 
 val MAIN_ARENA_CAPACITY: i64 = 134217728
 val SOURCES_CAPACITY: i64 = 128
 val PATH_POOL_CAPACITY: i64 = 4096
 val TEXT_POOL_CAPACITY: i64 = 262144
 val LINE_STARTS_CAPACITY: i64 = 32768
-val TOKENS_CAPACITY: i64 = 131072
-val NODES_CAPACITY: i64 = 524288
-val MODULES_CAPACITY: i64 = 128
-val IMPORTS_CAPACITY: i64 = 256
-val DIAGS_CAPACITY: i64 = 512
+val TOKENS_CAPACITY: i64 = 163840
+val NODES_CAPACITY: i64 = 655360
+val MODULES_CAPACITY: i64 = 160
+val IMPORTS_CAPACITY: i64 = 320
+val DIAGS_CAPACITY: i64 = 768
 val DIAG_POOL_CAPACITY: i64 = 16384
-val SCOPES_CAPACITY: i64 = 16384
-val SYMBOLS_CAPACITY: i64 = 65536
-val TYPES_CAPACITY: i64 = 32768
+val SCOPES_CAPACITY: i64 = 20480
+val SYMBOLS_CAPACITY: i64 = 81920
+val TYPES_CAPACITY: i64 = 40960
 
 // Diagnostics already know how to format themselves; the driver only needs to stream one range in order.
 func emit_diag_range(
@@ -86,6 +87,46 @@ func root_module_token_range(ref modules: loader.Modules, root_module: i64): spa
     span.range(modules.token_start[root_module], modules.token_count[root_module])
 }
 
+// Benchmark output stays on stderr so maintainer metrics do not collide with debug dumps on stdout.
+func append_bench_field(mut ref out: io.Writer, ref name: str, field_value: i64): void = {
+    io.write_byte(mut ref out, ' ')
+    io.write_str(mut ref out, ref name)
+    io.write_byte(mut ref out, '=')
+    io.write_i64(mut ref out, field_value)
+}
+
+// One compact line is enough for scripts and still readable when run by hand.
+func emit_bench_report(
+    mut ref mem: Arena,
+    ref mode: str,
+    load_ns: i64,
+    check_ns: i64,
+    codegen_ns: i64,
+    tail_ns: i64,
+    modules: i64,
+    tokens_count: i64,
+    nodes_count: i64,
+    symbols_count: i64,
+    types_count: i64,
+    c_bytes: i64
+): void = {
+    mut out: io.Writer = io.writer_new(mut ref mem, 512)
+    io.write_str(mut ref out, ref "bench mode=")
+    io.write_str(mut ref out, ref mode)
+    append_bench_field(mut ref out, ref "load_ns", load_ns)
+    append_bench_field(mut ref out, ref "check_ns", check_ns)
+    append_bench_field(mut ref out, ref "codegen_ns", codegen_ns)
+    append_bench_field(mut ref out, ref "tail_ns", tail_ns)
+    append_bench_field(mut ref out, ref "modules", modules)
+    append_bench_field(mut ref out, ref "tokens", tokens_count)
+    append_bench_field(mut ref out, ref "nodes", nodes_count)
+    append_bench_field(mut ref out, ref "symbols", symbols_count)
+    append_bench_field(mut ref out, ref "types", types_count)
+    append_bench_field(mut ref out, ref "c_bytes", c_bytes)
+    io.write_byte(mut ref out, '\n')
+    io.flush(ref out, io.STDERR)
+}
+
 // The entrypoint keeps one linear pipeline and branches only after the final C dump is ready.
 func main(): void = {
     mut mem: Arena = arena(MAIN_ARENA_CAPACITY)
@@ -98,6 +139,7 @@ func main(): void = {
         input_path: span.span(0, 0),
         output_path: span.span(0, 0),
         compiler_root: span.span(0, 0),
+        benchmark_mode: false,
         output_given: true,
         run_after_compile: false,
         print_tokens: false,
@@ -129,7 +171,15 @@ func main(): void = {
     mut types_table: types.Types = table_alloc(mut ref mem, TYPES_CAPACITY)
     val compiler_root: [u8] = driver.cli_text(ref cli_pool, ref config.compiler_root)
     val input_path: [u8] = driver.cli_text(ref cli_pool, ref config.input_path)
+    mut load_ns: i64 = 0
+    mut check_ns: i64 = 0
+    mut codegen_ns: i64 = 0
+    mut tail_ns: i64 = 0
+    mut phase_start: i64 = 0
 
+    if (config.benchmark_mode) {
+        phase_start = time_ns()
+    }
     val loaded: loader.LoadResult = loader.load_graph(
         mut ref mem,
         ref compiler_root,
@@ -145,6 +195,9 @@ func main(): void = {
         mut ref diags,
         mut ref diag_pool
     )
+    if (config.benchmark_mode) {
+        load_ns = time_ns() - phase_start
+    }
     if (loaded.diags.count > 0) {
         emit_diag_range(
             mut ref mem,
@@ -176,6 +229,9 @@ func main(): void = {
         io.print(ref dump)
     }
 
+    if (config.benchmark_mode) {
+        phase_start = time_ns()
+    }
     val checked: check.CheckResult = check.check_modules(
         mut ref mem,
         ref sources,
@@ -190,6 +246,9 @@ func main(): void = {
         mut ref diags,
         mut ref diag_pool
     )
+    if (config.benchmark_mode) {
+        check_ns = time_ns() - phase_start
+    }
     if (checked.diags.count > 0) {
         emit_diag_range(
             mut ref mem,
@@ -230,6 +289,9 @@ func main(): void = {
         }
     }
 
+    if (config.benchmark_mode) {
+        phase_start = time_ns()
+    }
     val dumped: [u8] = cmain.c_file_dump(
         mut ref mem,
         ref sources,
@@ -243,6 +305,9 @@ func main(): void = {
         ref checked.types,
         ref loaded.modules
     )
+    if (config.benchmark_mode) {
+        codegen_ns = time_ns() - phase_start
+    }
 
     if (config.print_codegen) {
         io.print(ref dumped)
@@ -253,12 +318,54 @@ func main(): void = {
     }
 
     if (config.mode == driver.CliMode.EmitC) {
+        if (config.benchmark_mode) {
+            phase_start = time_ns()
+        }
         val output_path: [u8] = driver.cli_text(ref cli_pool, ref config.output_path)
         write_output_or_exit(mut ref mem, ref output_path, ref dumped)
+        if (config.benchmark_mode) {
+            tail_ns = time_ns() - phase_start
+            emit_bench_report(
+                mut ref mem,
+                ref "emit-c",
+                load_ns,
+                check_ns,
+                codegen_ns,
+                tail_ns,
+                loaded.modules.count,
+                loaded.tokens.count,
+                loaded.nodes.count,
+                checked.symbols.count,
+                checked.types.count,
+                dumped.len
+            )
+        }
     } else {
+        if (config.benchmark_mode) {
+            phase_start = time_ns()
+        }
         val driver_status: i32 = driver.compile_program(mut ref mem, ref cli_pool, ref config, ref dumped, ref argv)
+        if (config.benchmark_mode) {
+            tail_ns = time_ns() - phase_start
+        }
         if (driver_status != 0) {
             exit(driver_status)
+        }
+        if (config.benchmark_mode) {
+            emit_bench_report(
+                mut ref mem,
+                ref "driver",
+                load_ns,
+                check_ns,
+                codegen_ns,
+                tail_ns,
+                loaded.modules.count,
+                loaded.tokens.count,
+                loaded.nodes.count,
+                checked.symbols.count,
+                checked.types.count,
+                dumped.len
+            )
         }
     }
 }

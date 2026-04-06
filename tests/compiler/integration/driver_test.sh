@@ -6,13 +6,17 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 COMPILER_BIN="${NORE_BIN:-$ROOT_DIR/norec}"
 BIN_DIR="$ROOT_DIR/tmp/bootstrap/bins"
 HELLO_BIN="$BIN_DIR/driver_hello"
+BENCH_HELLO_BIN="$BIN_DIR/driver_bench_hello"
 PATH_HELLO_BIN="$BIN_DIR/driver_hello_path"
 CC_FAIL_BIN="$BIN_DIR/driver_cc_fail"
+EMIT_C="$BIN_DIR/driver_emit.c"
 LEGACY_EMIT_C="$BIN_DIR/driver_legacy_emit.c"
 PATH_EMIT_C="$BIN_DIR/driver_emit_std_path.c"
+TIME_NS_SRC="$BIN_DIR/driver_time_ns.nore"
+TIME_NS_BIN="$BIN_DIR/driver_time_ns"
 
 mkdir -p "$BIN_DIR"
-rm -f "$HELLO_BIN" "$PATH_HELLO_BIN" "$CC_FAIL_BIN" "$LEGACY_EMIT_C" "$PATH_EMIT_C"
+rm -f "$HELLO_BIN" "$BENCH_HELLO_BIN" "$PATH_HELLO_BIN" "$CC_FAIL_BIN" "$EMIT_C" "$LEGACY_EMIT_C" "$PATH_EMIT_C" "$TIME_NS_SRC" "$TIME_NS_BIN"
 
 version_output=$("$COMPILER_BIN" --version 2>&1)
 expected_version="norec v0.1.1"
@@ -136,6 +140,34 @@ hello_output=$("$HELLO_BIN")
 expected_hello=$'Hello, World!\n42\n-123\n0\ntest slice\nabc\n99'
 if [ "$hello_output" != "$expected_hello" ]; then
     echo "unexpected output from driver-built hello binary"
+    exit 1
+fi
+
+"$COMPILER_BIN" tests/success/print_hello.nore --bench -o "$BENCH_HELLO_BIN"
+
+bench_output=$("$BENCH_HELLO_BIN")
+if [ "$bench_output" != "$expected_hello" ]; then
+    echo "unexpected output from --bench driver-built hello binary"
+    exit 1
+fi
+
+cat > "$TIME_NS_SRC" <<'EOF'
+native func time_ns(): i64
+
+func main(): void = {
+    val first: i64 = time_ns()
+    val second: i64 = time_ns()
+    assert first >= 0
+    assert second >= 0
+}
+EOF
+
+"$COMPILER_BIN" "$TIME_NS_SRC" -o "$TIME_NS_BIN"
+"$TIME_NS_BIN"
+
+"$COMPILER_BIN" --emit-c tests/success/import_std_math.nore "$EMIT_C" "$ROOT_DIR"
+if [ ! -s "$EMIT_C" ]; then
+    echo "--emit-c did not produce output"
     exit 1
 fi
 

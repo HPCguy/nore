@@ -17,6 +17,7 @@ pub func append_core_prelude(
     needs_mem: bool,
     needs_io: bool,
     needs_args: bool,
+    needs_time: bool,
     needs_driver: bool
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "#include <stdint.h>\n")
@@ -33,6 +34,9 @@ pub func append_core_prelude(
     }
     if (needs_io) {
         append_bytes(mut ref mem, mut ref out, ref "#include <fcntl.h>\n")
+    }
+    if (needs_time || needs_driver) {
+        append_bytes(mut ref mem, mut ref out, ref "#include <sys/time.h>\n")
     }
     if (needs_driver) {
         append_bytes(mut ref mem, mut ref out, ref "#include <sys/wait.h>\n")
@@ -149,6 +153,15 @@ func append_args_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = 
     append_bytes(mut ref mem, mut ref out, ref "}\n")
 }
 
+// Benchmark timing stays independent from the argv/exe-dir driver helpers.
+func append_time_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "int64_t ni_time_ns(void) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    struct timeval ni_tv;\n")
+    append_bytes(mut ref mem, mut ref out, ref "    gettimeofday(&ni_tv, NULL);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return ((int64_t)ni_tv.tv_sec * 1000000000LL) + ((int64_t)ni_tv.tv_usec * 1000LL);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
 // The direct driver uses one narrow shell bridge plus a PATH-aware executable lookup.
 func append_driver_runtime(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
     append_bytes(mut ref mem, mut ref out, ref "int32_t ni_shell_run(const ni_str *ni_command) {\n")
@@ -253,6 +266,7 @@ pub func runtime_helpers_dump(
     needs_io: bool,
     needs_exit: bool,
     needs_args: bool,
+    needs_time: bool,
     needs_driver: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
@@ -290,6 +304,13 @@ pub func runtime_helpers_dump(
         append_args_runtime(mut ref mem, mut ref out)
         wrote_any = true
     }
+    if (needs_time) {
+        if (wrote_any) {
+            append_bytes(mut ref mem, mut ref out, ref "\n")
+        }
+        append_time_runtime(mut ref mem, mut ref out)
+        wrote_any = true
+    }
     if (needs_driver) {
         if (wrote_any) {
             append_bytes(mut ref mem, mut ref out, ref "\n")
@@ -302,7 +323,7 @@ pub func runtime_helpers_dump(
 // Tests and c_main both need one stable entry point for the minimal generated-C prelude.
 pub func core_prelude_dump(mut ref mem: Arena): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out, false, false, false, false, false)
+    append_core_prelude(mut ref mem, mut ref out, false, false, false, false, false, false)
     out.data[0..out.count]
 }
 
@@ -313,9 +334,10 @@ pub func runtime_prelude_dump(
     needs_mem: bool,
     needs_io: bool,
     needs_args: bool,
+    needs_time: bool,
     needs_driver: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
-    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io, needs_args, needs_driver)
+    append_core_prelude(mut ref mem, mut ref out, needs_arena, needs_mem, needs_io, needs_args, needs_time, needs_driver)
     out.data[0..out.count]
 }

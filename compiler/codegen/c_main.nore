@@ -91,6 +91,7 @@ func collect_runtime_usage(
     mut ref needs_io: bool,
     mut ref needs_exit: bool,
     mut ref needs_args: bool,
+    mut ref needs_time: bool,
     mut ref needs_driver: bool
 ): void = {
     if (node_id < 0) {
@@ -152,6 +153,9 @@ func collect_runtime_usage(
         if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "pid")) {
             needs_driver = true
         }
+        if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "time_ns")) {
+            needs_time = true
+        }
         if (cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_write") ||
             cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_read") ||
             cexpr.token_name_is(ref sources, ref text_pool, ref tokens, name_token, ref "fd_open") ||
@@ -175,6 +179,7 @@ func collect_runtime_usage(
             mut ref needs_io,
             mut ref needs_exit,
             mut ref needs_args,
+            mut ref needs_time,
             mut ref needs_driver
         )
         child_id = nodes.next_sibling[child_id]
@@ -1382,6 +1387,7 @@ pub func c_file_dump(
     mut needs_io: bool = false
     mut needs_exit: bool = false
     mut needs_args: bool = false
+    mut needs_time: bool = false
     mut needs_driver: bool = false
     mut module_id: i64 = module_range.start
     val module_end: i64 = span.range_end(ref module_range)
@@ -1398,6 +1404,7 @@ pub func c_file_dump(
             mut ref needs_io,
             mut ref needs_exit,
             mut ref needs_args,
+            mut ref needs_time,
             mut ref needs_driver
         )
         module_id += 1
@@ -1409,6 +1416,7 @@ pub func c_file_dump(
         needs_mem,
         needs_io,
         needs_args,
+        needs_time,
         needs_driver
     )
     append_section(mut ref mem, mut ref out, ref prelude)
@@ -1431,6 +1439,7 @@ pub func c_file_dump(
         needs_io,
         needs_exit,
         needs_args,
+        needs_time,
         needs_driver
     )
 

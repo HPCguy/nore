@@ -1390,7 +1390,9 @@ static bool g_has_casts = false;
 static bool g_has_io = false;
 static bool g_has_mem = false;
 static bool g_has_args = false;
+static bool g_has_time = false;
 static bool g_has_driver = false;
+static bool g_require_main = true;
 
 /* Native declaration table (separate from function table to avoid name collisions) */
 typedef struct {
@@ -1409,7 +1411,8 @@ static bool is_known_native(const char *name, size_t length) {
     static const struct { const char *name; size_t len; } known[] = {
         {"fd_write", 8}, {"fd_read", 7}, {"fd_open", 7},
         {"fd_close", 8}, {"fd_seek", 7}, {"mem_copy", 8}, {"exit", 4},
-        {"args", 4}, {"shell_run", 9}, {"exe_dir", 7}, {"pid", 3}
+        {"args", 4}, {"shell_run", 9}, {"exe_dir", 7}, {"pid", 3},
+        {"time_ns", 7}
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (length == known[i].len && memcmp(name, known[i].name, length) == 0)
@@ -1837,6 +1840,7 @@ typedef enum {
     AST_SHELL_RUN,
     AST_EXE_DIR,
     AST_PID,
+    AST_TIME_NS,
     AST_ENUM_DECL,
     AST_ENUM_VARIANT,
     AST_MATCH,
@@ -2086,6 +2090,7 @@ typedef struct Ast {
         struct { struct Ast *command; } shell_run;
         struct { struct Ast *arena; } exe_dir;
         struct { int unused; } pid_call;
+        struct { int unused; } time_ns_call;
 
         struct {
             const char *name_start;
@@ -2798,6 +2803,15 @@ static Ast *ast_make_pid(SourceLoc loc) {
     return node;
 }
 
+/* Benchmark timing stays seed-local for the same reason as pid(). */
+static Ast *ast_make_time_ns(SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_TIME_NS;
+    node->loc = loc;
+    return node;
+}
+
 static size_t compute_string_byte_length(const char *start, size_t raw_len) {
     size_t count = 0;
     for (size_t i = 0; i < raw_len; i++) {
@@ -2977,6 +2991,7 @@ static void ast_free(Ast *node) {
             ast_free(node->as.exe_dir.arena);
             break;
         case AST_PID:
+        case AST_TIME_NS:
             break;
         case AST_ENUM_DECL:
             break;
@@ -4064,6 +4079,18 @@ static Ast *parser_parse_primary(Parser *parser) {
                 return NULL;
             }
             return ast_make_pid(loc);
+        }
+
+        /* time_ns() — built-in wall-clock helper for benchmark instrumentation */
+        if (name_length == 7 && memcmp(name_start, "time_ns", 7) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after time_ns()");
+                return NULL;
+            }
+            return ast_make_time_ns(loc);
         }
 
         /* Check for module-qualified access: alias.name */
@@ -6496,6 +6523,10 @@ static void parser_print_ast_step(Ast *node, int indent) {
 
         case AST_PID:
             printf("PID\n");
+            break;
+
+        case AST_TIME_NS:
+            printf("TIME_NS\n");
             break;
 
         case AST_ENUM_DECL:
@@ -9096,6 +9127,13 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
             node->expr_type = TYPE_I64;
             return TYPE_I64;
 
+        case AST_TIME_NS:
+            require_native_decl(node, "time_ns", 7,
+                "native func time_ns(): i64");
+            g_has_time = true;
+            node->expr_type = TYPE_I64;
+            return TYPE_I64;
+
         default:
             break;
     }
@@ -10185,7 +10223,7 @@ static void typecheck_program(Ast *program) {
     }
 
     /* Check for main function */
-    if (!has_main) {
+    if (g_require_main && !has_main) {
         diagnostic(g_source_file, ERR_S009_MISSING_MAIN, 1, 1, "No 'main' function defined");
     }
 
@@ -11109,6 +11147,10 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
 
         case AST_PID:
             fprintf(out, "ni_pid()");
+            break;
+
+        case AST_TIME_NS:
+            fprintf(out, "ni_time_ns()");
             break;
 
         case AST_VAL_DECL:
@@ -12085,6 +12127,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     if (g_has_io) {
         fprintf(out, "#include <fcntl.h>\n");
     }
+    if (g_has_time || g_has_driver) {
+        fprintf(out, "#include <sys/time.h>\n");
+    }
     if (g_has_driver) {
         fprintf(out, "#include <sys/wait.h>\n");
     }
@@ -12330,6 +12375,14 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "}\n\n");
     }
 
+    if (g_has_time) {
+        fprintf(out, "static int64_t ni_time_ns(void) {\n");
+        fprintf(out, "    struct timeval tv;\n");
+        fprintf(out, "    gettimeofday(&tv, NULL);\n");
+        fprintf(out, "    return ((int64_t)tv.tv_sec * 1000000000LL) + ((int64_t)tv.tv_usec * 1000LL);\n");
+        fprintf(out, "}\n\n");
+    }
+
     if (g_has_driver) {
         fprintf(out, "static int32_t ni_shell_run(ni_slice_0 command) {\n");
         fprintf(out, "    char *buf = (char *)malloc((size_t)command.len + 1U);\n");
@@ -12547,6 +12600,27 @@ static void codegen_print_ir(Ast *ast) {
     printf("\n");
 }
 
+/* Writing emitted C directly keeps compiler-only benchmarks free of Clang noise. */
+static void codegen_emit_c(Ast *ast, const char *output_path) {
+    FILE *out = fopen(output_path, "w");
+    if (!out) {
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", output_path);
+    }
+
+    codegen_emit_ir(out, ast);
+
+    if (fclose(out) != 0) {
+        unlink(output_path);
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", output_path);
+    }
+
+    if (g_had_error) {
+        unlink(output_path);
+    }
+}
+
 static void codegen_compile_with_clang(const char *c_source_path, const char *binary_path) {
     char command[1024];
     const char *compiler = getenv("CC");
@@ -12611,6 +12685,7 @@ typedef struct {
     int print_tokens;
     int print_ast;
     int print_ir;
+    int benchmark;
     int run;
 } CompilerFlags;
 
@@ -12625,50 +12700,78 @@ int main(int argc, char **argv) {
     if (argc < 2) {
         error(ERR_D001_NO_INPUT_FILE,
                      "Usage: %s <file.nore> [--run] [--lexer] [--parser] [--codegen] [-o output]\n"
+                     "       %s --emit-c <input.nore> <output.c> [compiler_root]\n"
                      "       %s --version",
+                     argv[0],
                      argv[0],
                      argv[0]);
     }
 
     const char *input_path = NULL;
     const char *output_arg = NULL;
+    const char *compiler_root_arg = NULL;
+    int emit_c_mode = 0;
     CompilerFlags flags = {0};
 
     /* Extra arguments after -- (forwarded to program in --run mode) */
     int extra_argc = 0;
     char **extra_argv = NULL;
 
-    /* Parse command-line arguments */
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--") == 0) {
-            extra_argc = argc - i - 1;
-            extra_argv = &argv[i + 1];
-            break;
-        } else if (strcmp(argv[i], "--lexer") == 0) {
-            flags.print_tokens = 1;
-        } else if (strcmp(argv[i], "--parser") == 0) {
-            flags.print_ast = 1;
-        } else if (strcmp(argv[i], "--codegen") == 0) {
-            flags.print_ir = 1;
-        } else if (strcmp(argv[i], "--version") == 0) {
-            puts(NOREC_STAGE0_VERSION_TEXT);
-            return 0;
-        } else if (strcmp(argv[i], "--run") == 0) {
-            flags.run = 1;
-        } else if (strcmp(argv[i], "-o") == 0) {
-            if (i + 1 >= argc) {
-                error(ERR_D004_MISSING_OUTPUT_PATH,
-                             "Expected output path after -o");
+    if (strcmp(argv[1], "--emit-c") == 0) {
+        emit_c_mode = 1;
+        if (argc < 4) {
+            error(ERR_D001_NO_INPUT_FILE,
+                  "Expected input and output paths after --emit-c");
+        }
+        input_path = argv[2];
+        output_arg = argv[3];
+        for (int i = 4; i < argc; i++) {
+            if (strcmp(argv[i], "--bench") == 0) {
+                flags.benchmark = 1;
+            } else if (argv[i][0] == '-') {
+                error(ERR_D002_UNKNOWN_FLAG, "Unknown flag: %s", argv[i]);
+            } else if (!compiler_root_arg) {
+                compiler_root_arg = argv[i];
+            } else {
+                error(ERR_D001_NO_INPUT_FILE,
+                      "Expected input and output paths after --emit-c");
             }
-            output_arg = argv[++i];
-        } else if (argv[i][0] == '-') {
-            error(ERR_D002_UNKNOWN_FLAG, "Unknown flag: %s", argv[i]);
-        } else {
-            if (input_path) {
-                error(ERR_D003_MULTIPLE_INPUTS,
-                             "Multiple input files specified");
+        }
+    } else {
+        /* Parse command-line arguments */
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--") == 0) {
+                extra_argc = argc - i - 1;
+                extra_argv = &argv[i + 1];
+                break;
+            } else if (strcmp(argv[i], "--lexer") == 0) {
+                flags.print_tokens = 1;
+            } else if (strcmp(argv[i], "--parser") == 0) {
+                flags.print_ast = 1;
+            } else if (strcmp(argv[i], "--codegen") == 0) {
+                flags.print_ir = 1;
+            } else if (strcmp(argv[i], "--bench") == 0) {
+                flags.benchmark = 1;
+            } else if (strcmp(argv[i], "--version") == 0) {
+                puts(NOREC_STAGE0_VERSION_TEXT);
+                return 0;
+            } else if (strcmp(argv[i], "--run") == 0) {
+                flags.run = 1;
+            } else if (strcmp(argv[i], "-o") == 0) {
+                if (i + 1 >= argc) {
+                    error(ERR_D004_MISSING_OUTPUT_PATH,
+                                 "Expected output path after -o");
+                }
+                output_arg = argv[++i];
+            } else if (argv[i][0] == '-') {
+                error(ERR_D002_UNKNOWN_FLAG, "Unknown flag: %s", argv[i]);
+            } else {
+                if (input_path) {
+                    error(ERR_D003_MULTIPLE_INPUTS,
+                                 "Multiple input files specified");
+                }
+                input_path = argv[i];
             }
-            input_path = argv[i];
         }
     }
 
@@ -12681,18 +12784,27 @@ int main(int argc, char **argv) {
 
     /* Determine compiler directory (for std/ imports) */
     {
-        char argv0_buf[PATH_MAX];
-        strncpy(argv0_buf, argv[0], sizeof(argv0_buf) - 1);
-        argv0_buf[sizeof(argv0_buf) - 1] = '\0';
-        /* Try to resolve the real path of the compiler binary */
         char real_buf[PATH_MAX];
-        if (realpath(argv[0], real_buf)) {
-            strncpy(argv0_buf, real_buf, sizeof(argv0_buf) - 1);
+        if (compiler_root_arg) {
+            if (realpath(compiler_root_arg, real_buf)) {
+                strncpy(g_compiler_dir, real_buf, sizeof(g_compiler_dir) - 1);
+            } else {
+                strncpy(g_compiler_dir, compiler_root_arg, sizeof(g_compiler_dir) - 1);
+            }
+            g_compiler_dir[sizeof(g_compiler_dir) - 1] = '\0';
+        } else {
+            char argv0_buf[PATH_MAX];
+            strncpy(argv0_buf, argv[0], sizeof(argv0_buf) - 1);
             argv0_buf[sizeof(argv0_buf) - 1] = '\0';
+            /* Try to resolve the real path of the compiler binary */
+            if (realpath(argv[0], real_buf)) {
+                strncpy(argv0_buf, real_buf, sizeof(argv0_buf) - 1);
+                argv0_buf[sizeof(argv0_buf) - 1] = '\0';
+            }
+            char *dir = dirname(argv0_buf);
+            strncpy(g_compiler_dir, dir, sizeof(g_compiler_dir) - 1);
+            g_compiler_dir[sizeof(g_compiler_dir) - 1] = '\0';
         }
-        char *dir = dirname(argv0_buf);
-        strncpy(g_compiler_dir, dir, sizeof(g_compiler_dir) - 1);
-        g_compiler_dir[sizeof(g_compiler_dir) - 1] = '\0';
     }
 
     /* Add main file to import tracking (so it won't be imported again) */
@@ -12751,6 +12863,7 @@ int main(int argc, char **argv) {
     }
 
     /* Type checking */
+    g_require_main = !emit_c_mode;
     typecheck_program(ast);
 
     /* --codegen: Print intermediate C code (also runs semantic checks) */
@@ -12764,7 +12877,9 @@ int main(int argc, char **argv) {
     int run_exit_code = 0;
 
     if (!skip_compilation) {
-        if (flags.run) {
+        if (emit_c_mode) {
+            codegen_emit_c(ast, output_path);
+        } else if (flags.run) {
             /* Compile to temp binary, run it, clean up */
             char temp_bin[] = "/tmp/nore_run_XXXXXX";
             int fd = mkstemp(temp_bin);

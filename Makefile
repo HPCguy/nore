@@ -120,5 +120,10 @@ bench-compiler: $(STAGE0_BIN) $(NOREC)
 	@chmod +x benchmark/compile_compiler.sh
 	@CC="$(CC)" ./benchmark/compile_compiler.sh
 
+# Run the expanded self-hosted benchmark matrix alongside the stage-0 headline baseline.
+bench-compiler-matrix: $(STAGE0_BIN) $(NOREC)
+	@chmod +x benchmark/compiler_matrix.sh
+	@CC="$(CC)" ./benchmark/compiler_matrix.sh
+
 # Phony targets
-.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-compiler test-compiler-stage0 bench-compiler test test-stage0 test-parity
+.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-compiler test-compiler-stage0 bench-compiler bench-compiler-matrix test test-stage0 test-parity
