@@ -135,6 +135,32 @@ func scope_append_symbol(
         symbols_table.next_symbol[scopes_table.last_symbol[scope_id]] = symbol_id
     }
     scopes_table.last_symbol[scope_id] = symbol_id
+
+    val kind: symbols.SymbolKind = symbols_table.kind[symbol_id]
+    if (is_value_symbol(kind)) {
+        if (scopes_table.first_value_symbol[scope_id] < 0) {
+            scopes_table.first_value_symbol[scope_id] = symbol_id
+        } else {
+            symbols_table.next_value_symbol[scopes_table.last_value_symbol[scope_id]] = symbol_id
+        }
+        scopes_table.last_value_symbol[scope_id] = symbol_id
+    }
+    if (kind == symbols.SymbolKind.FunctionSymbol) {
+        if (scopes_table.first_function_symbol[scope_id] < 0) {
+            scopes_table.first_function_symbol[scope_id] = symbol_id
+        } else {
+            symbols_table.next_function_symbol[scopes_table.last_function_symbol[scope_id]] = symbol_id
+        }
+        scopes_table.last_function_symbol[scope_id] = symbol_id
+    }
+    if (kind == symbols.SymbolKind.TypeSymbol) {
+        if (scopes_table.first_type_symbol[scope_id] < 0) {
+            scopes_table.first_type_symbol[scope_id] = symbol_id
+        } else {
+            symbols_table.next_type_symbol[scopes_table.last_type_symbol[scope_id]] = symbol_id
+        }
+        scopes_table.last_type_symbol[scope_id] = symbol_id
+    }
 }
 
 // Keep token-name comparisons centralized so all namespace searches behave the same way.
@@ -492,7 +518,7 @@ func scope_find_module_alias_local(
     scope_id: i64,
     name_token: i64
 ): i64 = {
-    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    mut symbol_id: i64 = scopes_table.first_value_symbol[scope_id]
     while (symbol_id >= 0) {
         if (symbols_table.kind[symbol_id] == symbols.SymbolKind.ModuleAliasSymbol &&
             token_name_eq(
@@ -504,7 +530,7 @@ func scope_find_module_alias_local(
             )) {
             return symbol_id
         }
-        symbol_id = symbols_table.next_symbol[symbol_id]
+        symbol_id = symbols_table.next_value_symbol[symbol_id]
     }
     symbols.invalid_symbol_id()
 }
@@ -519,7 +545,7 @@ func scope_find_value_local(
     scope_id: i64,
     name_token: i64
 ): i64 = {
-    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    mut symbol_id: i64 = scopes_table.first_value_symbol[scope_id]
     while (symbol_id >= 0) {
         if (is_value_symbol(symbols_table.kind[symbol_id]) &&
             token_name_eq(
@@ -531,7 +557,7 @@ func scope_find_value_local(
             )) {
             return symbol_id
         }
-        symbol_id = symbols_table.next_symbol[symbol_id]
+        symbol_id = symbols_table.next_value_symbol[symbol_id]
     }
     symbols.invalid_symbol_id()
 }
@@ -548,7 +574,7 @@ func scope_find_value_visible(
 ): i64 = {
     mut current_scope: i64 = scope_id
     while (current_scope >= 0) {
-        mut symbol_id: i64 = scopes_table.first_symbol[current_scope]
+        mut symbol_id: i64 = scopes_table.first_value_symbol[current_scope]
         while (symbol_id >= 0) {
             if (is_runtime_value_symbol(symbols_table.kind[symbol_id]) &&
                 token_name_eq(
@@ -560,7 +586,7 @@ func scope_find_value_visible(
                 )) {
                 return symbol_id
             }
-            symbol_id = symbols_table.next_symbol[symbol_id]
+            symbol_id = symbols_table.next_value_symbol[symbol_id]
         }
         current_scope = scopes_table.parent[current_scope]
     }
@@ -579,10 +605,9 @@ func module_find_function(
     prefer_public: bool
 ): i64 = {
     mut first_match: i64 = symbols.invalid_symbol_id()
-    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    mut symbol_id: i64 = scopes_table.first_function_symbol[scope_id]
     while (symbol_id >= 0) {
-        if (symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol &&
-            token_name_eq(
+        if (token_name_eq(
                 ref sources,
                 ref text_pool,
                 ref tokens,
@@ -602,7 +627,7 @@ func module_find_function(
                 }
             }
         }
-        symbol_id = symbols_table.next_symbol[symbol_id]
+        symbol_id = symbols_table.next_function_symbol[symbol_id]
     }
     first_match
 }
@@ -619,10 +644,9 @@ func module_find_same_kind_function(
     name_token: i64,
     wants_native: bool
 ): i64 = {
-    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    mut symbol_id: i64 = scopes_table.first_function_symbol[scope_id]
     while (symbol_id >= 0) {
-        if (symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol &&
-            token_name_eq(
+        if (token_name_eq(
                 ref sources,
                 ref text_pool,
                 ref tokens,
@@ -632,7 +656,7 @@ func module_find_same_kind_function(
             symbols.symbol_is_native(ref symbols_table, symbol_id) == wants_native) {
             return symbol_id
         }
-        symbol_id = symbols_table.next_symbol[symbol_id]
+        symbol_id = symbols_table.next_function_symbol[symbol_id]
     }
     symbols.invalid_symbol_id()
 }
@@ -647,7 +671,7 @@ func module_find_global(
     scope_id: i64,
     name_token: i64
 ): i64 = {
-    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    mut symbol_id: i64 = scopes_table.first_value_symbol[scope_id]
     while (symbol_id >= 0) {
         if (symbols_table.kind[symbol_id] == symbols.SymbolKind.GlobalSymbol &&
             token_name_eq(
@@ -659,7 +683,7 @@ func module_find_global(
             )) {
             return symbol_id
         }
-        symbol_id = symbols_table.next_symbol[symbol_id]
+        symbol_id = symbols_table.next_value_symbol[symbol_id]
     }
     symbols.invalid_symbol_id()
 }
@@ -674,10 +698,9 @@ func module_find_type(
     scope_id: i64,
     name_token: i64
 ): i64 = {
-    mut symbol_id: i64 = scopes_table.first_symbol[scope_id]
+    mut symbol_id: i64 = scopes_table.first_type_symbol[scope_id]
     while (symbol_id >= 0) {
-        if (symbols_table.kind[symbol_id] == symbols.SymbolKind.TypeSymbol &&
-            token_name_eq(
+        if (token_name_eq(
                 ref sources,
                 ref text_pool,
                 ref tokens,
@@ -686,7 +709,7 @@ func module_find_type(
             )) {
             return symbol_id
         }
-        symbol_id = symbols_table.next_symbol[symbol_id]
+        symbol_id = symbols_table.next_type_symbol[symbol_id]
     }
     symbols.invalid_symbol_id()
 }

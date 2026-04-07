@@ -22,6 +22,9 @@ pub table Symbols {
     target_module: i64,
     arena_source_symbol: i64,
     next_symbol: i64,
+    next_value_symbol: i64,
+    next_function_symbol: i64,
+    next_type_symbol: i64,
     flags: i64
 }
 
@@ -61,6 +64,9 @@ pub func symbols_push(
         target_module: target_module,
         arena_source_symbol: invalid_symbol_id(),
         next_symbol: invalid_symbol_id(),
+        next_value_symbol: invalid_symbol_id(),
+        next_function_symbol: invalid_symbol_id(),
+        next_type_symbol: invalid_symbol_id(),
         flags: flags
     })
     symbol_id

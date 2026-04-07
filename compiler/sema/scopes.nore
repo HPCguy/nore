@@ -9,6 +9,12 @@ pub table Scopes {
     owner_node: i64,
     first_symbol: i64,
     last_symbol: i64,
+    first_value_symbol: i64,
+    last_value_symbol: i64,
+    first_function_symbol: i64,
+    last_function_symbol: i64,
+    first_type_symbol: i64,
+    last_type_symbol: i64,
     depth: i64
 }
 
@@ -37,6 +43,12 @@ pub func scopes_push(
         owner_node: owner_node,
         first_symbol: -1,
         last_symbol: -1,
+        first_value_symbol: -1,
+        last_value_symbol: -1,
+        first_function_symbol: -1,
+        last_function_symbol: -1,
+        first_type_symbol: -1,
+        last_type_symbol: -1,
         depth: depth
     })
     scope_id
