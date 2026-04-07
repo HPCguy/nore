@@ -15,6 +15,8 @@ import span "../support/span.nore"
 import token "token.nore"
 import string "std/string.nore"
 
+native func time_ns(): i64
+
 pub table Modules {
     source_id: i64,
     root_node: i64,
@@ -38,12 +40,31 @@ pub value LoadResult {
     imports: span.Range,
     tokens: span.Range,
     nodes: span.Range,
-    diags: span.Range
+    diags: span.Range,
+    load_source_ns: i64,
+    load_lex_ns: i64,
+    load_parse_ns: i64
 }
 
 // Keep the shared missing-row sentinel explicit across module and import tables.
 func invalid_id(): i64 = {
     -1
+}
+
+// Benchmark helpers keep the normal loader path free from timing work.
+func bench_now(benchmark_mode: bool): i64 = {
+    if (benchmark_mode) {
+        return time_ns()
+    }
+    0
+}
+
+// Accumulate one optional phase timing into the running total.
+func bench_add(mut ref total_ns: i64, benchmark_mode: bool, start_ns: i64): void = {
+    if (!benchmark_mode) {
+        return
+    }
+    total_ns += time_ns() - start_ns
 }
 
 // Module lookup stays linear until real graph sizes justify better indexing.
@@ -152,50 +173,55 @@ func ensure_source_loaded(
     import_start: i64,
     import_len: i64,
     mut ref diags: diag.Diagnostics,
-    mut ref diag_pool: bbuf.ByteBuf
+    mut ref diag_pool: bbuf.ByteBuf,
+    benchmark_mode: bool,
+    mut ref load_source_ns: i64
 ): i64 = {
-    val existing_source: i64 = source_find_by_path(ref sources, ref path_pool, ref path_text)
-    if (existing_source >= 0) {
-        return existing_source
-    }
-
-    val loaded: source.SourceLoadResult = source.sources_load_file(
-        mut ref mem,
-        mut ref sources,
-        mut ref path_pool,
-        mut ref text_pool,
-        mut ref line_starts,
-        ref path_text,
-        ref display_path,
-        importer_source
-    )
-    match (loaded) {
-        Ok(source_id) = { source_id }
-        Err(code) = {
-            if (importer_source >= 0) {
-                diag.diag_error(
-                    mut ref mem,
-                    mut ref diags,
-                    mut ref diag_pool,
-                    ref "D007",
-                    importer_source,
-                    import_start,
-                    import_len,
-                    ref "Cannot find imported file"
-                )
-            } else {
-                diag.diag_error_path(
-                    mut ref mem,
-                    mut ref diags,
-                    mut ref diag_pool,
-                    ref "D005",
-                    ref display_path,
-                    ref "Could not open file"
-                )
+    val source_start: i64 = bench_now(benchmark_mode)
+    mut result_source: i64 = source_find_by_path(ref sources, ref path_pool, ref path_text)
+    if (result_source < 0) {
+        val loaded: source.SourceLoadResult = source.sources_load_file(
+            mut ref mem,
+            mut ref sources,
+            mut ref path_pool,
+            mut ref text_pool,
+            mut ref line_starts,
+            ref path_text,
+            ref display_path,
+            importer_source
+        )
+        match (loaded) {
+            Ok(source_id) = {
+                result_source = source_id
             }
-            invalid_id()
+            Err(code) = {
+                if (importer_source >= 0) {
+                    diag.diag_error(
+                        mut ref mem,
+                        mut ref diags,
+                        mut ref diag_pool,
+                        ref "D007",
+                        importer_source,
+                        import_start,
+                        import_len,
+                        ref "Cannot find imported file"
+                    )
+                } else {
+                    diag.diag_error_path(
+                        mut ref mem,
+                        mut ref diags,
+                        mut ref diag_pool,
+                        ref "D005",
+                        ref display_path,
+                        ref "Could not open file"
+                    )
+                }
+                result_source = invalid_id()
+            }
         }
     }
+    bench_add(mut ref load_source_ns, benchmark_mode, source_start)
+    result_source
 }
 
 // One module parse stays self-contained so graph loading can stop cleanly on errors.
@@ -208,7 +234,10 @@ func parse_module_once(
     mut ref nodes: node.Nodes,
     mut ref diags: diag.Diagnostics,
     mut ref diag_pool: bbuf.ByteBuf,
-    mut ref modules: Modules
+    mut ref modules: Modules,
+    benchmark_mode: bool,
+    mut ref load_lex_ns: i64,
+    mut ref load_parse_ns: i64
 ): i64 = {
     val existing_module: i64 = module_find_by_source(ref modules, source_id)
     if (existing_module >= 0) {
@@ -216,6 +245,7 @@ func parse_module_once(
     }
 
     val diag_start: i64 = table_len(ref diags)
+    val lex_start: i64 = bench_now(benchmark_mode)
     val lexed: lexer.LexResult = lexer.lex_source(
         mut ref mem,
         ref sources,
@@ -225,10 +255,12 @@ func parse_module_once(
         mut ref diags,
         mut ref diag_pool
     )
+    bench_add(mut ref load_lex_ns, benchmark_mode, lex_start)
     if (table_len(ref diags) != diag_start) {
         return invalid_id()
     }
 
+    val parse_start: i64 = bench_now(benchmark_mode)
     val parsed: parser.ParseResult = parser.parse_tokens(
         mut ref mem,
         ref sources,
@@ -239,6 +271,7 @@ func parse_module_once(
         mut ref diags,
         mut ref diag_pool
     )
+    bench_add(mut ref load_parse_ns, benchmark_mode, parse_start)
     if (table_len(ref diags) != diag_start) {
         return invalid_id()
     }
@@ -294,6 +327,10 @@ func load_import_target(
     mut ref modules: Modules,
     mut ref diags: diag.Diagnostics,
     mut ref diag_pool: bbuf.ByteBuf,
+    benchmark_mode: bool,
+    mut ref load_source_ns: i64,
+    mut ref load_lex_ns: i64,
+    mut ref load_parse_ns: i64,
     from_module: i64,
     import_node: i64
 ): i64 = {
@@ -323,7 +360,9 @@ func load_import_target(
         tokens.start[path_token_id],
         tokens.len[path_token_id],
         mut ref diags,
-        mut ref diag_pool
+        mut ref diag_pool,
+        benchmark_mode,
+        mut ref load_source_ns
     )
     if (source_id < 0) {
         return invalid_id()
@@ -338,7 +377,10 @@ func load_import_target(
         mut ref nodes,
         mut ref diags,
         mut ref diag_pool,
-        mut ref modules
+        mut ref modules,
+        benchmark_mode,
+        mut ref load_lex_ns,
+        mut ref load_parse_ns
     )
 }
 
@@ -377,6 +419,10 @@ func load_module_imports(
     mut ref queued: ibuf.I64Buf,
     mut ref diags: diag.Diagnostics,
     mut ref diag_pool: bbuf.ByteBuf,
+    benchmark_mode: bool,
+    mut ref load_source_ns: i64,
+    mut ref load_lex_ns: i64,
+    mut ref load_parse_ns: i64,
     module_id: i64
 ): bool = {
     mut child_id: i64 = nodes.first_child[modules.root_node[module_id]]
@@ -399,6 +445,10 @@ func load_module_imports(
                     mut ref modules,
                     mut ref diags,
                     mut ref diag_pool,
+                    benchmark_mode,
+                    mut ref load_source_ns,
+                    mut ref load_lex_ns,
+                    mut ref load_parse_ns,
                     module_id,
                     child_id
                 )
@@ -548,8 +598,8 @@ pub func module_graph_dump(
     out.data[0..out.count]
 }
 
-// Load one root module and then walk newly discovered imports breadth-first by load order.
-pub func load_graph(
+// One shared implementation keeps normal and benchmarked graph loads behaviorally identical.
+func load_graph_impl(
     mut ref mem: Arena,
     ref compiler_root: [u8],
     ref root_path: [u8],
@@ -562,13 +612,17 @@ pub func load_graph(
     mut ref modules: Modules,
     mut ref imports: ModuleImports,
     mut ref diags: diag.Diagnostics,
-    mut ref diag_pool: bbuf.ByteBuf
+    mut ref diag_pool: bbuf.ByteBuf,
+    benchmark_mode: bool
 ): LoadResult = {
     val module_start: i64 = table_len(ref modules)
     val import_start: i64 = table_len(ref imports)
     val token_start: i64 = table_len(ref tokens)
     val node_start: i64 = table_len(ref nodes)
     val diag_start: i64 = table_len(ref diags)
+    mut load_source_ns: i64 = 0
+    mut load_lex_ns: i64 = 0
+    mut load_parse_ns: i64 = 0
 
     val normalized_root_path: str = path.path_normalize(mut ref mem, ref root_path)
 
@@ -584,7 +638,9 @@ pub func load_graph(
         0,
         0,
         mut ref diags,
-        mut ref diag_pool
+        mut ref diag_pool,
+        benchmark_mode,
+        mut ref load_source_ns
     )
 
     mut root_module: i64 = invalid_id()
@@ -598,7 +654,10 @@ pub func load_graph(
             mut ref nodes,
             mut ref diags,
             mut ref diag_pool,
-            mut ref modules
+            mut ref modules,
+            benchmark_mode,
+            mut ref load_lex_ns,
+            mut ref load_parse_ns
         )
     }
 
@@ -622,6 +681,10 @@ pub func load_graph(
                     mut ref queued,
                     mut ref diags,
                     mut ref diag_pool,
+                    benchmark_mode,
+                    mut ref load_source_ns,
+                    mut ref load_lex_ns,
+                    mut ref load_parse_ns,
                     queued.data[queue_index]
                 )) {
                 break
@@ -636,6 +699,77 @@ pub func load_graph(
         imports: span.range(import_start, table_len(ref imports) - import_start),
         tokens: span.range(token_start, table_len(ref tokens) - token_start),
         nodes: span.range(node_start, table_len(ref nodes) - node_start),
-        diags: span.range(diag_start, table_len(ref diags) - diag_start)
+        diags: span.range(diag_start, table_len(ref diags) - diag_start),
+        load_source_ns: load_source_ns,
+        load_lex_ns: load_lex_ns,
+        load_parse_ns: load_parse_ns
     }
+}
+
+// Load one root module and then walk newly discovered imports breadth-first by load order.
+pub func load_graph(
+    mut ref mem: Arena,
+    ref compiler_root: [u8],
+    ref root_path: [u8],
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    mut ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref modules: Modules,
+    mut ref imports: ModuleImports,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): LoadResult = {
+    load_graph_impl(
+        mut ref mem,
+        ref compiler_root,
+        ref root_path,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool,
+        false
+    )
+}
+
+// Benchmarked graph loads expose internal source, lex, and parse buckets.
+pub func load_graph_bench(
+    mut ref mem: Arena,
+    ref compiler_root: [u8],
+    ref root_path: [u8],
+    mut ref sources: source.Sources,
+    mut ref path_pool: bbuf.ByteBuf,
+    mut ref text_pool: bbuf.ByteBuf,
+    mut ref line_starts: ibuf.I64Buf,
+    mut ref tokens: token.Tokens,
+    mut ref nodes: node.Nodes,
+    mut ref modules: Modules,
+    mut ref imports: ModuleImports,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf
+): LoadResult = {
+    load_graph_impl(
+        mut ref mem,
+        ref compiler_root,
+        ref root_path,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool,
+        true
+    )
 }

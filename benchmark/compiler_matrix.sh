@@ -69,8 +69,8 @@ render_table() {
 }
 
 print_row() {
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" "${21}" "${22}"
 }
 
 read_line_count() {
@@ -168,6 +168,10 @@ measure_selfhost_emit_c() {
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
         "$(read_bench_metric load_ns "$bench_path")" \
+        "$(read_bench_metric load_source_ns "$bench_path")" \
+        "$(read_bench_metric load_lex_ns "$bench_path")" \
+        "$(read_bench_metric load_parse_ns "$bench_path")" \
+        "$(read_bench_metric load_misc_ns "$bench_path")" \
         "$(read_bench_metric check_ns "$bench_path")" \
         "$(read_bench_metric codegen_ns "$bench_path")" \
         "$(read_bench_metric tail_ns "$bench_path")" \
@@ -202,7 +206,7 @@ measure_stage0_emit_c() {
         "$(read_time_metric real "$time_path")" \
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
-        "-" "-" "-" "-" "-" "-" "-" "-" "-" \
+        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
         "$(wc -c < "$output_path" | tr -d ' ')" \
         "$(read_line_count "$output_path")" \
         >> "$RAW_METRICS"
@@ -228,6 +232,10 @@ measure_selfhost_full() {
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
         "$(read_bench_metric load_ns "$bench_path")" \
+        "$(read_bench_metric load_source_ns "$bench_path")" \
+        "$(read_bench_metric load_lex_ns "$bench_path")" \
+        "$(read_bench_metric load_parse_ns "$bench_path")" \
+        "$(read_bench_metric load_misc_ns "$bench_path")" \
         "$(read_bench_metric check_ns "$bench_path")" \
         "$(read_bench_metric codegen_ns "$bench_path")" \
         "$(read_bench_metric tail_ns "$bench_path")" \
@@ -259,7 +267,7 @@ measure_stage0_full() {
         "$(read_time_metric real "$time_path")" \
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
-        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
+        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
         >> "$RAW_METRICS"
 
     rm -f "$output_path" "$time_path"
@@ -289,7 +297,7 @@ measure_clang_c() {
         "$(read_time_metric real "$time_path")" \
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
-        "-" "-" "-" "-" "-" "-" "-" "-" "-" \
+        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
         "$(wc -c < "$c_path" | tr -d ' ')" \
         "$(read_line_count "$c_path")" \
         >> "$RAW_METRICS"
@@ -314,7 +322,7 @@ print_average_rows() {
                 order[++order_count] = group
                 seen_order[group] = 1
             }
-            for (col = 5; col <= 18; col++) {
+            for (col = 5; col <= 22; col++) {
                 add_num(group, col, $col)
             }
         }
@@ -323,7 +331,7 @@ print_average_rows() {
                 group = order[i]
                 split(group, parts, FS)
                 printf "%s\t%s\t%s\tavg", parts[1], parts[2], parts[3]
-                for (col = 5; col <= 18; col++) {
+                for (col = 5; col <= 22; col++) {
                     if (count[group, col] == 0) {
                         printf "\t-"
                     } else if (col <= 7) {
@@ -350,6 +358,10 @@ print_row \
     "user" \
     "sys" \
     "load_ns" \
+    "load_source_ns" \
+    "load_lex_ns" \
+    "load_parse_ns" \
+    "load_misc_ns" \
     "check_ns" \
     "codegen_ns" \
     "tail_ns" \
@@ -401,6 +413,10 @@ echo "Average metrics:"
         "user" \
         "sys" \
         "load_ns" \
+        "load_source_ns" \
+        "load_lex_ns" \
+        "load_parse_ns" \
+        "load_misc_ns" \
         "check_ns" \
         "codegen_ns" \
         "tail_ns" \
