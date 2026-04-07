@@ -170,6 +170,7 @@ See [editors/vim/README.md](editors/vim/README.md) for installation and usage.
 - [docs/syntax.md](docs/syntax.md) for the syntax quick reference
 - [docs/compiler.md](docs/compiler.md) for the current compiler overview
 - [docs/compiler-architecture.md](docs/compiler-architecture.md) for compiler internals and module ownership
+- [docs/compiler-performance.md](docs/compiler-performance.md) for benchmark-driven compiler optimization notes
 - [docs/data-layout-optimization.md](docs/data-layout-optimization.md) for focused future ideas around views, layout control, and optimization directives
 - [docs/error-codes.md](docs/error-codes.md) for diagnostic codes
 - [editors/vim/README.md](editors/vim/README.md) for the Vim/Neovim runtime package

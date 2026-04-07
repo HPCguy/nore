@@ -85,6 +85,8 @@ RUNS=5 make bench-compiler
 
 The benchmark measures end-to-end compile time for building `compiler/main.nore` with `./norec-stage0` and `./norec`.
 
+For the compiler-only matrix, phase timings, and optimization log, see [compiler-performance.md](compiler-performance.md).
+
 ## Source Tree
 
 - `compiler/main.nore`: top-level compiler orchestration
@@ -99,4 +101,5 @@ For deeper module ownership and dependency direction, see [compiler-architecture
 ## Related Documents
 
 - [compiler-architecture.md](compiler-architecture.md)
+- [compiler-performance.md](compiler-performance.md)
 - [../compiler/README.md](../compiler/README.md)
