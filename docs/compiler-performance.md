@@ -1,8 +1,10 @@
 # Compiler Performance Notes
 
-This note tracks compiler-performance work that has already happened, the metrics used to judge it, and a few future data-layout directions that may support similar wins later.
+This note records the current stopping point of compiler-performance work in Nore.
 
-It is intentionally not a commitment to language features. It is a record of what helped the current compiler and what patterns may be worth revisiting.
+It focuses on measured results that were kept, the current comparison between stage-0 and the self-hosted compiler, and the conclusions that are stable enough to carry forward.
+
+It is not a commitment to future language features.
 
 ## Metric Hierarchy
 
@@ -11,7 +13,7 @@ The primary optimization metric is the compiler-only path:
 - `RUNS=5 ./benchmark/compiler_matrix.sh`
 - compare `stage0 emit-c` vs `norec emit-c`
 
-This is the best current measure of the compiler itself, because it excludes the Clang tail.
+This is the best current measure of compiler work because it excludes the Clang tail.
 
 The supporting metrics are:
 
@@ -22,45 +24,73 @@ The supporting metrics are:
 So the intended reading order is:
 
 1. `emit-c` for compiler work
-2. phase timings for diagnosis
+2. self-hosted phase timings for diagnosis
 3. `clang-c` and `full` for release-facing context
 
-## Current Picture
+## Current Stable Results
 
-After the latest sema-lookup optimization pass, the clean `RUNS=5` matrix shows:
+All numbers below come from a clean `RUNS=5 ./benchmark/compiler_matrix.sh` on the current tree.
 
-- `stage0 compiler/main.nore emit-c`: `0.020s` average real
-- `norec compiler/main.nore emit-c`: `0.020s` average real
-- `norec compiler/main.nore load_ns`: `7.68 ms`
-- `norec compiler/main.nore check_ns`: `5.55 ms`
-- `norec compiler/main.nore codegen_ns`: `4.18 ms`
-- `norec compiler/main.nore full`: `1.602s` average real
+### `compiler/main.nore`
+
+| Metric | `stage0` | `norec` | Reading |
+| --- | ---: | ---: | --- |
+| `emit-c` real | `0.020s` | `0.020s` | Rounded wall-clock parity on the root workload |
+| `clang-c` real | `1.892s` | `1.662s` | Self-hosted emitted C compiles faster in Clang |
+| `full` real | `1.922s` | `1.706s` | Self-hosted is faster end-to-end |
+| emitted C bytes | `1242190` | `991595` | Self-hosted emits about `20.2%` fewer bytes |
+| emitted C lines | `13339` | `12357` | Self-hosted emits about `7.4%` fewer lines |
 
 Important caveat:
 
-- `/usr/bin/time -p` rounds aggressively, so `0.020s` vs `0.020s` means rounded wall-clock parity, not proof that the two compilers are exactly equal underneath timer precision.
+- `/usr/bin/time -p` rounds aggressively, so `0.020s` vs `0.020s` should be read as near-parity, not proof that the two compilers are exactly equal in compiler-only work.
 
-The end-to-end path is still dominated by Clang work on emitted C. The compiler-only benchmark remains the right metric for self-hosted optimization decisions.
+For the same `compiler/main.nore` workload, the self-hosted compiler-only phase split is:
 
-## Optimization Log
+- `load_ns`: `7.977 ms`
+- `check_ns`: `5.898 ms`
+- `codegen_ns`: `4.214 ms`
+- `tail_ns` on `emit-c`: `0.345 ms`
 
-### `ccb81f8` Add compiler-only benchmark matrix
+That puts the measured self-hosted compiler pipeline at about:
 
-What changed:
+- `18.09 ms` before the small `emit-c` tail
 
-- added `benchmark/compiler_matrix.sh`
-- added self-hosted benchmark instrumentation
-- added real `--emit-c` support to `norec-stage0`
+For the self-hosted `full` path on the same workload:
 
-What it established:
+- `tail_ns`: about `1.681 s`
 
-- the right primary metric is `emit-c`, not `full`
-- initial compiler-only baseline on `compiler/main.nore` was roughly:
-  - `norec emit-c`: `0.030s`
-  - `stage0 emit-c`: `0.020s`
-  - `load_ns`: `8.10 ms`
-  - `check_ns`: `8.04 ms`
-  - `codegen_ns`: `4.48 ms`
+So the current end-to-end result is still dominated by Clang work on emitted C, even though the compiler-only metric remains the right target for internal optimization decisions.
+
+### Other Large Compiler Sources
+
+The larger single-file `emit-c` rows still show stage-0 ahead at rounded timer resolution:
+
+- `compiler/frontend/parser.nore`: `stage0 0.000s`, `norec 0.010s`
+- `compiler/sema/check.nore`: `stage0 0.010s`, `norec 0.020s`
+- `compiler/codegen/c_main.nore`: `stage0 0.010s`, `norec 0.020s`
+
+These rows are also rounded, but they reinforce the same reading:
+
+- self-hosted has reached rounded parity on the root `compiler/main.nore` compiler-only path
+- stage-0 is still the compiler-only baseline to beat overall
+
+## What Was Achieved
+
+### Starting Point: `ccb81f8` Add compiler-only benchmark matrix
+
+This established the benchmark structure and the first stable baseline:
+
+- `stage0 compiler/main.nore emit-c`: `0.020s`
+- `norec compiler/main.nore emit-c`: `0.030s`
+- `norec load_ns`: `8.10 ms`
+- `norec check_ns`: `8.04 ms`
+- `norec codegen_ns`: `4.48 ms`
+
+It also clarified the metric hierarchy:
+
+- `emit-c` is the primary compiler-performance metric
+- `full` is the user-facing release metric
 
 ### `a5541cc` Cache common type lookups
 
@@ -71,129 +101,90 @@ What changed:
 
 What it did:
 
-- helped a little
-- did not materially move the rounded `emit-c` headline
-
-Measured effect on `compiler/main.nore`:
-
-- `load_ns`: `8.10 ms` -> `8.09 ms`
-- `check_ns`: `8.04 ms` -> `7.91 ms`
-- `codegen_ns`: `4.48 ms` -> `4.33 ms`
-
-This was a good cleanup, but not the first major lever.
+- produced a modest win
+- cleaned up repeated linear scans in a narrow part of sema/codegen
 
 ### `909282c` Specialize sema scope lookups
 
 What changed:
 
 - kept the existing full per-scope symbol chain
-- added per-namespace chains for:
-  - values
-  - functions
-  - types
-- retargeted hot sema lookup helpers to the narrower chains
+- added narrower namespace-specific chains
+- retargeted hot sema lookups to those chains
 
-Why it helped:
+This was the first major win.
 
-- lookups no longer walk mixed symbol lists and then filter by kind
-- the biggest visible win was in semantic analysis
+### `ac8d8bb` Refine sema lookup chains
 
-Measured effect on `compiler/main.nore`:
+What changed:
 
-- `check_ns`: `7.91 ms` -> `5.55 ms`
-- `load_ns`: `8.09 ms` -> `7.68 ms`
-- `codegen_ns`: `4.33 ms` -> `4.18 ms`
+- narrowed runtime-value lookup further
+- kept module-alias lookup off the runtime-value path
 
-If you look only at the self-hosted internal pipeline before the emit tail:
+This was a smaller follow-up win than `909282c`, but it kept the sema direction consistent.
 
-- `load + check + codegen`: `20.33 ms` -> `17.41 ms`
+### Net Effect Of The Kept Work
 
-That is roughly a `14.3%` reduction in the measured self-hosted compiler pipeline, with the biggest component coming from sema lookup specialization.
+Comparing the initial baseline to the current `RUNS=5` result for `compiler/main.nore`:
 
-## Pattern Emerging So Far
+- `norec emit-c`: rounded `0.030s` -> rounded `0.020s`
+- `load_ns`: `8.10 ms` -> `7.98 ms`
+- `check_ns`: `8.04 ms` -> `5.90 ms`
+- `codegen_ns`: `4.48 ms` -> `4.21 ms`
 
-The successful optimizations have not pointed to a new language feature yet. They have pointed to a recurring implementation pattern:
+If you look only at the measured self-hosted internal pipeline before the `emit-c` tail:
+
+- `load + check + codegen`: `20.62 ms` -> `18.09 ms`
+
+That is about a `12.3%` reduction in the measured self-hosted compiler pipeline on the root workload.
+
+Most of the win came from semantic lookup specialization, not from frontend or codegen changes.
+
+## What Did Not Earn A Permanent Change
+
+Later experiments that were tried and then reverted include:
+
+- deeper parser-family instrumentation beyond the coarse permanent timings
+- parser micro-optimizations that did not move the matrix enough
+- arena bookkeeping experiments
+- field-lookup cache experiments for record-like types
+
+The right reading is:
+
+- the current benchmark work answered useful questions
+- but not every measured hotspot deserved a lasting optimization or extra instrumentation layer
+
+## Current Conclusion
+
+At this stopping point, the stable conclusions are:
+
+- for pure compiler work, stage-0 is still the baseline to beat
+- on `compiler/main.nore`, self-hosted has reached rounded `emit-c` parity, but not a clear compiler-only win
+- for end-to-end builds, self-hosted is already better because it emits smaller C that Clang compiles faster
+- inside the self-hosted compiler, sema remains the largest internal bucket, but the easiest lookup-only wins have mostly been harvested
+
+So the current state is:
+
+- near-parity on the root compiler-only benchmark
+- clear self-hosted win on end-to-end builds
+- no strong reason to keep drilling deeper without a fresh hotspot signal
+
+## Data-Layout Takeaway
+
+The successful optimizations so far validate a narrow implementation pattern:
 
 - keep one flat source-of-truth table
-- add derived access paths for the queries that matter
-- make those access paths cheap to maintain and cheap to validate
+- add cheap derived access paths for the queries that matter
 
-In concrete terms, that has meant:
+In practice, that has meant:
 
-- cached derived type relations
+- cached one-to-one type relations
 - namespace-specific symbol chains over one base symbol table
 
-This is close in spirit to “multiple views over one base dataset”, but still much narrower and more implementation-specific than a general IndexSet/View abstraction.
+This is useful evidence for compiler-internal data-layout work.
 
-## Data-Layout Directions Worth Watching
+It is not yet evidence for:
 
-These are not commitments. They are ideas that fit the optimization pattern seen so far and may deserve future experiments.
-
-### Secondary Indexes Over Flat Tables
-
-Examples:
-
-- per-scope namespace indexes
-- source-id or path indexes in the loader
-- declaration-name indexes inside module scopes
-
-This is the most directly validated direction so far.
-
-### Cached One-To-One Derived Relations
-
-Examples:
-
-- `type -> slice(type)`
-- `table -> table.Row`
-- future `symbol -> canonical lowered helper id`
-
-This pattern already paid off and is easy to reason about when the relation really is stable and unique.
-
-### Dense Subset Or View Projections
-
-If repeated traversals start selecting the same filtered subsets of rows, a denser “view” representation may become worthwhile.
-
-Examples:
-
-- all type symbols in a scope
-- all functions in a module
-- all deferred checks for one category
-
-This is conceptually closer to the View/IndexSet discussion, but it is still only a compiler-internal design direction for now.
-
-### Name-Key Interning For Lookup
-
-A likely next step is reducing repeated token-text comparisons in sema lookups.
-
-That could look like:
-
-- interned identifier keys
-- symbol lookup indexed by key instead of repeated slice equality
-
-If the current namespace-chain work still leaves lookup as the dominant sema cost, this is a strong candidate.
-
-### Span-Or-Bucket Scope Layouts
-
-If append-once / query-many behavior dominates, a future experiment could replace linked namespace chains with denser per-scope spans or grouped buckets.
-
-That would be a larger structural step than the current work, so it should only happen if the benchmark keeps pointing in the same direction.
-
-## What This Does Not Prove
-
-These optimizations do not yet justify:
-
-- first-class IndexSet language features
-- new syntax for views
-- compiler directives motivated only by elegance
-
-What they do justify is continued work on compiler-internal derived indexes and projections.
-
-## Next Questions
-
-The next useful performance questions are:
-
-1. Does sema still have a meaningful name-lookup bottleneck after namespace-chain specialization?
-2. Is identifier/name interning the next best move?
-3. Are there other repeated filtered traversals that would benefit from a denser derived view?
-
-Until those answers are clear, this note should stay descriptive, not prescriptive.
+- first-class `IndexSet` language features
+- view syntax
+- compiler directives justified only by elegance
