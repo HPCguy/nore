@@ -44,13 +44,22 @@ read_bench_metric() {
     metric_name="$1"
     bench_path="$2"
     awk -v name="$metric_name" '
+        BEGIN {
+            found = 0
+        }
         /^bench / {
             for (i = 1; i <= NF; i++) {
                 split($i, pair, "=")
                 if (pair[1] == name) {
                     print pair[2]
+                    found = 1
                     exit
                 }
+            }
+        }
+        END {
+            if (!found) {
+                print "-"
             }
         }
     ' "$bench_path"
