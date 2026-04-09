@@ -1,17 +1,17 @@
 # Views, Layouts, and Policies
 
-This note starts from the HPC source material already in the repo and tries to separate the ideas that earlier notes blended together.
+This note starts from the HPC source material reviewed for this topic and tries to separate the ideas that earlier notes blended together.
 
 The goal is not to jump straight to a Nore proposal. The goal is to understand the source material first, then ask which parts could fit naturally into Nore, which parts probably belong in a stdlib layer, and which parts would only make sense with explicit compiler support.
 
 ## Sources
 
-This note is grounded in these files:
+This note is grounded in:
 
-- `docs/HPC/VISTA.pdf`
-- `docs/HPC/TALC.pdf`
-- `docs/HPC/RAJA-ArdraOnSierra.pdf`
-- `docs/IndexSet.h`
+- the VISTA paper on hierarchical Views
+- the TALC paper on layout transformation
+- the RAJA paper on execution-policy separation
+- an `IndexSet` implementation reviewed during this discussion as a concrete mapping example
 
 ## The Three Questions
 
@@ -107,9 +107,9 @@ That separation makes the whole topic much easier to reason about.
 
 This is the important architectural lesson: **data model** and **physical layout** are related, but they are not the same layer.
 
-## `IndexSet.h`: The Mapping Layer
+## IndexSet: The Mapping Layer
 
-`docs/IndexSet.h` is useful because it makes the View-to-parent mapping more concrete.
+The reviewed `IndexSet` implementation is useful because it makes the View-to-parent mapping more concrete.
 
 From that file, an `IndexSet` is a map from a compact local index space in the current View into a larger index space in the parent View.
 
@@ -121,7 +121,7 @@ That implies a parent-relative model:
 
 ### Two representations
 
-The attached implementation supports two different representations:
+The implementation reviewed during this discussion supports two different representations:
 
 - **Unstructured:** an explicit array of mapped parent indices
 - **Structured:** `dims`, `extents`, `strides`, and a `parentCornerOffset`
@@ -306,6 +306,6 @@ The source material suggests a cleaner picture than the earlier future-ideas not
 - **VISTA** gives the View tree and subset data model.
 - **TALC** gives layout transformation and layout-selection workflow.
 - **RAJA** gives explicit execution-policy control.
-- **`IndexSet.h`** clarifies how a child View can map into a parent either structurally or explicitly.
+- **IndexSet mechanics** clarify how a child View can map into a parent either structurally or explicitly.
 
 That layered interpretation is probably the right starting point for any future Nore design work in this area.
