@@ -100,10 +100,6 @@ func emit_bench_report(
     mut ref mem: Arena,
     ref mode: str,
     load_ns: i64,
-    load_source_ns: i64,
-    load_lex_ns: i64,
-    load_parse_ns: i64,
-    load_misc_ns: i64,
     check_ns: i64,
     codegen_ns: i64,
     tail_ns: i64,
@@ -115,16 +111,14 @@ func emit_bench_report(
     c_bytes: i64
 ): void = {
     mut out: io.Writer = io.writer_new(mut ref mem, 512)
+    val total_ns: i64 = load_ns + check_ns + codegen_ns + tail_ns
     io.write_str(mut ref out, ref "bench mode=")
     io.write_str(mut ref out, ref mode)
     append_bench_field(mut ref out, ref "load_ns", load_ns)
-    append_bench_field(mut ref out, ref "load_source_ns", load_source_ns)
-    append_bench_field(mut ref out, ref "load_lex_ns", load_lex_ns)
-    append_bench_field(mut ref out, ref "load_parse_ns", load_parse_ns)
-    append_bench_field(mut ref out, ref "load_misc_ns", load_misc_ns)
     append_bench_field(mut ref out, ref "check_ns", check_ns)
     append_bench_field(mut ref out, ref "codegen_ns", codegen_ns)
     append_bench_field(mut ref out, ref "tail_ns", tail_ns)
+    append_bench_field(mut ref out, ref "total_ns", total_ns)
     append_bench_field(mut ref out, ref "modules", modules)
     append_bench_field(mut ref out, ref "tokens", tokens_count)
     append_bench_field(mut ref out, ref "nodes", nodes_count)
@@ -187,39 +181,21 @@ func main(): void = {
     if (config.benchmark_mode) {
         phase_start = time_ns()
     }
-    val loaded: loader.LoadResult = if (config.benchmark_mode) {
-        loader.load_graph_bench(
-            mut ref mem,
-            ref compiler_root,
-            ref input_path,
-            mut ref sources,
-            mut ref path_pool,
-            mut ref text_pool,
-            mut ref line_starts,
-            mut ref tokens,
-            mut ref nodes,
-            mut ref modules,
-            mut ref imports,
-            mut ref diags,
-            mut ref diag_pool
-        )
-    } else {
-        loader.load_graph(
-            mut ref mem,
-            ref compiler_root,
-            ref input_path,
-            mut ref sources,
-            mut ref path_pool,
-            mut ref text_pool,
-            mut ref line_starts,
-            mut ref tokens,
-            mut ref nodes,
-            mut ref modules,
-            mut ref imports,
-            mut ref diags,
-            mut ref diag_pool
-        )
-    }
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref compiler_root,
+        ref input_path,
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
 
     if (config.benchmark_mode) {
         load_ns = time_ns() - phase_start
@@ -351,19 +327,10 @@ func main(): void = {
         write_output_or_exit(mut ref mem, ref output_path, ref dumped)
         if (config.benchmark_mode) {
             tail_ns = time_ns() - phase_start
-            val load_misc_ns: i64 = if (load_ns > loaded.load_source_ns + loaded.load_lex_ns + loaded.load_parse_ns) {
-                load_ns - loaded.load_source_ns - loaded.load_lex_ns - loaded.load_parse_ns
-            } else {
-                0
-            }
             emit_bench_report(
                 mut ref mem,
                 ref "emit-c",
                 load_ns,
-                loaded.load_source_ns,
-                loaded.load_lex_ns,
-                loaded.load_parse_ns,
-                load_misc_ns,
                 check_ns,
                 codegen_ns,
                 tail_ns,
@@ -387,19 +354,10 @@ func main(): void = {
             exit(driver_status)
         }
         if (config.benchmark_mode) {
-            val load_misc_ns: i64 = if (load_ns > loaded.load_source_ns + loaded.load_lex_ns + loaded.load_parse_ns) {
-                load_ns - loaded.load_source_ns - loaded.load_lex_ns - loaded.load_parse_ns
-            } else {
-                0
-            }
             emit_bench_report(
                 mut ref mem,
                 ref "driver",
                 load_ns,
-                loaded.load_source_ns,
-                loaded.load_lex_ns,
-                loaded.load_parse_ns,
-                load_misc_ns,
                 check_ns,
                 codegen_ns,
                 tail_ns,

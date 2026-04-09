@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <libgen.h>
 #include <limits.h>
@@ -12600,8 +12601,40 @@ static void codegen_print_ir(Ast *ast) {
     printf("\n");
 }
 
-/* Writing emitted C directly keeps compiler-only benchmarks free of Clang noise. */
-static void codegen_emit_c(Ast *ast, const char *output_path) {
+typedef struct {
+    char *data;
+    size_t len;
+} GeneratedC;
+
+/* Benchmarked codegen needs the emitted C before any file I/O or Clang work. */
+static GeneratedC codegen_build_c_memory(Ast *ast) {
+    GeneratedC generated = {0};
+    FILE *out = open_memstream(&generated.data, &generated.len);
+    if (!out) {
+        panic(ERR_I002_INTERNAL_ERROR,
+              "failed to open generated C buffer: %s", strerror(errno));
+    }
+
+    codegen_emit_ir(out, ast);
+
+    if (fclose(out) != 0) {
+        free(generated.data);
+        panic(ERR_I002_INTERNAL_ERROR,
+              "failed to finalize generated C buffer: %s", strerror(errno));
+    }
+
+    return generated;
+}
+
+/* Generated C buffers are owned by the caller and freed after the tail work. */
+static void generated_c_destroy(GeneratedC *generated) {
+    free(generated->data);
+    generated->data = NULL;
+    generated->len = 0;
+}
+
+/* Emitting directly to a named file keeps the non-benchmark path simple. */
+static void codegen_write_c_file(Ast *ast, const char *output_path) {
     FILE *out = fopen(output_path, "w");
     if (!out) {
         error(ERR_D006_CLANG_FAILED,
@@ -12642,6 +12675,56 @@ static void codegen_compile_with_clang(const char *c_source_path, const char *bi
     }
 }
 
+/* Writing a generated buffer keeps the benchmarked codegen/tail boundary explicit. */
+static void generated_c_write_file(const GeneratedC *generated, const char *output_path) {
+    FILE *out = fopen(output_path, "w");
+    if (!out) {
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", output_path);
+    }
+
+    if (generated->len > 0 &&
+        fwrite(generated->data, 1, generated->len, out) != generated->len) {
+        fclose(out);
+        unlink(output_path);
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", output_path);
+    }
+
+    if (fclose(out) != 0) {
+        unlink(output_path);
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", output_path);
+    }
+}
+
+/* Temporary C files must stay bound to the original mkstemps descriptor. */
+static void generated_c_write_temp(const GeneratedC *generated,
+                                   int fd,
+                                   const char *temp_path) {
+    FILE *out = fdopen(fd, "w");
+    if (!out) {
+        close(fd);
+        unlink(temp_path);
+        panic(ERR_I002_INTERNAL_ERROR,
+              "failed to open temporary file: %s", strerror(errno));
+    }
+
+    if (generated->len > 0 &&
+        fwrite(generated->data, 1, generated->len, out) != generated->len) {
+        fclose(out);
+        unlink(temp_path);
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", temp_path);
+    }
+
+    if (fclose(out) != 0) {
+        unlink(temp_path);
+        error(ERR_D006_CLANG_FAILED,
+              "Could not write generated C file: %s", temp_path);
+    }
+}
+
 static void codegen_compile(Ast *ast, const char *output_path) {
     /* Create temporary C file */
     char temp_path[] = "/tmp/nore_XXXXXX.c";
@@ -12651,18 +12734,15 @@ static void codegen_compile(Ast *ast, const char *output_path) {
               "failed to create temporary file: %s", strerror(errno));
     }
 
-    FILE *out = fdopen(fd, "w");
-    if (!out) {
+    GeneratedC generated = codegen_build_c_memory(ast);
+
+    if (!g_had_error) {
+        generated_c_write_temp(&generated, fd, temp_path);
+    } else {
         close(fd);
         unlink(temp_path);
-        panic(ERR_I002_INTERNAL_ERROR,
-              "failed to open temporary file: %s", strerror(errno));
     }
-
-    /* Generate C program */
-    codegen_emit_ir(out, ast);
-
-    fclose(out);
+    generated_c_destroy(&generated);
 
     /* Don't compile if there were errors */
     if (g_had_error) {
@@ -12688,6 +12768,34 @@ typedef struct {
     int benchmark;
     int run;
 } CompilerFlags;
+
+/* Coarse benchmark timing uses the same wall-clock source as the self-hosted compiler. */
+static int64_t compiler_time_ns(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return ((int64_t)tv.tv_sec * 1000000000LL) + ((int64_t)tv.tv_usec * 1000LL);
+}
+
+/* Keep the seed benchmark output compatible with the matrix script. */
+static void bench_append_field(FILE *out, const char *name, int64_t value) {
+    fprintf(out, " %s=%lld", name, (long long)value);
+}
+
+/* One compact line is enough for script parsing and hand inspection. */
+static void emit_bench_report(const char *mode,
+                              int64_t load_ns,
+                              int64_t check_ns,
+                              int64_t codegen_ns,
+                              int64_t tail_ns) {
+    int64_t total_ns = load_ns + check_ns + codegen_ns + tail_ns;
+    fprintf(stderr, "bench mode=%s", mode);
+    bench_append_field(stderr, "load_ns", load_ns);
+    bench_append_field(stderr, "check_ns", check_ns);
+    bench_append_field(stderr, "codegen_ns", codegen_ns);
+    bench_append_field(stderr, "tail_ns", tail_ns);
+    bench_append_field(stderr, "total_ns", total_ns);
+    fputc('\n', stderr);
+}
 
 /* =================================== Main ================================= */
 
@@ -12834,7 +12942,18 @@ int main(int argc, char **argv) {
         }
     }
 
+    int64_t load_ns = 0;
+    int64_t check_ns = 0;
+    int64_t codegen_ns = 0;
+    int64_t tail_ns = 0;
+    int64_t phase_start = 0;
+    GeneratedC generated = {0};
+    bool generated_ready = false;
+
     /* Read source file */
+    if (flags.benchmark) {
+        phase_start = compiler_time_ns();
+    }
     size_t length;
     char *source = read_file(input_path, &length);
 
@@ -12856,6 +12975,9 @@ int main(int argc, char **argv) {
     Parser parser;
     parser_init(&parser, &lexer);
     Ast *ast = parser_parse_program(&parser);
+    if (flags.benchmark) {
+        load_ns = compiler_time_ns() - phase_start;
+    }
 
     /* --parser: Print AST */
     if (flags.print_ast) {
@@ -12864,7 +12986,13 @@ int main(int argc, char **argv) {
 
     /* Type checking */
     g_require_main = !emit_c_mode;
+    if (flags.benchmark) {
+        phase_start = compiler_time_ns();
+    }
     typecheck_program(ast);
+    if (flags.benchmark) {
+        check_ns = compiler_time_ns() - phase_start;
+    }
 
     /* --codegen: Print intermediate C code (also runs semantic checks) */
     if (flags.print_ir) {
@@ -12876,9 +13004,24 @@ int main(int argc, char **argv) {
 
     int run_exit_code = 0;
 
+    if (!skip_compilation && flags.benchmark) {
+        phase_start = compiler_time_ns();
+        generated = codegen_build_c_memory(ast);
+        generated_ready = true;
+        codegen_ns = compiler_time_ns() - phase_start;
+    }
+
     if (!skip_compilation) {
         if (emit_c_mode) {
-            codegen_emit_c(ast, output_path);
+            if (flags.benchmark) {
+                if (!g_had_error) {
+                    phase_start = compiler_time_ns();
+                    generated_c_write_file(&generated, output_path);
+                    tail_ns = compiler_time_ns() - phase_start;
+                }
+            } else {
+                codegen_write_c_file(ast, output_path);
+            }
         } else if (flags.run) {
             /* Compile to temp binary, run it, clean up */
             char temp_bin[] = "/tmp/nore_run_XXXXXX";
@@ -12889,38 +13032,102 @@ int main(int argc, char **argv) {
             }
             close(fd);
 
-            codegen_compile(ast, temp_bin);
+            if (flags.benchmark) {
+                if (!g_had_error) {
+                    char temp_path[] = "/tmp/nore_XXXXXX.c";
+                    int cfd = mkstemps(temp_path, 2);
+                    if (cfd == -1) {
+                        panic(ERR_I002_INTERNAL_ERROR,
+                              "failed to create temporary file: %s", strerror(errno));
+                    }
+
+                    phase_start = compiler_time_ns();
+                    generated_c_write_temp(&generated, cfd, temp_path);
+                    codegen_compile_with_clang(temp_path, temp_bin);
+                    unlink(temp_path);
+
+                    /* Build argv: [temp_bin, extra_argv..., NULL] */
+                    char **run_argv = malloc((size_t)(1 + extra_argc + 1) * sizeof(char *));
+                    if (!run_argv) panic(ERR_I001_OUT_OF_MEMORY, "allocating run argv");
+                    run_argv[0] = temp_bin;
+                    for (int i = 0; i < extra_argc; i++) run_argv[1 + i] = extra_argv[i];
+                    run_argv[1 + extra_argc] = NULL;
+
+                    pid_t pid = fork();
+                    if (pid < 0) {
+                        free(run_argv);
+                        panic(ERR_I002_INTERNAL_ERROR, "fork failed: %s", strerror(errno));
+                    } else if (pid == 0) {
+                        execv(temp_bin, run_argv);
+                        _exit(127);
+                    }
+                    int status;
+                    waitpid(pid, &status, 0);
+                    tail_ns = compiler_time_ns() - phase_start;
+                    free(run_argv);
+                    if (WIFEXITED(status)) {
+                        run_exit_code = WEXITSTATUS(status);
+                    } else {
+                        run_exit_code = 1;
+                    }
+                }
+            } else {
+                codegen_compile(ast, temp_bin);
+            }
 
             if (!g_had_error) {
-                /* Build argv: [temp_bin, extra_argv..., NULL] */
-                char **run_argv = malloc((size_t)(1 + extra_argc + 1) * sizeof(char *));
-                if (!run_argv) panic(ERR_I001_OUT_OF_MEMORY, "allocating run argv");
-                run_argv[0] = temp_bin;
-                for (int i = 0; i < extra_argc; i++) run_argv[1 + i] = extra_argv[i];
-                run_argv[1 + extra_argc] = NULL;
+                if (!flags.benchmark) {
+                    /* Build argv: [temp_bin, extra_argv..., NULL] */
+                    char **run_argv = malloc((size_t)(1 + extra_argc + 1) * sizeof(char *));
+                    if (!run_argv) panic(ERR_I001_OUT_OF_MEMORY, "allocating run argv");
+                    run_argv[0] = temp_bin;
+                    for (int i = 0; i < extra_argc; i++) run_argv[1 + i] = extra_argv[i];
+                    run_argv[1 + extra_argc] = NULL;
 
-                pid_t pid = fork();
-                if (pid < 0) {
+                    pid_t pid = fork();
+                    if (pid < 0) {
+                        free(run_argv);
+                        panic(ERR_I002_INTERNAL_ERROR, "fork failed: %s", strerror(errno));
+                    } else if (pid == 0) {
+                        execv(temp_bin, run_argv);
+                        _exit(127);
+                    }
+                    int status;
+                    waitpid(pid, &status, 0);
                     free(run_argv);
-                    panic(ERR_I002_INTERNAL_ERROR, "fork failed: %s", strerror(errno));
-                } else if (pid == 0) {
-                    execv(temp_bin, run_argv);
-                    _exit(127);
-                }
-                int status;
-                waitpid(pid, &status, 0);
-                free(run_argv);
-                if (WIFEXITED(status)) {
-                    run_exit_code = WEXITSTATUS(status);
-                } else {
-                    run_exit_code = 1;
+                    if (WIFEXITED(status)) {
+                        run_exit_code = WEXITSTATUS(status);
+                    } else {
+                        run_exit_code = 1;
+                    }
                 }
             }
             unlink(temp_bin);
         } else {
             /* Generate and compile */
-            codegen_compile(ast, output_path);
+            if (flags.benchmark) {
+                if (!g_had_error) {
+                    phase_start = compiler_time_ns();
+                    char temp_path[] = "/tmp/nore_XXXXXX.c";
+                    int fd = mkstemps(temp_path, 2);
+                    if (fd == -1) {
+                        panic(ERR_I002_INTERNAL_ERROR,
+                              "failed to create temporary file: %s", strerror(errno));
+                    }
+
+                    generated_c_write_temp(&generated, fd, temp_path);
+                    codegen_compile_with_clang(temp_path, output_path);
+                    tail_ns = compiler_time_ns() - phase_start;
+                    unlink(temp_path);
+                }
+            } else {
+                codegen_compile(ast, output_path);
+            }
         }
+    }
+
+    if (generated_ready) {
+        generated_c_destroy(&generated);
     }
 
     /* Cleanup */
@@ -12936,6 +13143,11 @@ int main(int argc, char **argv) {
     /* Report any collected errors (exits with non-zero).
      * Must happen before freeing import paths since errors reference them. */
     if (g_had_error) report_errors_and_exit();
+
+    if (flags.benchmark && !skip_compilation) {
+        emit_bench_report(emit_c_mode ? "emit-c" : "driver",
+                          load_ns, check_ns, codegen_ns, tail_ns);
+    }
 
     for (size_t i = 0; i < g_imported_count; i++) free(g_imported_files[i]);
     for (size_t i = 0; i < g_import_source_count; i++) free(g_import_sources[i]);

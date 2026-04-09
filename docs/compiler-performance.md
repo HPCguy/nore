@@ -12,68 +12,98 @@ The primary optimization metric is the compiler-only path:
 
 - `RUNS=5 ./benchmark/compiler_matrix.sh`
 - compare `stage0 emit-c` vs `norec emit-c`
+- read `total_ns` first
 
-This is the best current measure of compiler work because it excludes the Clang tail.
+This is the best current measure of compiler work because it excludes the Clang tail and uses the same coarse phase boundary in both compilers:
+
+- `load_ns`
+- `check_ns`
+- `codegen_ns`
+- `tail_ns`
+- `total_ns = load + check + codegen + tail`
+
+With the current benchmark shape, `codegen_ns` means the same thing in both compilers:
+
+- build generated C in memory
+
+And `tail_ns` means:
+
+- `emit-c`: write the generated C to the output file
+- `full`: write the generated C and run Clang
 
 The supporting metrics are:
 
-- self-hosted internal phase timings: `load_ns`, `check_ns`, `codegen_ns`, `tail_ns`
+- phase timings for both compilers: `load_ns`, `check_ns`, `codegen_ns`, `tail_ns`
 - `clang-c` rows for emitted-C compile cost
 - `full` rows for end-to-end user-facing compile time
 
 So the intended reading order is:
 
-1. `emit-c` for compiler work
-2. self-hosted phase timings for diagnosis
+1. `emit-c total_ns` for compiler work
+2. coarse phase timings for diagnosis
 3. `clang-c` and `full` for release-facing context
 
 ## Current Stable Results
 
-All numbers below come from a clean `RUNS=5 ./benchmark/compiler_matrix.sh` on the current tree.
+All numbers below come from a clean `RUNS=5 ./benchmark/compiler_matrix.sh` on the current tree, after aligning the stage-0 and self-hosted `codegen_ns` boundary.
 
 ### `compiler/main.nore`
 
 | Metric | `stage0` | `norec` | Reading |
 | --- | ---: | ---: | --- |
-| `emit-c` real | `0.020s` | `0.020s` | Rounded wall-clock parity on the root workload |
-| `clang-c` real | `1.892s` | `1.662s` | Self-hosted emitted C compiles faster in Clang |
-| `full` real | `1.922s` | `1.706s` | Self-hosted is faster end-to-end |
-| emitted C bytes | `1242190` | `991595` | Self-hosted emits about `20.2%` fewer bytes |
-| emitted C lines | `13339` | `12357` | Self-hosted emits about `7.4%` fewer lines |
+| `emit-c` real | `0.020s` | `0.022s` | Rounded wall-clock still looks like near-parity |
+| `emit-c total_ns` | `18.868 ms` | `18.674 ms` | Near-parity, with a slight self-hosted edge on this run |
+| `emit-c load_ns` | `7.355 ms` | `8.011 ms` | Load is close, with stage-0 still ahead |
+| `emit-c check_ns` | `2.096 ms` | `5.642 ms` | Sema remains the main compiler-only gap |
+| `emit-c codegen_ns` | `8.835 ms` | `4.317 ms` | Self-hosted is faster in C generation itself |
+| `emit-c tail_ns` | `0.582 ms` | `0.704 ms` | Emit tail is small in both compilers |
+| `clang-c` real | `1.882s` | `1.646s` | Self-hosted emitted C compiles faster in Clang |
+| `full` real | `1.878s` | `1.666s` | Self-hosted is faster end-to-end |
+| `full total_ns` | `1880.597 ms` | `1659.572 ms` | End-to-end win is dominated by the Clang tail |
+| emitted C bytes | `1240769` | `989674` | Self-hosted emits about `20.2%` fewer bytes |
+| emitted C lines | `13335` | `12335` | Self-hosted emits about `7.5%` fewer lines |
 
-Important caveat:
+The important reading change is:
 
-- `/usr/bin/time -p` rounds aggressively, so `0.020s` vs `0.020s` should be read as near-parity, not proof that the two compilers are exactly equal in compiler-only work.
+- for compiler-only comparison, use `emit-c total_ns`
+- do not rely on rounded `/usr/bin/time -p` output alone
 
-For the same `compiler/main.nore` workload, the self-hosted compiler-only phase split is:
+So the current root-workload picture is:
 
-- `load_ns`: `7.977 ms`
-- `check_ns`: `5.898 ms`
-- `codegen_ns`: `4.214 ms`
-- `tail_ns` on `emit-c`: `0.345 ms`
+- compiler-only work is effectively at parity, with a small self-hosted lead in this run
+- stage-0 is still much faster in sema
+- self-hosted gives that back and more in codegen
+- end-to-end self-hosted is clearly faster because its emitted C is smaller and cheaper for Clang to compile
 
-That puts the measured self-hosted compiler pipeline at about:
+### Working Hypothesis
 
-- `18.09 ms` before the small `emit-c` tail
+This is speculative, not a measured conclusion, but the current numbers are consistent with the following explanation:
 
-For the self-hosted `full` path on the same workload:
+- stage-0 likely keeps semantic checking cheaper because it works more directly over a pointer-rich AST and mutable scope/function structures
+- self-hosted likely pays more during sema because it normalizes more information into flat compiler tables and stable ids
+- that extra sema bookkeeping may help self-hosted codegen later, because the lowered C pass can consume precomputed symbol/type/module state more directly
 
-- `tail_ns`: about `1.681 s`
+So a plausible reading is:
 
-So the current end-to-end result is still dominated by Clang work on emitted C, even though the compiler-only metric remains the right target for internal optimization decisions.
+- stage-0 does less normalization work up front, which helps `check_ns`
+- self-hosted spends more to build reusable checked state, which helps `codegen_ns`
+
+This should not be read as a complete explanation of the gap. Some of the self-hosted codegen advantage is also likely due to better output shaping and smaller emitted C, not just the cost transfer from sema.
 
 ### Other Large Compiler Sources
 
-The larger single-file `emit-c` rows still show stage-0 ahead at rounded timer resolution:
+On the larger single-file `emit-c total_ns` rows:
 
-- `compiler/frontend/parser.nore`: `stage0 0.000s`, `norec 0.010s`
-- `compiler/sema/check.nore`: `stage0 0.010s`, `norec 0.020s`
-- `compiler/codegen/c_main.nore`: `stage0 0.010s`, `norec 0.020s`
+- `compiler/frontend/parser.nore`: `stage0 3.710 ms`, `norec 3.827 ms`
+- `compiler/sema/check.nore`: `stage0 11.641 ms`, `norec 12.362 ms`
+- `compiler/codegen/c_main.nore`: `stage0 10.778 ms`, `norec 10.258 ms`
 
-These rows are also rounded, but they reinforce the same reading:
+These rows sharpen the same reading:
 
-- self-hosted has reached rounded parity on the root `compiler/main.nore` compiler-only path
-- stage-0 is still the compiler-only baseline to beat overall
+- parser-heavy work is close
+- sema-heavy work still favors stage-0
+- codegen-heavy work already favors self-hosted
+- the root `compiler/main.nore` workload lands near overall parity because those effects offset each other
 
 ## What Was Achieved
 
@@ -127,16 +157,20 @@ This was a smaller follow-up win than `909282c`, but it kept the sema direction 
 
 Comparing the initial baseline to the current `RUNS=5` result for `compiler/main.nore`:
 
-- `norec emit-c`: rounded `0.030s` -> rounded `0.020s`
-- `load_ns`: `8.10 ms` -> `7.98 ms`
-- `check_ns`: `8.04 ms` -> `5.90 ms`
-- `codegen_ns`: `4.48 ms` -> `4.21 ms`
+- rounded `norec emit-c`: `0.030s` -> `0.022s`
+- `load_ns`: `8.10 ms` -> `8.01 ms`
+- `check_ns`: `8.04 ms` -> `5.64 ms`
+- `codegen_ns`: `4.48 ms` -> `4.32 ms`
 
-If you look only at the measured self-hosted internal pipeline before the `emit-c` tail:
+The phase buckets that were tracked across the whole pass sum to:
 
-- `load + check + codegen`: `20.62 ms` -> `18.09 ms`
+- `load + check + codegen`: `20.62 ms` -> `17.97 ms`
 
-That is about a `12.3%` reduction in the measured self-hosted compiler pipeline on the root workload.
+That is about a `12.9%` reduction in the measured self-hosted compiler core on the root workload.
+
+With the current benchmark shape, the self-hosted `emit-c total_ns` is now:
+
+- `18.67 ms`
 
 Most of the win came from semantic lookup specialization, not from frontend or codegen changes.
 
@@ -158,14 +192,17 @@ The right reading is:
 
 At this stopping point, the stable conclusions are:
 
-- for pure compiler work, stage-0 is still the baseline to beat
-- on `compiler/main.nore`, self-hosted has reached rounded `emit-c` parity, but not a clear compiler-only win
+- for pure compiler work, the root `compiler/main.nore` workload is now effectively at parity
+- the more precise current reading comes from `emit-c total_ns`, not rounded shell time
+- on `compiler/main.nore`, self-hosted is slightly ahead on compiler-only total in the current run
+- stage-0 still has the clearer advantage in sema-heavy work
+- self-hosted already has the advantage in codegen-heavy work
 - for end-to-end builds, self-hosted is already better because it emits smaller C that Clang compiles faster
 - inside the self-hosted compiler, sema remains the largest internal bucket, but the easiest lookup-only wins have mostly been harvested
 
 So the current state is:
 
-- near-parity on the root compiler-only benchmark
+- near-parity with a slight self-hosted edge on the root compiler-only benchmark
 - clear self-hosted win on end-to-end builds
 - no strong reason to keep drilling deeper without a fresh hotspot signal
 

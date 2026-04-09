@@ -78,8 +78,8 @@ render_table() {
 }
 
 print_row() {
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" "${21}" "${22}"
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}"
 }
 
 read_line_count() {
@@ -118,9 +118,10 @@ warmup_stage0_emit_c() {
     stem="$(sanitize_name "$source_rel")"
     output_path="$OUT_DIR/${stem}-stage0-warmup.c"
     time_path="$OUT_DIR/${stem}-stage0-warmup.time"
-    rm -f "$output_path" "$time_path"
-    "$TIME_BIN" -p -o "$time_path" "$STAGE0_BIN" --emit-c "$source_path" "$output_path" "$ROOT_DIR" >/dev/null 2>&1
-    rm -f "$output_path" "$time_path"
+    bench_path="$OUT_DIR/${stem}-stage0-warmup.bench"
+    rm -f "$output_path" "$time_path" "$bench_path"
+    "$TIME_BIN" -p -o "$time_path" "$STAGE0_BIN" --emit-c "$source_path" "$output_path" "$ROOT_DIR" --bench >/dev/null 2>"$bench_path"
+    rm -f "$output_path" "$time_path" "$bench_path"
 }
 
 warmup_full_compile() {
@@ -132,11 +133,10 @@ warmup_full_compile() {
     rm -f "$output_path" "$time_path" "$bench_path"
     if [ "$label" = "norec-full" ]; then
         "$TIME_BIN" -p -o "$time_path" "$compiler_bin" "$ROOT_DIR/compiler/main.nore" --bench -o "$output_path" >/dev/null 2>"$bench_path"
-        rm -f "$bench_path"
     else
-        "$TIME_BIN" -p -o "$time_path" "$compiler_bin" "$ROOT_DIR/compiler/main.nore" -o "$output_path" >/dev/null 2>&1
+        "$TIME_BIN" -p -o "$time_path" "$compiler_bin" "$ROOT_DIR/compiler/main.nore" --bench -o "$output_path" >/dev/null 2>"$bench_path"
     fi
-    rm -f "$output_path" "$time_path"
+    rm -f "$output_path" "$time_path" "$bench_path"
 }
 
 warmup_clang_c() {
@@ -177,13 +177,10 @@ measure_selfhost_emit_c() {
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
         "$(read_bench_metric load_ns "$bench_path")" \
-        "$(read_bench_metric load_source_ns "$bench_path")" \
-        "$(read_bench_metric load_lex_ns "$bench_path")" \
-        "$(read_bench_metric load_parse_ns "$bench_path")" \
-        "$(read_bench_metric load_misc_ns "$bench_path")" \
         "$(read_bench_metric check_ns "$bench_path")" \
         "$(read_bench_metric codegen_ns "$bench_path")" \
         "$(read_bench_metric tail_ns "$bench_path")" \
+        "$(read_bench_metric total_ns "$bench_path")" \
         "$(read_bench_metric modules "$bench_path")" \
         "$(read_bench_metric tokens "$bench_path")" \
         "$(read_bench_metric nodes "$bench_path")" \
@@ -203,9 +200,10 @@ measure_stage0_emit_c() {
     stem="$(sanitize_name "$source_rel")"
     output_path="$OUT_DIR/${stem}-stage0-emit-c-${run_id}.c"
     time_path="$OUT_DIR/${stem}-stage0-emit-c-${run_id}.time"
+    bench_path="$OUT_DIR/${stem}-stage0-emit-c-${run_id}.bench"
 
-    rm -f "$output_path" "$time_path"
-    "$TIME_BIN" -p -o "$time_path" "$STAGE0_BIN" --emit-c "$source_path" "$output_path" "$ROOT_DIR" >/dev/null 2>&1
+    rm -f "$output_path" "$time_path" "$bench_path"
+    "$TIME_BIN" -p -o "$time_path" "$STAGE0_BIN" --emit-c "$source_path" "$output_path" "$ROOT_DIR" --bench >/dev/null 2>"$bench_path"
 
     print_row \
         "stage0" \
@@ -215,12 +213,17 @@ measure_stage0_emit_c() {
         "$(read_time_metric real "$time_path")" \
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
-        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
+        "$(read_bench_metric load_ns "$bench_path")" \
+        "$(read_bench_metric check_ns "$bench_path")" \
+        "$(read_bench_metric codegen_ns "$bench_path")" \
+        "$(read_bench_metric tail_ns "$bench_path")" \
+        "$(read_bench_metric total_ns "$bench_path")" \
+        "-" "-" "-" "-" "-" \
         "$(wc -c < "$output_path" | tr -d ' ')" \
         "$(read_line_count "$output_path")" \
         >> "$RAW_METRICS"
 
-    rm -f "$output_path" "$time_path"
+    rm -f "$output_path" "$time_path" "$bench_path"
 }
 
 measure_selfhost_full() {
@@ -241,13 +244,10 @@ measure_selfhost_full() {
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
         "$(read_bench_metric load_ns "$bench_path")" \
-        "$(read_bench_metric load_source_ns "$bench_path")" \
-        "$(read_bench_metric load_lex_ns "$bench_path")" \
-        "$(read_bench_metric load_parse_ns "$bench_path")" \
-        "$(read_bench_metric load_misc_ns "$bench_path")" \
         "$(read_bench_metric check_ns "$bench_path")" \
         "$(read_bench_metric codegen_ns "$bench_path")" \
         "$(read_bench_metric tail_ns "$bench_path")" \
+        "$(read_bench_metric total_ns "$bench_path")" \
         "$(read_bench_metric modules "$bench_path")" \
         "$(read_bench_metric tokens "$bench_path")" \
         "$(read_bench_metric nodes "$bench_path")" \
@@ -264,9 +264,10 @@ measure_stage0_full() {
     run_id="$1"
     output_path="$OUT_DIR/stage0-full-${run_id}"
     time_path="$OUT_DIR/stage0-full-${run_id}.time"
+    bench_path="$OUT_DIR/stage0-full-${run_id}.bench"
 
-    rm -f "$output_path" "$time_path"
-    "$TIME_BIN" -p -o "$time_path" "$STAGE0_BIN" "$ROOT_DIR/compiler/main.nore" -o "$output_path" >/dev/null 2>&1
+    rm -f "$output_path" "$time_path" "$bench_path"
+    "$TIME_BIN" -p -o "$time_path" "$STAGE0_BIN" "$ROOT_DIR/compiler/main.nore" --bench -o "$output_path" >/dev/null 2>"$bench_path"
 
     print_row \
         "stage0" \
@@ -276,10 +277,15 @@ measure_stage0_full() {
         "$(read_time_metric real "$time_path")" \
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
-        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
+        "$(read_bench_metric load_ns "$bench_path")" \
+        "$(read_bench_metric check_ns "$bench_path")" \
+        "$(read_bench_metric codegen_ns "$bench_path")" \
+        "$(read_bench_metric tail_ns "$bench_path")" \
+        "$(read_bench_metric total_ns "$bench_path")" \
+        "-" "-" "-" "-" "-" "-" "-" \
         >> "$RAW_METRICS"
 
-    rm -f "$output_path" "$time_path"
+    rm -f "$output_path" "$time_path" "$bench_path"
 }
 
 measure_clang_c() {
@@ -306,7 +312,7 @@ measure_clang_c() {
         "$(read_time_metric real "$time_path")" \
         "$(read_time_metric user "$time_path")" \
         "$(read_time_metric sys "$time_path")" \
-        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
+        "-" "-" "-" "-" "-" "-" "-" "-" "-" "-" \
         "$(wc -c < "$c_path" | tr -d ' ')" \
         "$(read_line_count "$c_path")" \
         >> "$RAW_METRICS"
@@ -331,7 +337,7 @@ print_average_rows() {
                 order[++order_count] = group
                 seen_order[group] = 1
             }
-            for (col = 5; col <= 22; col++) {
+            for (col = 5; col <= 19; col++) {
                 add_num(group, col, $col)
             }
         }
@@ -340,7 +346,7 @@ print_average_rows() {
                 group = order[i]
                 split(group, parts, FS)
                 printf "%s\t%s\t%s\tavg", parts[1], parts[2], parts[3]
-                for (col = 5; col <= 22; col++) {
+                for (col = 5; col <= 19; col++) {
                     if (count[group, col] == 0) {
                         printf "\t-"
                     } else if (col <= 7) {
@@ -367,13 +373,10 @@ print_row \
     "user" \
     "sys" \
     "load_ns" \
-    "load_source_ns" \
-    "load_lex_ns" \
-    "load_parse_ns" \
-    "load_misc_ns" \
     "check_ns" \
     "codegen_ns" \
     "tail_ns" \
+    "total_ns" \
     "modules" \
     "tokens" \
     "nodes" \
@@ -422,13 +425,10 @@ echo "Average metrics:"
         "user" \
         "sys" \
         "load_ns" \
-        "load_source_ns" \
-        "load_lex_ns" \
-        "load_parse_ns" \
-        "load_misc_ns" \
         "check_ns" \
         "codegen_ns" \
         "tail_ns" \
+        "total_ns" \
         "modules" \
         "tokens" \
         "nodes" \
