@@ -1821,6 +1821,9 @@ func parse_var_decl(
         }
         node.node_append_child(mut ref nodes, decl_id, type_id)
         full_flags |= FLAG_HAS_TYPE
+    } else if (flag_has(flags, FLAG_MUT)) {
+        parser_error_here(mut ref mem, mut ref parser, ref tokens, mut ref diags, mut ref diag_pool, ref "P014", ref "Expected ':' after identifier")
+        return node.invalid_node_id()
     } else {
         val next_kind: token.TokenKind = parser_current_kind(ref parser, ref tokens)
         if (next_kind == token.TokenKind.I64 ||

@@ -23,10 +23,10 @@ run_expect_code() {
     fi
 }
 
+run_expect_code "$ROOT_DIR/tests/errors/P014_mut_missing_colon.nore" "P014"
+
 if [ "$COMPILER_TEST_MODE" = "stage0" ]; then
-    run_expect_code "$ROOT_DIR/tests/errors/S046_slice_local_var.nore" "S046"
     run_expect_code "$ROOT_DIR/tests/errors/S050_u8_out_of_range.nore" "S050"
 else
-    run_expect_code "$SCRIPT_DIR/diag_fixtures/slice_local_inferred.nore" "S046"
     run_expect_code "$SCRIPT_DIR/diag_fixtures/u8_negative_i64_min.nore" "S050"
 fi

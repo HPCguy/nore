@@ -1,6 +1,6 @@
 // S071: Slice range bounds must be integers
 func main(): void = {
-    mut mem = arena(4096)
+    mut mem: Arena = arena(4096)
     mut nums: [i64] = arena_alloc(mut ref mem, 5)
     val x: bool = true
     val sub: [i64] = nums[x..3]
