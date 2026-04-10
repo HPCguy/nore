@@ -72,7 +72,6 @@ make test-compiler-fast
 make test-compiler-core
 make test-compiler-bootstrap
 make test-compiler
-make test-compiler-stage0
 make test-compiler-all
 make test-examples
 
@@ -82,16 +81,15 @@ make qa-bootstrap
 make qa-full
 ```
 
-The default language, example, and QA targets run through `./norec`. During the migration, `test-compiler` and `test-compiler-stage0` keep their broad legacy meanings, while `test-compiler-fast`, `test-compiler-core`, and `test-compiler-bootstrap` are the new additive workflow targets.
+The default language, example, and QA targets run through `./norec`. Stage-0 is exercised explicitly by `test-stage0` and `test-compiler-bootstrap`; `qa-bootstrap` groups those two trusted-seed checks.
 
 Compiler-specific suite targets now split by intent:
 
-- `test-compiler`: broad legacy self-hosted compiler suite
-- `test-compiler-stage0`: broad legacy stage-0 compiler suite
+- `test-compiler`: broad self-hosted compiler suite
 - `test-compiler-fast`: cheap daily loop for parser, imports, kept sema internals, kept backend invariants, and driver coverage
 - `test-compiler-core`: the kept compiler-core suite used by the normal self-hosted QA gate
 - `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, and self-compile
-- `test-compiler-all`: explicit alias for the broad legacy self-hosted compiler suite
+- `test-compiler-all`: explicit alias for the broad self-hosted compiler suite
 - `test-examples`: example-program behavior, kept separate from compiler integration
 
 Workflow targets group the normal commands:

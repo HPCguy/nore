@@ -59,11 +59,10 @@ make test-compiler-fast
 make test-compiler-core
 make test-compiler-bootstrap
 make test-compiler
-make test-compiler-stage0
 make test-examples
 ```
 
-`test-compiler` and `test-compiler-stage0` remain the broad legacy compiler gates during the workflow migration. For the new workflow targets, `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes, while the other compiler and QA targets run through `./norec`.
+`test-compiler` remains the broad self-hosted compiler gate. For stage-0 confidence, use `qa-bootstrap`; it groups `test-stage0` and `test-compiler-bootstrap`. All other compiler and QA targets run through `./norec`.
 
 ## Branch Policy
 

@@ -147,7 +147,6 @@ make test-compiler-bootstrap # Trusted-seed bootstrap checks
 make test-examples         # Example programs through ./norec
 
 make test-compiler         # Broad legacy self-hosted compiler suite
-make test-compiler-stage0  # Broad legacy stage0 compiler suite
 make test-compiler-all     # Explicit alias for the broad legacy self-hosted suite
 
 make qa-local              # test + test-compiler-fast
@@ -159,8 +158,8 @@ make qa-full               # qa-ci + qa-bootstrap
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
 - Compiler-specific tests live under `tests/compiler/`
-- `test-compiler` and `test-compiler-stage0` keep the broad legacy compiler suites during the migration to the new workflow targets
-- in the new workflow model, `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes
+- `test-compiler` keeps the broad self-hosted compiler suite, with `test-compiler-all` as an explicit alias
+- `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes; use `qa-bootstrap` to run them together
 - For compiler build details, rebuild paths, and the benchmark command, see [docs/compiler.md](docs/compiler.md)
 
 ## Editor Support

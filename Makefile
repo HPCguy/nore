@@ -133,11 +133,6 @@ test-compiler-bootstrap: $(STAGE0_BIN)
 	@chmod +x tests/run_compiler_tests.sh
 	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" COMPILER_TEST_PROFILE="bootstrap" ./tests/run_compiler_tests.sh
 
-# Run the broad legacy compiler test tree with the explicit stage-0 fallback compiler
-test-compiler-stage0: $(STAGE0_BIN)
-	@chmod +x tests/run_compiler_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" COMPILER_TEST_PROFILE="all" ./tests/run_compiler_tests.sh
-
 # Run the normal local QA workflow
 qa-local:
 	@$(MAKE) test
@@ -169,4 +164,4 @@ bench-compiler-matrix: $(STAGE0_BIN) $(NOREC)
 	@CC="$(CC)" ./benchmark/compiler_matrix.sh
 
 # Phony targets
-.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-examples test-compiler-fast test-compiler-core test-compiler test-compiler-all test-compiler-bootstrap test-compiler-stage0 qa-local qa-ci qa-bootstrap qa-full bench-compiler bench-compiler-matrix test test-stage0 test-parity
+.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-examples test-compiler-fast test-compiler-core test-compiler test-compiler-all test-compiler-bootstrap qa-local qa-ci qa-bootstrap qa-full bench-compiler bench-compiler-matrix test test-stage0 test-parity
