@@ -2135,6 +2135,17 @@ func integer_expr_arithmetic_overflows(
         return true
     }
 
+    if (nodes.kind[node_id] == node.NodeKind.UnaryExpr &&
+        tokens.kind[nodes.data0[node_id]] == token.TokenKind.Minus) {
+        val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        if (operand_id >= 0 && nodes.kind[operand_id] == node.NodeKind.NumberLit) {
+            val text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[operand_id])
+            if (integer_text_is_i64_min_abs(ref text)) {
+                return false
+            }
+        }
+    }
+
     mut child_id: i64 = nodes.first_child[node_id]
     while (child_id >= 0) {
         if (integer_expr_arithmetic_overflows(ref sources, ref text_pool, ref tokens, ref nodes, child_id)) {

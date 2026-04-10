@@ -1950,6 +1950,11 @@ func append_token_text_lit(
     )
 }
 
+// C cannot spell i64 min as one signed positive token with unary minus.
+func append_i64_min_literal(mut ref mem: Arena, mut ref out: bbuf.ByteBuf): void = {
+    append_bytes(mut ref mem, mut ref out, ref "((-9223372036854775807L) - 1L)")
+}
+
 // Prefix operators stay parenthesized so later binary lowering never depends on C precedence trivia.
 func append_unary_expr(
     mut ref mem: Arena,
@@ -1963,6 +1968,17 @@ func append_unary_expr(
     node_id: i64
 ): void = {
     val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+    val operand_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    if (tokens.kind[nodes.data0[node_id]] == token.TokenKind.Minus &&
+        operand_id >= 0 &&
+        nodes.kind[operand_id] == node.NodeKind.NumberLit) {
+        val operand_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[operand_id])
+        if (string.str_eq(ref operand_text, ref "9223372036854775808")) {
+            append_i64_min_literal(mut ref mem, mut ref out)
+            return
+        }
+    }
+
     append_bytes(mut ref mem, mut ref out, ref "(")
     append_bytes(
         mut ref mem,
@@ -1978,7 +1994,7 @@ func append_unary_expr(
         ref nodes,
         ref symbols_table,
         ref types_table,
-        node.node_child_at(ref nodes, node_id, 0)
+        operand_id
     )
     append_bytes(mut ref mem, mut ref out, ref ")")
 }

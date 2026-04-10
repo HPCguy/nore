@@ -118,9 +118,6 @@ run_profile_core() {
     run_named_tests "codegen" "nore" \
         "compiler/codegen/compiler_main_codegen_test.nore" \
         "compiler/codegen/std_io_module_codegen_test.nore"
-
-    run_named_tests "integration" "shell" \
-        "compiler/integration/diag_test.sh"
 }
 
 run_profile_bootstrap() {

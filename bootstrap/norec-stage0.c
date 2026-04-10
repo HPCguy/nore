@@ -3063,6 +3063,13 @@ static void parser_init(Parser *parser, Lexer *lexer) {
     parser_advance(parser);
 }
 
+/* The absolute spelling of i64 min is valid only after unary minus applies. */
+static bool token_is_i64_min_abs(const Token *token) {
+    return token->kind == TOKEN_NUMBER &&
+           token->length == 19 &&
+           memcmp(token->start, "9223372036854775808", 19) == 0;
+}
+
 static int parser_check(Parser *parser, TokenKind kind) {
     return parser->current.kind == kind;
 }
@@ -3489,6 +3496,10 @@ static Ast *parser_parse_primary(Parser *parser) {
     /* Handle unary minus */
     if (parser_match(parser, TOKEN_MINUS)) {
         SourceLoc loc = token_loc(&parser->previous);
+        if (token_is_i64_min_abs(&parser->current)) {
+            parser_advance(parser);
+            return ast_make_number(LONG_MIN, loc);
+        }
         Ast *operand = parser_parse_primary(parser);
         if (!operand) return NULL;
         return ast_make_unary(OP_NEG, operand, loc);
