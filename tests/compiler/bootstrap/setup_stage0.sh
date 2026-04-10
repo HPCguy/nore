@@ -1,4 +1,4 @@
-# Shared stage-0 bootstrap setup. Source from integration test scripts.
+# Shared stage-0 bootstrap setup. Source from bootstrap test scripts.
 # Expects ROOT_DIR to be set by the caller.
 
 BOOTSTRAP_DIR="$ROOT_DIR/bootstrap"

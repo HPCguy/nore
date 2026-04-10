@@ -10,7 +10,8 @@ Current groups:
 - `imports/`: module loading and import resolution
 - `sema/`: semantic checks and diagnostics
 - `codegen/`: generated-C regressions and codegen fixtures
-- `integration/`: end-to-end rebuild, self-compile, diagnostics, and driver coverage
+- `integration/`: driver and diagnostic coverage
+- `bootstrap/`: trusted-seed smoke and self-compile coverage
 
 Naming convention:
 
@@ -22,6 +23,25 @@ Run these tests with:
 ```bash
 make test-compiler
 make test-compiler-stage0
+make test-compiler-fast
+make test-compiler-core
+make test-compiler-bootstrap
+make test-compiler-all
 ```
 
-The default path goes through `./norec`. The `-stage0` variant forces the explicit trusted-seed fallback compiler.
+`test-compiler` and `test-compiler-stage0` keep the broad legacy compiler suites during the workflow migration. `test-compiler-bootstrap` is the new narrower trusted-seed bootstrap lane.
+
+Target intent:
+
+- `test-compiler`: broad legacy self-hosted compiler suite
+- `test-compiler-stage0`: broad legacy stage-0 compiler suite
+- `test-compiler-fast`: cheap daily loop for support, lexer, parser, imports, kept sema internals, kept backend invariants, and driver coverage
+- `test-compiler-core`: the kept compiler-core suite used by the normal self-hosted QA gate
+- `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, and self-compile
+- `test-compiler-all`: explicit alias for the broad legacy self-hosted compiler suite
+
+Example-program behavior now lives outside this tree:
+
+```bash
+make test-examples
+```

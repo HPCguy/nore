@@ -22,7 +22,7 @@ When submitting code:
 - **C99, no extensions.** Keep it portable.
 - **Keep it simple.** No clever tricks. If you need to explain it, simplify it.
 - **Include tests.** Every new feature needs a success test in `tests/success/`. Every new error code needs an error test in `tests/errors/`.
-- **Run `make test` before submitting.** All existing tests must still pass.
+- **Run `make qa-local` before submitting.** If you changed compiler internals or CI-facing workflow, run `make qa-ci` too.
 - **Small changes over big ones.** A focused PR that does one thing well is easier to review than a large one that touches everything.
 
 ### What Doesn't Help Right Now
@@ -34,9 +34,11 @@ When submitting code:
 
 ```bash
 make              # Build the compiler
-make test         # Run all tests
+make test         # Run language suites through ./norec
 make test-errors  # Run error code tests only
 make test-success # Run success tests only
+make qa-local     # Normal local language + compiler-maintainer loop
+make qa-ci        # Stronger self-hosted pre-merge gate
 ```
 
 ## Maintainer Workflows
@@ -52,10 +54,16 @@ make stage0
 Compiler-specific verification paths:
 
 ```bash
-make test-compiler
 make test-stage0
+make test-compiler-fast
+make test-compiler-core
+make test-compiler-bootstrap
+make test-compiler
 make test-compiler-stage0
+make test-examples
 ```
+
+`test-compiler` and `test-compiler-stage0` remain the broad legacy compiler gates during the workflow migration. For the new workflow targets, `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes, while the other compiler and QA targets run through `./norec`.
 
 ## Branch Policy
 

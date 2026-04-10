@@ -136,21 +136,31 @@ The [examples/](examples/) directory contains real programs built on the standar
 ## Testing
 
 ```bash
-make test          # Run language suites through ./norec
-make test-stage0   # Run the same language suites through the C seed fallback
-make test-errors   # Run error code tests through ./norec
-make test-errors-stage0  # Run error tests through the C seed fallback
-make test-success  # Run success tests through ./norec (includes stdlib)
-make test-success-stage0 # Run success tests through the C seed fallback
-make test-std      # Run stdlib tests through ./norec
-make test-std-stage0     # Run stdlib tests through the C seed fallback
-make test-compiler # Run compiler-specific tests through ./norec
-make test-compiler-stage0 # Run compiler-specific tests through the C seed fallback
+make test                  # Language behavior through ./norec
+make test-stage0           # Language behavior through ./norec-stage0
+make test-errors           # Error tests through ./norec
+make test-success          # Success + stdlib tests through ./norec
+make test-std              # Stdlib tests through ./norec
+make test-compiler-fast    # Cheap compiler-internal regression loop
+make test-compiler-core    # Kept compiler-core coverage
+make test-compiler-bootstrap # Trusted-seed bootstrap checks
+make test-examples         # Example programs through ./norec
+
+make test-compiler         # Broad legacy self-hosted compiler suite
+make test-compiler-stage0  # Broad legacy stage0 compiler suite
+make test-compiler-all     # Explicit alias for the broad legacy self-hosted suite
+
+make qa-local              # test + test-compiler-fast
+make qa-ci                 # test + test-compiler-core
+make qa-bootstrap          # test-stage0 + test-compiler-bootstrap
+make qa-full               # qa-ci + qa-bootstrap
 ```
 - Error tests in `tests/errors/` named by expected code (e.g., `P002_missing_rparen.nore`)
 - Success tests in `tests/success/`: programs with assertions, compiled and run via `--run` flag
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
 - Compiler-specific tests live under `tests/compiler/`
+- `test-compiler` and `test-compiler-stage0` keep the broad legacy compiler suites during the migration to the new workflow targets
+- in the new workflow model, `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes
 - For compiler build details, rebuild paths, and the benchmark command, see [docs/compiler.md](docs/compiler.md)
 
 ## Editor Support

@@ -2,8 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-COMPILER_BIN="${NORE_BIN:-$ROOT_DIR/norec}"
+source "$SCRIPT_DIR/test_setup.sh"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+COMPILER_BIN="$NORE_BIN"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nore-examples.XXXXXX")"
 CAT_INPUT="$TMP_DIR/example.txt"
 JSON_INPUT="$TMP_DIR/example.json"
@@ -26,6 +27,7 @@ if [ "$cat_output" != "$cat_expected" ]; then
     echo "unexpected output from cat example"
     exit 1
 fi
+echo "PASS: examples/cat.nore"
 
 wc_output=""
 if ! wc_output=$("$COMPILER_BIN" --run examples/wc.nore -- "$CAT_INPUT" 2>&1); then
@@ -38,6 +40,7 @@ if [ "$wc_output" != "$wc_expected" ]; then
     echo "unexpected output from wc example"
     exit 1
 fi
+echo "PASS: examples/wc.nore"
 
 json_output=""
 if ! json_output=$("$COMPILER_BIN" --run examples/json.nore -- "$JSON_INPUT" 2>&1); then
@@ -50,3 +53,7 @@ if [ "$json_output" != "$json_expected" ]; then
     echo "unexpected output from json example"
     exit 1
 fi
+echo "PASS: examples/json.nore"
+
+echo ""
+echo "Results: 3 passed, 0 failed"

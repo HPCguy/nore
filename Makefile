@@ -105,15 +105,58 @@ test-std-stage0: $(STAGE0_BIN)
 # Backward-compatible alias for the self-hosted default path
 test-std-norec: test-std
 
-# Run compiler-specific integration and rebuild tests through the default compiler path
+# Run example programs through the default self-hosted path
+test-examples: $(NOREC)
+	@chmod +x tests/run_examples_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" ./tests/run_examples_tests.sh
+
+# Run the fast compiler-maintainer loop through the default compiler path
+test-compiler-fast: $(NOREC)
+	@chmod +x tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="norec" COMPILER_TEST_PROFILE="fast" ./tests/run_compiler_tests.sh
+
+# Run the kept compiler-core coverage through the default compiler path
+test-compiler-core: $(NOREC)
+	@chmod +x tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="norec" COMPILER_TEST_PROFILE="core" ./tests/run_compiler_tests.sh
+
+# Run the broad legacy compiler test tree through the default compiler path
 test-compiler: $(NOREC)
 	@chmod +x tests/run_compiler_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="norec" ./tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(NOREC)" COMPILER_TEST_MODE="norec" COMPILER_TEST_PROFILE="all" ./tests/run_compiler_tests.sh
 
-# Run compiler-specific tests with the explicit stage-0 fallback compiler
+# Explicit alias for the broad legacy compiler test tree during migration
+test-compiler-all: test-compiler
+
+# Run bootstrap and trusted-seed compiler checks with the explicit stage-0 path
+test-compiler-bootstrap: $(STAGE0_BIN)
+	@chmod +x tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" COMPILER_TEST_PROFILE="bootstrap" ./tests/run_compiler_tests.sh
+
+# Run the broad legacy compiler test tree with the explicit stage-0 fallback compiler
 test-compiler-stage0: $(STAGE0_BIN)
 	@chmod +x tests/run_compiler_tests.sh
-	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" ./tests/run_compiler_tests.sh
+	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" COMPILER_TEST_PROFILE="all" ./tests/run_compiler_tests.sh
+
+# Run the normal local QA workflow
+qa-local:
+	@$(MAKE) test
+	@$(MAKE) test-compiler-fast
+
+# Run the normal CI / before-merge QA workflow
+qa-ci:
+	@$(MAKE) test
+	@$(MAKE) test-compiler-core
+
+# Run the explicit trusted-seed and bootstrap QA workflow
+qa-bootstrap:
+	@$(MAKE) test-stage0
+	@$(MAKE) test-compiler-bootstrap
+
+# Run the combined self-hosted and bootstrap QA workflows
+qa-full:
+	@$(MAKE) qa-ci
+	@$(MAKE) qa-bootstrap
 
 # Compare end-to-end compiler compile time under the stage-0 and self-hosted drivers.
 bench-compiler: $(STAGE0_BIN) $(NOREC)
@@ -126,4 +169,4 @@ bench-compiler-matrix: $(STAGE0_BIN) $(NOREC)
 	@CC="$(CC)" ./benchmark/compiler_matrix.sh
 
 # Phony targets
-.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-compiler test-compiler-stage0 bench-compiler bench-compiler-matrix test test-stage0 test-parity
+.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-examples test-compiler-fast test-compiler-core test-compiler test-compiler-all test-compiler-bootstrap test-compiler-stage0 qa-local qa-ci qa-bootstrap qa-full bench-compiler bench-compiler-matrix test test-stage0 test-parity

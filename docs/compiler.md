@@ -60,19 +60,46 @@ When omitted, `compiler_root` defaults to the directory that contains the runnin
 
 ```bash
 make test
+make test-stage0
 make test-errors
 make test-success
 make test-std
-make test-compiler
-
-make test-stage0
 make test-errors-stage0
 make test-success-stage0
 make test-std-stage0
+
+make test-compiler-fast
+make test-compiler-core
+make test-compiler-bootstrap
+make test-compiler
 make test-compiler-stage0
+make test-compiler-all
+make test-examples
+
+make qa-local
+make qa-ci
+make qa-bootstrap
+make qa-full
 ```
 
-The default targets run through `./norec`. The `*-stage0` targets keep the trusted-seed fallback path available for comparison and verification.
+The default language, example, and QA targets run through `./norec`. During the migration, `test-compiler` and `test-compiler-stage0` keep their broad legacy meanings, while `test-compiler-fast`, `test-compiler-core`, and `test-compiler-bootstrap` are the new additive workflow targets.
+
+Compiler-specific suite targets now split by intent:
+
+- `test-compiler`: broad legacy self-hosted compiler suite
+- `test-compiler-stage0`: broad legacy stage-0 compiler suite
+- `test-compiler-fast`: cheap daily loop for parser, imports, kept sema internals, kept backend invariants, and driver coverage
+- `test-compiler-core`: the kept compiler-core suite used by the normal self-hosted QA gate
+- `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, and self-compile
+- `test-compiler-all`: explicit alias for the broad legacy self-hosted compiler suite
+- `test-examples`: example-program behavior, kept separate from compiler integration
+
+Workflow targets group the normal commands:
+
+- `qa-local`: `test` plus `test-compiler-fast`
+- `qa-ci`: `test` plus `test-compiler-core`
+- `qa-bootstrap`: `test-stage0` plus `test-compiler-bootstrap`
+- `qa-full`: `qa-ci` plus `qa-bootstrap`
 
 ## Benchmarking
 
