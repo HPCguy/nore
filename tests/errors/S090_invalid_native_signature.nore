@@ -1,0 +1,3 @@
+// Invalid native builtin signature
+native func fd_close(fd: i64): void
+func main(): void = { }

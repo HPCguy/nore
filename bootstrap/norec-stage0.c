@@ -205,6 +205,7 @@ typedef enum {
     ERR_S087_MISSING_NATIVE_DECL   = ERR_GROUP_SEMANTIC + 87,
     ERR_S088_INVALID_ASSIGN_TARGET = ERR_GROUP_SEMANTIC + 88,
     ERR_S089_CATCH_ALL_NOT_LAST    = ERR_GROUP_SEMANTIC + 89,
+    ERR_S090_INVALID_NATIVE_SIGNATURE = ERR_GROUP_SEMANTIC + 90,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -1401,6 +1402,9 @@ typedef struct {
     size_t name_length;
     size_t module_id;
     SourceLoc loc;
+    Parameter *params;
+    size_t param_count;
+    Type return_type;
 } NativeEntry;
 
 #define MAX_NATIVES 64
@@ -2096,6 +2100,9 @@ typedef struct Ast {
         struct {
             const char *name_start;
             size_t name_length;
+            Parameter *params;
+            size_t param_count;
+            Type return_type;
         } native_decl;
 
         struct {
@@ -2536,13 +2543,17 @@ static Ast *ast_make_func_decl(const char *name_start, size_t name_length,
 }
 
 static Ast *ast_make_native_decl(const char *name_start, size_t name_length,
-                                  SourceLoc loc) {
+                                 Parameter *params, size_t param_count,
+                                 Type return_type, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
     node->kind = AST_NATIVE_DECL;
     node->loc = loc;
     node->as.native_decl.name_start = name_start;
     node->as.native_decl.name_length = name_length;
+    node->as.native_decl.params = params;
+    node->as.native_decl.param_count = param_count;
+    node->as.native_decl.return_type = return_type;
     return node;
 }
 
@@ -3012,6 +3023,7 @@ static void ast_free(Ast *node) {
             ast_free(node->as.match_arm.body);
             break;
         case AST_NATIVE_DECL:
+            free(node->as.native_decl.params);
             break;
         case AST_PROGRAM:
             for (size_t i = 0; i < node->as.program.count; i++) {
@@ -5968,7 +5980,7 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                 parser_synchronize(parser);
                 continue;
             }
-            /* Parse and discard params (signature is documentation) */
+            /* Native declarations keep the parsed signature for sema validation. */
             size_t pcount = 0;
             Parameter *params = parser_parse_param_list(parser, &pcount, TOKEN_RPAREN);
             if (!parser_match(parser, TOKEN_RPAREN)) {
@@ -5996,17 +6008,18 @@ static void parser_parse_declarations(Parser *parser, Ast *program) {
                 parser_synchronize(parser);
                 continue;
             }
-            free(params);
             /* Native must NOT have a body */
             if (parser_check(parser, TOKEN_EQUALS)) {
                 diagnostic(g_source_file, ERR_P060_NATIVE_HAS_BODY,
                            parser->current.line, parser->current.column,
                            "Native function must not have a body");
+                free(params);
                 parser_synchronize(parser);
                 continue;
             }
             Ast *ndecl = ast_make_native_decl(native_name, native_name_len,
-                                               native_loc);
+                                              params, pcount, rtype,
+                                              native_loc);
             if (ndecl) {
                 ast_program_add_statement(program, ndecl);
             }
@@ -6566,9 +6579,20 @@ static void parser_print_ast_step(Ast *node, int indent) {
             break;
 
         case AST_NATIVE_DECL:
-            printf("NATIVE_DECL(%.*s)\n",
+            printf("NATIVE_DECL(%.*s) -> %s\n",
                    (int)node->as.native_decl.name_length,
-                   node->as.native_decl.name_start);
+                   node->as.native_decl.name_start,
+                   type_name(node->as.native_decl.return_type));
+            for (size_t i = 0; i < node->as.native_decl.param_count; i++) {
+                for (int j = 0; j < indent + 1; j++) printf("  ");
+                Parameter *p = &node->as.native_decl.params[i];
+                const char *ref_prefix = "";
+                if (p->is_mut_ref) ref_prefix = "mut ref ";
+                else if (p->is_ref) ref_prefix = "ref ";
+                printf("PARAM(%s%.*s: %s)\n", ref_prefix,
+                       (int)p->name_length, p->name_start,
+                       type_name(p->type));
+            }
             break;
 
         case AST_PROGRAM:
@@ -7843,6 +7867,115 @@ static void require_native_decl(Ast *node, const char *name, size_t len,
                    node->loc.line, node->loc.column,
                    "%s() requires: %s", name, hint);
     }
+}
+
+/* Match one registered native parameter against the compiler builtin contract. */
+static bool native_entry_param_matches(const NativeEntry *entry, size_t index,
+                                       Type wanted_type, bool wants_ref,
+                                       bool wants_mut_ref) {
+    if (index >= entry->param_count) return false;
+
+    Parameter *param = &entry->params[index];
+    return param->type == wanted_type &&
+           param->is_ref == wants_ref &&
+           param->is_mut_ref == wants_mut_ref;
+}
+
+/* Keep builtin native signatures aligned between the seed and self-hosted sema. */
+static bool native_entry_has_builtin_signature(const NativeEntry *entry) {
+    Type str_type = slice_table_intern(TYPE_U8);
+    Type str_slice = slice_table_intern(str_type);
+
+    if (entry->name_length == 8 &&
+        memcmp(entry->name_start, "fd_write", 8) == 0) {
+        return entry->param_count == 2 &&
+               entry->return_type == TYPE_I64 &&
+               native_entry_param_matches(entry, 0, TYPE_I32, false, false) &&
+               native_entry_param_matches(entry, 1, str_type, true, false);
+    }
+    if (entry->name_length == 7 &&
+        memcmp(entry->name_start, "fd_read", 7) == 0) {
+        return entry->param_count == 2 &&
+               entry->return_type == TYPE_I64 &&
+               native_entry_param_matches(entry, 0, TYPE_I32, false, false) &&
+               native_entry_param_matches(entry, 1, str_type, true, true);
+    }
+    if (entry->name_length == 7 &&
+        memcmp(entry->name_start, "fd_open", 7) == 0) {
+        return entry->param_count == 2 &&
+               entry->return_type == TYPE_I32 &&
+               native_entry_param_matches(entry, 0, str_type, true, false) &&
+               native_entry_param_matches(entry, 1, TYPE_I32, false, false);
+    }
+    if (entry->name_length == 8 &&
+        memcmp(entry->name_start, "fd_close", 8) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == TYPE_VOID &&
+               native_entry_param_matches(entry, 0, TYPE_I32, false, false);
+    }
+    if (entry->name_length == 7 &&
+        memcmp(entry->name_start, "fd_seek", 7) == 0) {
+        return entry->param_count == 3 &&
+               entry->return_type == TYPE_I64 &&
+               native_entry_param_matches(entry, 0, TYPE_I32, false, false) &&
+               native_entry_param_matches(entry, 1, TYPE_I64, false, false) &&
+               native_entry_param_matches(entry, 2, TYPE_I32, false, false);
+    }
+    if (entry->name_length == 8 &&
+        memcmp(entry->name_start, "mem_copy", 8) == 0) {
+        return entry->param_count == 2 &&
+               entry->return_type == TYPE_I64 &&
+               native_entry_param_matches(entry, 0, str_type, true, true) &&
+               native_entry_param_matches(entry, 1, str_type, true, false);
+    }
+    if (entry->name_length == 4 &&
+        memcmp(entry->name_start, "exit", 4) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == TYPE_VOID &&
+               native_entry_param_matches(entry, 0, TYPE_I32, false, false);
+    }
+    if (entry->name_length == 4 &&
+        memcmp(entry->name_start, "args", 4) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == str_slice &&
+               native_entry_param_matches(entry, 0, TYPE_ARENA, true, true);
+    }
+    if (entry->name_length == 9 &&
+        memcmp(entry->name_start, "shell_run", 9) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == TYPE_I32 &&
+               native_entry_param_matches(entry, 0, str_type, true, false);
+    }
+    if (entry->name_length == 7 &&
+        memcmp(entry->name_start, "exe_dir", 7) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == str_type &&
+               native_entry_param_matches(entry, 0, TYPE_ARENA, true, true);
+    }
+    if (entry->name_length == 3 &&
+        memcmp(entry->name_start, "pid", 3) == 0) {
+        return entry->param_count == 0 &&
+               entry->return_type == TYPE_I64;
+    }
+    if (entry->name_length == 7 &&
+        memcmp(entry->name_start, "time_ns", 7) == 0) {
+        return entry->param_count == 0 &&
+               entry->return_type == TYPE_I64;
+    }
+
+    return true;
+}
+
+/* Diagnose builtin native declarations that drift from the compiler contract. */
+static void validate_native_decl_signature(const NativeEntry *entry) {
+    if (native_entry_has_builtin_signature(entry)) {
+        return;
+    }
+
+    diagnostic(entry->loc.file, ERR_S090_INVALID_NATIVE_SIGNATURE,
+               entry->loc.line, entry->loc.column,
+               "Native function '%.*s' must use the compiler-provided signature",
+               (int)entry->name_length, entry->name_start);
 }
 
 static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_table) {
@@ -10199,9 +10332,17 @@ static void typecheck_program(Ast *program) {
             if (g_native_count >= MAX_NATIVES) {
                 panic(ERR_I002_INTERNAL_ERROR, "too many native declarations");
             }
-            g_native_table[g_native_count++] = (NativeEntry){
-                nname, nlen, mod, node->loc
+            NativeEntry entry = {
+                nname,
+                nlen,
+                mod,
+                node->loc,
+                node->as.native_decl.params,
+                node->as.native_decl.param_count,
+                node->as.native_decl.return_type
             };
+            validate_native_decl_signature(&entry);
+            g_native_table[g_native_count++] = entry;
         } else if (node->kind == AST_FUNC_DECL) {
             func_table_add(func_table, node);
 
@@ -10602,6 +10743,16 @@ static void codegen_emit_slice_end(FILE *out, Ast *node, Ast *obj, Type obj_type
         codegen_emit_obj_len(out, obj, obj_type);
 }
 
+/* Open-ended slice helpers keep the base expression single-evaluated. */
+static void codegen_emit_slice_tail(FILE *out, Ast *node, Ast *obj, Type obj_type) {
+    fprintf(out, "ni_slice_%d_tail(", type_slice_index(obj_type));
+    codegen_emit_expression(out, obj);
+    fprintf(out, ", ");
+    codegen_emit_slice_start(out, node);
+    fprintf(out, ", \"%s\", %zuUL, %zuUL)",
+            node->loc.file, node->loc.line, node->loc.column);
+}
+
 /* Emit a byte buffer argument, coercing [u8; N] arrays to ni_slice_0 */
 static void codegen_emit_byte_buf(FILE *out, Ast *arg) {
     if (type_is_array(arg->expr_type)) {
@@ -10851,6 +11002,11 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
              *  (ni_slice_X){.data = obj.data + start, .len = end - start}) */
             Ast *obj = node->as.slice_access.object;
             Type obj_type = obj->expr_type;
+
+            if (!node->as.slice_access.end && type_is_slice(obj_type)) {
+                codegen_emit_slice_tail(out, node, obj, obj_type);
+                break;
+            }
 
             fprintf(out, "(NI_SLICE_BOUNDS_CHECK(");
             codegen_emit_slice_start(out, node);
@@ -12303,6 +12459,16 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         free(emitted);
         fprintf(out, "\n");
     }
+
+    for (size_t i = 0; i < scount; i++) {
+        fprintf(out, "static inline ni_slice_%zu ni_slice_%zu_tail(ni_slice_%zu ni_value, int64_t ni_start,\n",
+                i, i, i);
+        fprintf(out, "                                            const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n");
+        fprintf(out, "    NI_SLICE_BOUNDS_CHECK(ni_start, ni_value.len, ni_value.len, ni_file, ni_line, ni_col);\n");
+        fprintf(out, "    return (ni_slice_%zu){.data = ni_value.data + ni_start, .len = (ni_value.len - ni_start)};\n", i);
+        fprintf(out, "}\n");
+    }
+    if (scount > 0) fprintf(out, "\n");
 
     /* Emit tagged union struct typedefs (needs slice types to be defined) */
     for (size_t i = 0; i < g_enum_count; i++) {
