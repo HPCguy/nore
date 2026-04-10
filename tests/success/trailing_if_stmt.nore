@@ -1,0 +1,19 @@
+mut total: i64 = 0
+
+func run(x0: i64): void = {
+    mut x: i64 = x0
+    while (x > 0) {
+        if (x > 1) {
+            total = total + 1
+            x = x - 1
+        } else {
+            total = total + 2
+            x = x - 1
+        }
+    }
+}
+
+func main(): void = {
+    run(3)
+    assert total == 4
+}

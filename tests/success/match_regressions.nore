@@ -55,3 +55,27 @@ func classify(c: u8): i64 = {
         else = { 0 }
     }
 }
+
+func main(): void = {
+    assert unwrap(Option.Some(7)) == 7
+    assert unwrap(Option.None) == 0
+
+    assert sum_if_some(Option.Some(9)) == 9
+    assert sum_if_some(Option.None) == -1
+
+    assert choose(true) == 1
+    assert choose(false) == 0
+
+    assert choose_if_shadow(true) == 1
+    assert choose_if_shadow(false) == 0
+
+    assert choose_payload_shadow(Option.Some(5)) == 5
+    assert choose_payload_shadow(Option.None) == 0
+
+    discard_match_value(Option.Some(1))
+    discard_match_value(Option.None)
+
+    assert classify('a') == 1
+    assert classify('b') == 1
+    assert classify('c') == 0
+}

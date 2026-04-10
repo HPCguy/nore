@@ -1,0 +1,37 @@
+mut calls: i64 = 0
+
+func next_bytes(mut ref mem: Arena): [u8] = {
+    calls = calls + 1
+    mut data: [u8] = arena_alloc(mut ref mem, 3)
+    data[0] = 'a'
+    data[1] = 'b'
+    data[2] = 'c'
+    data
+}
+
+func next_name(): str = {
+    calls = calls + 1
+    "abc"
+}
+
+func main(): void = {
+    mut mem: Arena = arena(1024)
+
+    val tail: [u8] = next_bytes(mut ref mem)[1..]
+    assert calls == 1
+    assert tail.len == 2
+    assert tail[0] == 'b'
+    assert tail[1] == 'c'
+
+    val all: [u8] = next_bytes(mut ref mem)[..]
+    assert calls == 2
+    assert all.len == 3
+    assert all[0] == 'a'
+    assert all[2] == 'c'
+
+    val name_tail: [u8] = next_name()[1..]
+    assert calls == 3
+    assert name_tail.len == 2
+    assert name_tail[0] == 'b'
+    assert name_tail[1] == 'c'
+}

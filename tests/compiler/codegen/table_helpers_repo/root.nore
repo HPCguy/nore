@@ -1,9 +1,0 @@
-table Bag {
-    count: i64
-}
-
-func touch_borrowed_table(mut ref bag: Bag): i64 = {
-    table_insert(mut ref bag, Bag.Row { count: 9 })
-    val got: Bag.Row = table_get(ref bag, 0)
-    got.count + table_len(ref bag)
-}
