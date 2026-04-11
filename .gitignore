@@ -22,5 +22,7 @@ core
 tmp
 a.out
 
+docs/HPC/
+
 #macOS
 .DS_Store
