@@ -22,7 +22,7 @@ native func pid(): i64
 
 val SINGLE_QUOTE: u8 = 39
 val BACKSLASH: u8 = 92
-val VERSION_TEXT: str = "norec v0.1.1"
+val VERSION_TEXT: str = "norec v0.1.2"
 
 pub enum CliMode { EmitC, Driver }
 
