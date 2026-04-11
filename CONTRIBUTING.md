@@ -40,7 +40,7 @@ make test-success # Run success tests only
 make qa-local     # Normal local language + compiler-maintainer loop
 make qa-ci        # Stronger self-hosted pre-merge gate
 make qa-bootstrap # Stage-0 language + trusted-seed bootstrap gate
-make qa-full      # Combined self-hosted + bootstrap gate
+make qa-full      # Combined self-hosted + bootstrap + examples gate
 ```
 
 ## Maintainer Workflows

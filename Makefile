@@ -148,10 +148,11 @@ qa-bootstrap:
 	@$(MAKE) test-stage0
 	@$(MAKE) test-compiler-bootstrap
 
-# Run the combined self-hosted and bootstrap QA workflows
+# Run the combined self-hosted, bootstrap, and example QA workflows
 qa-full:
 	@$(MAKE) qa-ci
 	@$(MAKE) qa-bootstrap
+	@$(MAKE) test-examples
 
 # Compare end-to-end compiler compile time under the stage-0 and self-hosted drivers.
 bench-compiler: $(STAGE0_BIN) $(NOREC)

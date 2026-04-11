@@ -64,7 +64,7 @@ The recommended workflow targets are:
 make qa-local     # normal local loop: test + test-compiler-fast
 make qa-ci        # self-hosted pre-merge gate: test + test-compiler-core
 make qa-bootstrap # stage-0 confidence: test-stage0 + test-compiler-bootstrap
-make qa-full      # combined gate: qa-ci + qa-bootstrap
+make qa-full      # combined gate: qa-ci + qa-bootstrap + test-examples
 ```
 
 The stage-0 boundary is explicit: the `*-stage0` language targets and `test-compiler-bootstrap` run through `./norec-stage0`. The normal language, example, compiler, and self-hosted QA targets run through `./norec`.
@@ -107,7 +107,7 @@ Workflow targets group the normal commands:
 - `qa-local`: `test` plus `test-compiler-fast`
 - `qa-ci`: `test` plus `test-compiler-core`
 - `qa-bootstrap`: `test-stage0` plus `test-compiler-bootstrap`
-- `qa-full`: `qa-ci` plus `qa-bootstrap`
+- `qa-full`: `qa-ci` plus `qa-bootstrap` plus `test-examples`
 
 ## Benchmarking
 
