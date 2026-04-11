@@ -58,30 +58,40 @@ When omitted, `compiler_root` defaults to the directory that contains the runnin
 
 ## Testing
 
+The recommended workflow targets are:
+
+```bash
+make qa-local     # normal local loop: test + test-compiler-fast
+make qa-ci        # self-hosted pre-merge gate: test + test-compiler-core
+make qa-bootstrap # stage-0 confidence: test-stage0 + test-compiler-bootstrap
+make qa-full      # combined gate: qa-ci + qa-bootstrap
+```
+
+The stage-0 boundary is explicit: the `*-stage0` language targets and `test-compiler-bootstrap` run through `./norec-stage0`. The normal language, example, compiler, and self-hosted QA targets run through `./norec`.
+
+Language and stdlib suite targets:
+
 ```bash
 make test
-make test-stage0
 make test-errors
 make test-success
 make test-std
+make test-stage0
 make test-errors-stage0
 make test-success-stage0
 make test-std-stage0
+```
 
+Compiler and example suite targets:
+
+```bash
 make test-compiler-fast
 make test-compiler-core
 make test-compiler-bootstrap
 make test-compiler
 make test-compiler-all
 make test-examples
-
-make qa-local
-make qa-ci
-make qa-bootstrap
-make qa-full
 ```
-
-The default language, example, and QA targets run through `./norec`. Stage-0 is exercised explicitly by `test-stage0` and `test-compiler-bootstrap`; `qa-bootstrap` groups those two trusted-seed checks.
 
 Compiler-specific suite targets now split by intent:
 

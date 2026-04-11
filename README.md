@@ -146,8 +146,8 @@ make test-compiler-core    # Kept compiler-core coverage
 make test-compiler-bootstrap # Trusted-seed bootstrap checks
 make test-examples         # Example programs through ./norec
 
-make test-compiler         # Broad legacy self-hosted compiler suite
-make test-compiler-all     # Explicit alias for the broad legacy self-hosted suite
+make test-compiler         # Broad self-hosted compiler suite
+make test-compiler-all     # Explicit alias for the broad self-hosted suite
 
 make qa-local              # test + test-compiler-fast
 make qa-ci                 # test + test-compiler-core
@@ -160,6 +160,7 @@ make qa-full               # qa-ci + qa-bootstrap
 - Compiler-specific tests live under `tests/compiler/`
 - `test-compiler` keeps the broad self-hosted compiler suite, with `test-compiler-all` as an explicit alias
 - `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes; use `qa-bootstrap` to run them together
+- `qa-local` is the normal local loop, `qa-ci` is the self-hosted pre-merge gate, and `qa-full` combines self-hosted and bootstrap confidence
 - For compiler build details, rebuild paths, and the benchmark command, see [docs/compiler.md](docs/compiler.md)
 
 ## Editor Support

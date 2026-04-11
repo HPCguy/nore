@@ -22,7 +22,7 @@ When submitting code:
 - **C99, no extensions.** Keep it portable.
 - **Keep it simple.** No clever tricks. If you need to explain it, simplify it.
 - **Include tests.** Every new feature needs a success test in `tests/success/`. Every new error code needs an error test in `tests/errors/`.
-- **Run `make qa-local` before submitting.** If you changed compiler internals or CI-facing workflow, run `make qa-ci` too.
+- **Run `make qa-local` before submitting.** Run `make qa-ci` for compiler-internal or CI-facing changes, and `make qa-bootstrap` for stage-0, bootstrap, or trusted-seed changes.
 - **Small changes over big ones.** A focused PR that does one thing well is easier to review than a large one that touches everything.
 
 ### What Doesn't Help Right Now
@@ -39,6 +39,8 @@ make test-errors  # Run error code tests only
 make test-success # Run success tests only
 make qa-local     # Normal local language + compiler-maintainer loop
 make qa-ci        # Stronger self-hosted pre-merge gate
+make qa-bootstrap # Stage-0 language + trusted-seed bootstrap gate
+make qa-full      # Combined self-hosted + bootstrap gate
 ```
 
 ## Maintainer Workflows

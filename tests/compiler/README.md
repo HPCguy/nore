@@ -8,9 +8,9 @@ Current groups:
 - `lexer/`: tokenization and lexer behavior
 - `parser/`: parser behavior and AST or node-table shape
 - `imports/`: module loading and import resolution
-- `sema/`: semantic checks and diagnostics
-- `codegen/`: generated-C regressions and codegen fixtures
-- `integration/`: driver and diagnostic coverage
+- `sema/`: semantic internal-state coverage
+- `codegen/`: backend contracts, invariants, and codegen fixtures
+- `integration/`: driver coverage
 - `bootstrap/`: trusted-seed smoke and self-compile coverage
 
 Naming convention:
