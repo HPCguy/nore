@@ -58,6 +58,12 @@ func categorize(mut ref out: i64, x: i64): void = {
     }
 }
 
+// Count target-index evaluation so assignment ordering stays observable.
+func capture_index(mut ref hits: i64, idx: i64): i64 = {
+    hits = hits + 1
+    idx
+}
+
 func main(): void = {
     // Simple value_expr
     assert min_i64(3, 5) == 3
@@ -79,6 +85,55 @@ func main(): void = {
     assert sign(42) == 1
     assert sign(0 - 7) == 0 - 1
     assert sign(0) == 0
+
+    // Assignment RHS with value-form if/else
+    mut reassigned: i64 = 0
+    reassigned = if (true) { 11 } else { 22 }
+    assert reassigned == 11
+    reassigned = if (false) { 33 } else if (true) { 44 } else { 55 }
+    assert reassigned == 44
+    reassigned = if (true) {
+        val branch_value: i64 = 66
+        branch_value
+    } else {
+        val branch_value: i64 = 77
+        branch_value
+    }
+    assert reassigned == 66
+
+    mut index_hits: i64 = 0
+    mut index_source: i64 = 0
+    mut indexed: [i64; 2] = [10, 20]
+    indexed[capture_index(mut ref index_hits, index_source)] = if (true) {
+        index_source = 1
+        99
+    } else {
+        88
+    }
+    assert index_hits == 1
+    assert indexed[0] == 99
+    assert indexed[1] == 20
+    assert index_source == 1
+
+    val left_bytes: [u8; 2] = [65, 66]
+    val right_bytes: [u8; 2] = [67, 68]
+    mut selected_bytes: [u8] = left_bytes[..]
+    mut selected_branch: i64 = 0
+    selected_bytes = if (true) {
+        selected_branch = 1
+        left_bytes
+    } else {
+        selected_branch = 2
+        right_bytes
+    }
+    assert selected_branch == 1
+    assert selected_bytes.len == 2
+    assert selected_bytes[0] == 65
+    assert selected_bytes[1] == 66
+    selected_bytes = if (false) { left_bytes } else { right_bytes }
+    assert selected_bytes.len == 2
+    assert selected_bytes[0] == 67
+    assert selected_bytes[1] == 68
 
     // complex else if expression
     assert bucket(5) == 10

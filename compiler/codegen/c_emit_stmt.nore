@@ -401,6 +401,12 @@ func append_value_temp_name(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, owner
     append_i64(mut ref mem, mut ref out, owner_id)
 }
 
+// Capturing the target address preserves assignment target evaluation before a hoisted RHS.
+func append_target_temp_name(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, owner_id: i64): void = {
+    append_bytes(mut ref mem, mut ref out, ref "ni_target_")
+    append_i64(mut ref mem, mut ref out, owner_id)
+}
+
 // Enum/scalar pattern conditions recurse over `|` groups so arm bodies never duplicate scrutinee evaluation.
 func append_match_condition(
     mut ref mem: Arena,
@@ -582,6 +588,7 @@ func append_assignment_stmt(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -590,7 +597,70 @@ func append_assignment_stmt(
     stmt_id: i64,
     depth: i64
 ): void = {
+    val target_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
+    val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
     val op_text: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[stmt_id])
+
+    if (tail_is_control_stmt(ref nodes, value_id)) {
+        val target_type: i64 = nodes.type_id[target_id]
+        val type_text: str = ctypes.type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            target_type
+        )
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref " *")
+        append_target_temp_name(mut ref mem, mut ref out, stmt_id)
+        append_bytes(mut ref mem, mut ref out, ref " = &")
+        cexpr.append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            target_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref type_text)
+        append_bytes(mut ref mem, mut ref out, ref " ")
+        append_value_temp_name(mut ref mem, mut ref out, stmt_id)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        dispatch_control_stmt(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            value_id,
+            depth,
+            TAIL_MODE_ASSIGN_TEMP,
+            target_type,
+            stmt_id
+        )
+        append_indent(mut ref mem, mut ref out, depth)
+        append_bytes(mut ref mem, mut ref out, ref "(*")
+        append_target_temp_name(mut ref mem, mut ref out, stmt_id)
+        append_bytes(mut ref mem, mut ref out, ref ") ")
+        append_bytes(mut ref mem, mut ref out, ref op_text)
+        append_bytes(mut ref mem, mut ref out, ref " ")
+        append_value_temp_name(mut ref mem, mut ref out, stmt_id)
+        append_bytes(mut ref mem, mut ref out, ref ";\n")
+        return
+    }
+
     append_indent(mut ref mem, mut ref out, depth)
     cexpr.append_expr(
         mut ref mem,
@@ -601,7 +671,7 @@ func append_assignment_stmt(
         ref nodes,
         ref symbols_table,
         ref types_table,
-        node.node_child_at(ref nodes, stmt_id, 0)
+        target_id
     )
     append_bytes(mut ref mem, mut ref out, ref " ")
     append_bytes(
@@ -619,8 +689,8 @@ func append_assignment_stmt(
         ref nodes,
         ref symbols_table,
         ref types_table,
-        nodes.type_id[node.node_child_at(ref nodes, stmt_id, 0)],
-        node.node_child_at(ref nodes, stmt_id, 1)
+        nodes.type_id[target_id],
+        value_id
     )
     append_bytes(mut ref mem, mut ref out, ref ";\n")
 }
@@ -1551,6 +1621,7 @@ func append_statement(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,

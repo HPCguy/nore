@@ -26,3 +26,6 @@ docs/HPC/
 
 #macOS
 .DS_Store
+
+# Editor workspaces
+.obsidian/

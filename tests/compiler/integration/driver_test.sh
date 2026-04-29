@@ -19,9 +19,9 @@ mkdir -p "$BIN_DIR"
 rm -f "$HELLO_BIN" "$BENCH_HELLO_BIN" "$PATH_HELLO_BIN" "$CC_FAIL_BIN" "$EMIT_C" "$LEGACY_EMIT_C" "$PATH_EMIT_C" "$TIME_NS_SRC" "$TIME_NS_BIN"
 
 version_output=$("$COMPILER_BIN" --version 2>&1)
-expected_version="norec v0.1.1"
+expected_version="norec v0.1.2"
 if [ "${COMPILER_TEST_MODE:-norec}" = "stage0" ]; then
-    expected_version="norec-stage0 v0.1.1"
+    expected_version="norec-stage0 v0.1.2"
 fi
 if [ "$version_output" != "$expected_version" ]; then
     echo "unexpected version output: $version_output"
@@ -30,7 +30,7 @@ fi
 
 if [ "${COMPILER_TEST_MODE:-norec}" = "norec" ]; then
     help_output=$("$COMPILER_BIN" --help 2>&1)
-    if ! printf '%s\n' "$help_output" | grep -q -- "^norec v0.1.1$"; then
+    if ! printf '%s\n' "$help_output" | grep -q -- "^norec v0.1.2$"; then
         echo "help output does not include version banner"
         exit 1
     fi

@@ -11520,16 +11520,47 @@ static bool codegen_needs_hoisting(Ast *node) {
     return !codegen_can_emit_inline(node);
 }
 
+/* Typed temps let branch values coerce to the assignment/result type. */
+static bool codegen_needs_typed_temp(Ast *value, Type target_type) {
+    return target_type != TYPE_UNKNOWN &&
+           type_is_slice(target_type) &&
+           type_is_array(value->expr_type) &&
+           (value->kind == AST_BLOCK ||
+            value->kind == AST_IF ||
+            value->kind == AST_MATCH);
+}
+
 static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
-                                       Scope **scope, int indent);
+                                      Type temp_type, Scope **scope,
+                                      int indent);
 static void codegen_emit_if_assign(FILE *out, Ast *node, int assign_temp,
-                                   Scope **scope, int indent);
+                                   Type temp_type, Scope **scope, int indent);
 static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
-                                    Scope **scope, int indent);
+                                    Type temp_type, Scope **scope,
+                                    int indent);
+
+/* Emit value with assignment-context coercions that C cannot infer. */
+static void codegen_emit_expression_as_type(FILE *out, Ast *value,
+                                            Type target_type) {
+    if (target_type != TYPE_UNKNOWN &&
+        type_is_slice(target_type) &&
+        type_is_array(value->expr_type)) {
+        ArrayTypeEntry *ae = array_table_get(value->expr_type);
+        Type elem = type_element_type(target_type);
+        fprintf(out, "(%s){.data = (%s *)",
+                codegen_type_to_c(target_type), codegen_type_to_c(elem));
+        codegen_emit_lvalue(out, value);
+        fprintf(out, ".data, .len = %zuL}", ae ? ae->size : 0);
+        return;
+    }
+
+    codegen_emit_expression(out, value);
+}
 
 /* Emit block contents and assign value_expr to temp variable if present */
 static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
-                                     Scope **scope, int indent) {
+                                    Type temp_type, Scope **scope,
+                                    int indent) {
     *scope = scope_create(*scope);
     g_codegen_scope = *scope;
     for (size_t i = 0; i < block->as.block.count; i++) {
@@ -11538,15 +11569,16 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
     if (block->as.block.value_expr) {
         if (block->as.block.value_expr->kind == AST_MATCH) {
             codegen_emit_match_switch(out, block->as.block.value_expr,
-                                       temp_idx, scope, indent);
+                                      temp_idx, temp_type, scope, indent);
         } else if (block->as.block.value_expr->kind == AST_IF &&
                    codegen_needs_hoisting(block->as.block.value_expr)) {
             codegen_emit_if_assign(out, block->as.block.value_expr,
-                                   temp_idx, scope, indent);
+                                   temp_idx, temp_type, scope, indent);
         } else {
             codegen_indent(out, indent);
             fprintf(out, "__expr_%d = ", temp_idx);
-            codegen_emit_expression(out, block->as.block.value_expr);
+            codegen_emit_expression_as_type(out, block->as.block.value_expr,
+                                            temp_type);
             fprintf(out, ";\n");
         }
     }
@@ -11558,18 +11590,20 @@ static void codegen_emit_block_body(FILE *out, Ast *block, int temp_idx,
 }
 
 static void codegen_emit_if_assign(FILE *out, Ast *node, int assign_temp,
-                                   Scope **scope, int indent) {
+                                   Type temp_type, Scope **scope, int indent) {
     codegen_indent(out, indent);
     fprintf(out, "if (");
     codegen_emit_condition(out, node->as.if_stmt.condition);
     fprintf(out, ") {\n");
-    codegen_emit_block_body(out, node->as.if_stmt.then_block, assign_temp, scope, indent + 1);
+    codegen_emit_block_body(out, node->as.if_stmt.then_block, assign_temp,
+                            temp_type, scope, indent + 1);
     codegen_indent(out, indent);
     fprintf(out, "}");
 
     if (node->as.if_stmt.else_block) {
         fprintf(out, " else {\n");
-        codegen_emit_block_body(out, node->as.if_stmt.else_block, assign_temp, scope, indent + 1);
+        codegen_emit_block_body(out, node->as.if_stmt.else_block, assign_temp,
+                                temp_type, scope, indent + 1);
         codegen_indent(out, indent);
         fprintf(out, "}");
     }
@@ -11579,15 +11613,17 @@ static void codegen_emit_if_assign(FILE *out, Ast *node, int assign_temp,
 /* Emit a complex block expression to a temp variable.
  * Emits: TYPE __expr_N; { statements; __expr_N = value; }
  * Returns the temp index used. */
-static int codegen_emit_block_to_temp(FILE *out, Ast *block, Scope **scope, int indent) {
+static int codegen_emit_block_to_temp(FILE *out, Ast *block, Type temp_type,
+                                      Scope **scope, int indent) {
     int temp_idx = codegen_temp_counter++;
+    if (temp_type == TYPE_UNKNOWN) temp_type = block->expr_type;
 
     codegen_indent(out, indent);
-    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(block->expr_type), temp_idx);
+    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(temp_type), temp_idx);
 
     codegen_indent(out, indent);
     fprintf(out, "{\n");
-    codegen_emit_block_body(out, block, temp_idx, scope, indent + 1);
+    codegen_emit_block_body(out, block, temp_idx, temp_type, scope, indent + 1);
     codegen_indent(out, indent);
     fprintf(out, "}\n");
 
@@ -11595,18 +11631,20 @@ static int codegen_emit_block_to_temp(FILE *out, Ast *block, Scope **scope, int 
 }
 
 /* Emit a complex if expression to a temp variable */
-static int codegen_emit_if_to_temp(FILE *out, Ast *node, Scope **scope, int indent) {
+static int codegen_emit_if_to_temp(FILE *out, Ast *node, Type temp_type,
+                                   Scope **scope, int indent) {
     int temp_idx = codegen_temp_counter++;
+    if (temp_type == TYPE_UNKNOWN) temp_type = node->expr_type;
 
     codegen_indent(out, indent);
-    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(node->expr_type), temp_idx);
-    codegen_emit_if_assign(out, node, temp_idx, scope, indent);
+    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(temp_type), temp_idx);
+    codegen_emit_if_assign(out, node, temp_idx, temp_type, scope, indent);
     return temp_idx;
 }
 
 /* Emit enum match lowering; tagged enums switch on .tag, plain enums on value. */
 static void codegen_emit_match_enum_switch(FILE *out, Ast *node, int assign_temp,
-                                           Scope **scope, int indent,
+                                           Type temp_type, Scope **scope, int indent,
                                            EnumTypeEntry *et) {
     int mid = codegen_match_counter++;
     Type scrut_type = node->as.match_expr.scrutinee->expr_type;
@@ -11656,7 +11694,7 @@ static void codegen_emit_match_enum_switch(FILE *out, Ast *node, int assign_temp
 
         if (assign_temp >= 0) {
             codegen_emit_block_body(out, arm->as.match_arm.body, assign_temp,
-                                     scope, indent + 2);
+                                    temp_type, scope, indent + 2);
         } else {
             codegen_emit_block_statements(out, arm->as.match_arm.body,
                                            scope, indent + 2, false);
@@ -11674,8 +11712,8 @@ static void codegen_emit_match_enum_switch(FILE *out, Ast *node, int assign_temp
 
 /* Emit scalar match lowering as a direct C switch with literal cases. */
 static void codegen_emit_match_scalar_switch(FILE *out, Ast *node,
-                                             int assign_temp, Scope **scope,
-                                             int indent) {
+                                             int assign_temp, Type temp_type,
+                                             Scope **scope, int indent) {
     int mid = codegen_match_counter++;
     Type scrut_type = node->as.match_expr.scrutinee->expr_type;
 
@@ -11708,7 +11746,7 @@ static void codegen_emit_match_scalar_switch(FILE *out, Ast *node,
 
         if (assign_temp >= 0) {
             codegen_emit_block_body(out, arm->as.match_arm.body, assign_temp,
-                                     scope, indent + 2);
+                                    temp_type, scope, indent + 2);
         } else {
             codegen_emit_block_statements(out, arm->as.match_arm.body,
                                            scope, indent + 2, false);
@@ -11727,27 +11765,30 @@ static void codegen_emit_match_scalar_switch(FILE *out, Ast *node,
 /* Emit match switch. If assign_temp >= 0, assign arm value_expr to __expr_<assign_temp>.
  * If assign_temp < 0, emit arm body as bare statements. */
 static void codegen_emit_match_switch(FILE *out, Ast *node, int assign_temp,
-                                      Scope **scope, int indent) {
+                                      Type temp_type, Scope **scope, int indent) {
     Type scrut_type = node->as.match_expr.scrutinee->expr_type;
     EnumTypeEntry *et = enum_table_get(scrut_type);
 
     if (et) {
-        codegen_emit_match_enum_switch(out, node, assign_temp, scope,
+        codegen_emit_match_enum_switch(out, node, assign_temp, temp_type, scope,
                                        indent, et);
         return;
     }
 
-    codegen_emit_match_scalar_switch(out, node, assign_temp, scope, indent);
+    codegen_emit_match_scalar_switch(out, node, assign_temp, temp_type, scope,
+                                     indent);
 }
 
 /* Emit a match expression to a temp variable */
-static int codegen_emit_match_to_temp(FILE *out, Ast *node, Scope **scope, int indent) {
+static int codegen_emit_match_to_temp(FILE *out, Ast *node, Type temp_type,
+                                      Scope **scope, int indent) {
     int temp_idx = codegen_temp_counter++;
+    if (temp_type == TYPE_UNKNOWN) temp_type = node->expr_type;
 
     codegen_indent(out, indent);
-    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(node->expr_type), temp_idx);
+    fprintf(out, "%s __expr_%d;\n", codegen_type_to_c(temp_type), temp_idx);
 
-    codegen_emit_match_switch(out, node, temp_idx, scope, indent);
+    codegen_emit_match_switch(out, node, temp_idx, temp_type, scope, indent);
 
     return temp_idx;
 }
@@ -11759,14 +11800,14 @@ static void codegen_emit_var_decl(FILE *out, const char *name_start, size_t name
     const char *const_prefix = is_const ? "const " : "";
     const char *type_str = codegen_type_to_c(type);
 
-    if (codegen_needs_hoisting(init)) {
+    if (codegen_needs_hoisting(init) || codegen_needs_typed_temp(init, type)) {
         int temp_idx;
         if (init->kind == AST_BLOCK) {
-            temp_idx = codegen_emit_block_to_temp(out, init, scope, indent);
+            temp_idx = codegen_emit_block_to_temp(out, init, type, scope, indent);
         } else if (init->kind == AST_MATCH) {
-            temp_idx = codegen_emit_match_to_temp(out, init, scope, indent);
+            temp_idx = codegen_emit_match_to_temp(out, init, type, scope, indent);
         } else {
-            temp_idx = codegen_emit_if_to_temp(out, init, scope, indent);
+            temp_idx = codegen_emit_if_to_temp(out, init, type, scope, indent);
         }
         codegen_indent(out, indent);
         fprintf(out, "%s%s ni_%.*s = __expr_%d;\n",
@@ -11775,9 +11816,38 @@ static void codegen_emit_var_decl(FILE *out, const char *name_start, size_t name
         codegen_indent(out, indent);
         fprintf(out, "%s%s ni_%.*s = ",
                 const_prefix, type_str, (int)name_length, name_start);
-        codegen_emit_expression(out, init);
+        codegen_emit_expression_as_type(out, init, type);
         fprintf(out, ";\n");
     }
+}
+
+/* Assignment RHS control-flow is lowered through a temp before the final store. */
+static int codegen_emit_value_to_temp_if_needed(FILE *out, Ast *value,
+                                                Type target_type,
+                                                Scope **scope, int indent) {
+    if (!codegen_needs_hoisting(value) &&
+        !codegen_needs_typed_temp(value, target_type)) {
+        return -1;
+    }
+
+    if (value->kind == AST_BLOCK) {
+        return codegen_emit_block_to_temp(out, value, target_type, scope, indent);
+    }
+    if (value->kind == AST_MATCH) {
+        return codegen_emit_match_to_temp(out, value, target_type, scope, indent);
+    }
+    return codegen_emit_if_to_temp(out, value, target_type, scope, indent);
+}
+
+/* Emit either the hoisted temp or the original inline expression. */
+static void codegen_emit_assignment_value(FILE *out, Ast *value, int temp_idx,
+                                          Type target_type) {
+    if (temp_idx >= 0) {
+        fprintf(out, "__expr_%d", temp_idx);
+        return;
+    }
+
+    codegen_emit_expression_as_type(out, value, target_type);
 }
 
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent) {
@@ -11825,13 +11895,18 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_ASSIGNMENT:
         {
             Ast *target = node->as.assignment.target;
+            Ast *value = node->as.assignment.value;
             CodegenTargetIndexTemp temps[MAX_TARGET_INDEX_DEPTH];
             size_t temp_count = codegen_emit_target_index_setup(out, target,
                                                                  indent, temps);
+            int value_temp = codegen_emit_value_to_temp_if_needed(out, value,
+                                                                  target->expr_type,
+                                                                  scope, indent);
             codegen_indent(out, indent);
             codegen_emit_target_path(out, target, temps, temp_count);
             fprintf(out, " = ");
-            codegen_emit_expression(out, node->as.assignment.value);
+            codegen_emit_assignment_value(out, value, value_temp,
+                                          target->expr_type);
             fprintf(out, ";\n");
             break;
         }
@@ -11839,14 +11914,19 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_COMPOUND_ASSIGNMENT:
         {
             Ast *target = node->as.compound_assignment.target;
+            Ast *value = node->as.compound_assignment.value;
             CodegenTargetIndexTemp temps[MAX_TARGET_INDEX_DEPTH];
             size_t temp_count = codegen_emit_target_index_setup(out, target,
                                                                  indent, temps);
+            int value_temp = codegen_emit_value_to_temp_if_needed(out, value,
+                                                                  target->expr_type,
+                                                                  scope, indent);
             codegen_indent(out, indent);
             codegen_emit_target_path(out, target, temps, temp_count);
             codegen_emit_compound_assign_op(out,
                                             node->as.compound_assignment.op);
-            codegen_emit_expression(out, node->as.compound_assignment.value);
+            codegen_emit_assignment_value(out, value, value_temp,
+                                          target->expr_type);
             fprintf(out, ";\n");
             break;
         }
@@ -12007,7 +12087,7 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             break;
 
         case AST_MATCH:
-            codegen_emit_match_switch(out, node, -1, scope, indent);
+            codegen_emit_match_switch(out, node, -1, TYPE_UNKNOWN, scope, indent);
             break;
 
         default:
@@ -12226,14 +12306,23 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     if (body->as.block.value_expr) {
         Ast *vexpr = body->as.block.value_expr;
         bool is_non_void = (func_decl->as.func_decl.return_type != TYPE_VOID);
-        if (codegen_needs_hoisting(vexpr) && is_non_void) {
+        bool needs_temp = codegen_needs_hoisting(vexpr) ||
+                          codegen_needs_typed_temp(vexpr,
+                                                   func_decl->as.func_decl.return_type);
+        if (needs_temp && is_non_void) {
             int temp_idx;
             if (vexpr->kind == AST_BLOCK) {
-                temp_idx = codegen_emit_block_to_temp(out, vexpr, &scope, 1);
+                temp_idx = codegen_emit_block_to_temp(out, vexpr,
+                                                      func_decl->as.func_decl.return_type,
+                                                      &scope, 1);
             } else if (vexpr->kind == AST_MATCH) {
-                temp_idx = codegen_emit_match_to_temp(out, vexpr, &scope, 1);
+                temp_idx = codegen_emit_match_to_temp(out, vexpr,
+                                                      func_decl->as.func_decl.return_type,
+                                                      &scope, 1);
             } else {
-                temp_idx = codegen_emit_if_to_temp(out, vexpr, &scope, 1);
+                temp_idx = codegen_emit_if_to_temp(out, vexpr,
+                                                  func_decl->as.func_decl.return_type,
+                                                  &scope, 1);
             }
             codegen_indent(out, 1);
             fprintf(out, "return __expr_%d;\n", temp_idx);
@@ -12244,7 +12333,8 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
             if (is_non_void) {
                 fprintf(out, "return ");
             }
-            codegen_emit_expression(out, vexpr);
+            codegen_emit_expression_as_type(out, vexpr,
+                                            func_decl->as.func_decl.return_type);
             fprintf(out, ";\n");
         }
     }
