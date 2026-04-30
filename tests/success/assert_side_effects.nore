@@ -1,0 +1,37 @@
+// Assert conditions currently evaluate exactly once and may perform side effects.
+
+// Incrementing through an assert condition makes duplicate evaluation observable.
+func increment_and_true(mut ref calls: i64): bool = {
+    calls = calls + 1
+    true
+}
+
+// Mutating through an assert condition documents today's state-preserving behavior.
+func store_and_true(mut ref target: i64, new_value: i64): bool = {
+    target = new_value
+    true
+}
+
+// Short-circuiting inside assert conditions must preserve normal boolean semantics.
+func increment_and_false(mut ref calls: i64): bool = {
+    calls = calls + 1
+    false
+}
+
+func main(): void = {
+    mut calls: i64 = 0
+    assert increment_and_true(mut ref calls)
+    assert calls == 1
+
+    mut stored: i64 = 0
+    assert store_and_true(mut ref stored, 42)
+    assert stored == 42
+
+    mut or_calls: i64 = 0
+    assert true || increment_and_false(mut ref or_calls)
+    assert or_calls == 0
+
+    mut and_calls: i64 = 0
+    assert true && increment_and_true(mut ref and_calls)
+    assert and_calls == 1
+}

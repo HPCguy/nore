@@ -109,6 +109,7 @@ run_profile_fast() {
         "compiler/codegen/target_os_ref_test.nore"
 
     run_named_tests "integration" "shell" \
+        "compiler/integration/assert_runtime_test.sh" \
         "compiler/integration/driver_test.sh"
 }
 
@@ -122,6 +123,7 @@ run_profile_core() {
 
 run_profile_bootstrap() {
     run_named_tests "integration" "shell" \
+        "compiler/integration/assert_runtime_test.sh" \
         "compiler/integration/driver_test.sh"
 
     run_named_tests "bootstrap" "shell" \
