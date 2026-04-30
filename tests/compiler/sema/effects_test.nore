@@ -1,0 +1,257 @@
+import bbuf "../../../compiler/support/byte_buf.nore"
+import check "../../../compiler/sema/check.nore"
+import diag "../../../compiler/support/diag.nore"
+import ibuf "../../../compiler/support/i64_buf.nore"
+import loader "../../../compiler/frontend/loader.nore"
+import node "../../../compiler/frontend/node.nore"
+import scopes "../../../compiler/sema/scopes.nore"
+import source "../../../compiler/support/source.nore"
+import string "std/string.nore"
+import symbols "../../../compiler/sema/symbols.nore"
+import token "../../../compiler/frontend/token.nore"
+import types "../../../compiler/sema/types.nore"
+
+// Keep effect assertions readable by looking up explicit fixture variables by name.
+func find_var_decl(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    ref wanted: [u8]
+): i64 = {
+    if (node_id < 0) {
+        return -1
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.VarDecl) {
+        val decl_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[node_id])
+        if (string.str_eq(ref decl_name, ref wanted)) {
+            return node_id
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        val found: i64 = find_var_decl(ref nodes, ref tokens, ref sources, ref text_pool, child_id, ref wanted)
+        if (found >= 0) {
+            return found
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    -1
+}
+
+// Imported fixtures can exercise names that the root module shadows.
+func find_var_decl_in_modules(
+    ref module_rows: loader.Modules,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref wanted: [u8]
+): i64 = {
+    mut module_id: i64 = 0
+    while (module_id < table_len(ref module_rows)) {
+        val found: i64 = find_var_decl(
+            ref nodes,
+            ref tokens,
+            ref sources,
+            ref text_pool,
+            module_rows.root_node[module_id],
+            ref wanted
+        )
+        if (found >= 0) {
+            return found
+        }
+        module_id += 1
+    }
+    -1
+}
+
+// Search one subtree for the first identifier call with the requested callee name.
+func find_call_by_name(
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    node_id: i64,
+    ref wanted: [u8]
+): i64 = {
+    if (node_id < 0) {
+        return -1
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.CallExpr) {
+        val callee_id: i64 = nodes.first_child[node_id]
+        if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier) {
+            val callee_name: [u8] = token.token_text(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id])
+            if (string.str_eq(ref callee_name, ref wanted)) {
+                return node_id
+            }
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        val found: i64 = find_call_by_name(ref nodes, ref tokens, ref sources, ref text_pool, child_id, ref wanted)
+        if (found >= 0) {
+            return found
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    -1
+}
+
+// Imported and root modules share one AST table, but each needs its own root walk.
+func find_call_by_name_in_modules(
+    ref module_rows: loader.Modules,
+    ref nodes: node.Nodes,
+    ref tokens: token.Tokens,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref wanted: [u8]
+): i64 = {
+    mut module_id: i64 = 0
+    while (module_id < table_len(ref module_rows)) {
+        val found: i64 = find_call_by_name(
+            ref nodes,
+            ref tokens,
+            ref sources,
+            ref text_pool,
+            module_rows.root_node[module_id],
+            ref wanted
+        )
+        if (found >= 0) {
+            return found
+        }
+        module_id += 1
+    }
+    -1
+}
+
+// The fixture uses explicit types, so the initializer is always the second child.
+func explicit_var_init(ref nodes: node.Nodes, decl_id: i64): i64 = {
+    node.node_child_at(ref nodes, decl_id, 1)
+}
+
+// Assert one named initializer against the public side-effect predicate.
+func assert_var_effect(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref module_rows: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref name: [u8],
+    expected: bool
+): void = {
+    val decl_id: i64 = find_var_decl_in_modules(ref module_rows, ref nodes, ref tokens, ref sources, ref text_pool, ref name)
+    assert decl_id >= 0
+    val init_id: i64 = explicit_var_init(ref nodes, decl_id)
+    assert init_id >= 0
+    assert check.expr_may_have_side_effects(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        init_id
+    ) == expected
+}
+
+// Assert one named call expression against the public side-effect predicate.
+func assert_call_effect(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref module_rows: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    ref name: [u8],
+    expected: bool
+): void = {
+    val call_id: i64 = find_call_by_name_in_modules(ref module_rows, ref nodes, ref tokens, ref sources, ref text_pool, ref name)
+    assert call_id >= 0
+    assert check.expr_may_have_side_effects(
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        call_id
+    ) == expected
+}
+
+// Prove the sema side-effect classifier separates pure expressions from conservative effects.
+func main(): void = {
+    mut mem: Arena = arena(8388608)
+    mut sources: source.Sources = table_alloc(mut ref mem, 8)
+    mut path_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    mut text_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 32768)
+    mut line_starts: ibuf.I64Buf = ibuf.i64_buf_new(mut ref mem, 2048)
+    mut tokens: token.Tokens = table_alloc(mut ref mem, 4096)
+    mut nodes: node.Nodes = table_alloc(mut ref mem, 8192)
+    mut modules: loader.Modules = table_alloc(mut ref mem, 8)
+    mut imports: loader.ModuleImports = table_alloc(mut ref mem, 8)
+    mut diags: diag.Diagnostics = table_alloc(mut ref mem, 32)
+    mut diag_pool: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 2048)
+    mut scopes_table: scopes.Scopes = table_alloc(mut ref mem, 64)
+    mut symbols_table: symbols.Symbols = table_alloc(mut ref mem, 128)
+    mut types_table: types.Types = table_alloc(mut ref mem, 128)
+
+    val loaded: loader.LoadResult = loader.load_graph(
+        mut ref mem,
+        ref "tests/compiler/sema/effects_repo",
+        ref "tests/compiler/sema/effects_repo/root.nore",
+        mut ref sources,
+        mut ref path_pool,
+        mut ref text_pool,
+        mut ref line_starts,
+        mut ref tokens,
+        mut ref nodes,
+        mut ref modules,
+        mut ref imports,
+        mut ref diags,
+        mut ref diag_pool
+    )
+    assert loaded.diags.count == 0
+
+    val checked: check.CheckResult = check.check_modules(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        mut ref nodes,
+        ref modules,
+        ref imports,
+        mut ref scopes_table,
+        mut ref symbols_table,
+        mut ref types_table,
+        mut ref diags,
+        mut ref diag_pool
+    )
+
+    assert checked.diags.count == 0
+
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_math", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_index", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_array", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_pair", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_variant", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_if", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "pure_slice", false)
+
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "rows", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "called", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "native_now", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "scratch", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "block_mutation", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "call_in_variant", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "shadowed_table_len", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "shadowed_table_get", true)
+
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "row_count", false)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "row_value", false)
+    assert_call_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "table_insert", true)
+}

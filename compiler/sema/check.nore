@@ -5461,6 +5461,208 @@ func expr_is_global_initializer(
     false
 }
 
+// Conservative predicate for future assert stripping and effect-aware diagnostics.
+func builtin_call_may_have_side_effects(builtin_kind: i64): bool = {
+    builtin_kind == BUILTIN_CALL_ARENA ||
+    builtin_kind == BUILTIN_CALL_ARENA_ALLOC ||
+    builtin_kind == BUILTIN_CALL_ARENA_RESET ||
+    builtin_kind == BUILTIN_CALL_TABLE_ALLOC ||
+    builtin_kind == BUILTIN_CALL_TABLE_INSERT
+}
+
+// Shared child-list walker so expression and statement containers stay consistent.
+func expr_sibling_list_may_have_side_effects(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    first_id: i64
+): bool = {
+    mut child_id: i64 = first_id
+    while (child_id >= 0) {
+        if (expr_may_have_side_effects(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                child_id
+            )) {
+            return true
+        }
+        child_id = nodes.next_sibling[child_id]
+    }
+    false
+}
+
+// Calls are effectful unless sema identifies a read-only builtin or enum constructor.
+func call_expr_may_have_side_effects(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    node_id: i64
+): bool = {
+    val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    if (callee_id < 0) {
+        return true
+    }
+
+    if (nodes.kind[callee_id] == node.NodeKind.Identifier) {
+        val symbol_id: i64 = nodes.symbol_id[callee_id]
+        if (symbol_id >= 0 && symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol) {
+            return true
+        }
+
+        val builtin_kind: i64 = builtin_call_kind(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            nodes.data0[callee_id]
+        )
+        if (builtin_kind != BUILTIN_CALL_NONE) {
+            if (builtin_call_may_have_side_effects(builtin_kind)) {
+                return true
+            }
+            return expr_sibling_list_may_have_side_effects(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                nodes.next_sibling[callee_id]
+            )
+        }
+
+        return true
+    }
+
+    if (nodes.kind[callee_id] == node.NodeKind.FieldAccess) {
+        val symbol_id: i64 = nodes.symbol_id[callee_id]
+        if (symbol_id >= 0 && symbols_table.kind[symbol_id] == symbols.SymbolKind.FunctionSymbol) {
+            return true
+        }
+        return expr_sibling_list_may_have_side_effects(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            nodes.next_sibling[callee_id]
+        )
+    }
+
+    true
+}
+
+// Walk a checked expression subtree and report whether evaluating it can mutate state or do IO.
+pub func expr_may_have_side_effects(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    node_id: i64
+): bool = {
+    if (node_id < 0) {
+        return false
+    }
+
+    val kind: node.NodeKind = nodes.kind[node_id]
+
+    if (kind == node.NodeKind.NumberLit ||
+        kind == node.NodeKind.FloatLit ||
+        kind == node.NodeKind.BoolLit ||
+        kind == node.NodeKind.StringLit ||
+        kind == node.NodeKind.CharLit ||
+        kind == node.NodeKind.Identifier) {
+        return false
+    }
+
+    if (kind == node.NodeKind.CallExpr) {
+        return call_expr_may_have_side_effects(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            node_id
+        )
+    }
+
+    if (kind == node.NodeKind.AssignStmt ||
+        kind == node.NodeKind.CompoundAssignStmt ||
+        kind == node.NodeKind.ReturnStmt ||
+        kind == node.NodeKind.WhileStmt ||
+        kind == node.NodeKind.ForStmt ||
+        kind == node.NodeKind.BreakStmt ||
+        kind == node.NodeKind.ContinueStmt) {
+        return true
+    }
+
+    if (kind == node.NodeKind.VarDecl) {
+        return expr_may_have_side_effects(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            decl_init_node(ref nodes, node_id)
+        )
+    }
+
+    if (kind == node.NodeKind.ConstructorExpr) {
+        val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        return expr_sibling_list_may_have_side_effects(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            nodes.next_sibling[callee_id]
+        )
+    }
+
+    if (kind == node.NodeKind.FieldAccess ||
+        kind == node.NodeKind.FieldInit ||
+        kind == node.NodeKind.UnaryExpr ||
+        kind == node.NodeKind.RefExpr ||
+        kind == node.NodeKind.CastExpr ||
+        kind == node.NodeKind.ExprStmt ||
+        kind == node.NodeKind.AssertStmt) {
+        return expr_may_have_side_effects(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            node.node_child_at(ref nodes, node_id, 0)
+        )
+    }
+
+    if (kind == node.NodeKind.BinaryExpr ||
+        kind == node.NodeKind.IndexExpr ||
+        kind == node.NodeKind.SliceExpr ||
+        kind == node.NodeKind.ArrayLit ||
+        kind == node.NodeKind.Block ||
+        kind == node.NodeKind.IfStmt ||
+        kind == node.NodeKind.MatchExpr ||
+        kind == node.NodeKind.MatchArm) {
+        return expr_sibling_list_may_have_side_effects(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            nodes.first_child[node_id]
+        )
+    }
+
+    false
+}
+
 // Expression nodes infer expected type from the same parent contexts as built-ins.
 func expr_expected_type(
     mut ref mem: Arena,

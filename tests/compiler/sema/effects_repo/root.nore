@@ -1,0 +1,56 @@
+import builtins "builtins.nore"
+
+native func time_ns(): i64
+
+value Pair {
+    left: i64,
+    right: i64
+}
+
+enum Maybe { Some(i64), None }
+
+table Rows {
+    amount: i64
+}
+
+func returns_true(): bool = {
+    true
+}
+
+func table_len(count: i64): i64 = {
+    count + 1
+}
+
+func table_get(count: i64): i64 = {
+    count + 2
+}
+
+func main(): void = {
+    mut counter: i64 = 0
+    mut numbers: [i64; 2] = [1, 2]
+    mut mem: Arena = arena(1024)
+    mut rows: Rows = table_alloc(mut ref mem, 4)
+
+    val pure_math: bool = (1 + 2) == 3
+    val pure_index: i64 = numbers[0]
+    val pure_array: [i64; 2] = [1, 2]
+    val pure_pair: Pair = Pair { left: 1, right: 2 }
+    val pure_variant: Maybe = Maybe.Some(1)
+    val pure_if: i64 = if (counter == 0) {
+        1
+    } else {
+        2
+    }
+    val called: bool = returns_true()
+    val native_now: i64 = time_ns()
+    mut scratch: [u8] = arena_alloc(mut ref mem, 8)
+    table_insert(mut ref rows, Rows.Row { amount: 1 })
+    val block_mutation: bool = {
+        counter = counter + 1
+        true
+    }
+    val call_in_variant: Maybe = Maybe.Some(time_ns())
+    val pure_slice: [i64] = numbers[0..2]
+    val shadowed_table_len: i64 = table_len(10)
+    val shadowed_table_get: i64 = table_get(20)
+}

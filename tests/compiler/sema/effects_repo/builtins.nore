@@ -1,0 +1,11 @@
+table BuiltinRows {
+    amount: i64
+}
+
+func exercise_read_only_builtins(): void = {
+    mut mem: Arena = arena(1024)
+    mut rows: BuiltinRows = table_alloc(mut ref mem, 4)
+
+    val row_count: i64 = table_len(ref rows)
+    val row_value: BuiltinRows.Row = table_get(ref rows, 0)
+}

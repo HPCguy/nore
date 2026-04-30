@@ -98,6 +98,7 @@ run_profile_fast() {
     run_named_tests "sema" "nore" \
         "compiler/sema/binding_test.nore" \
         "compiler/sema/builtin_success_test.nore" \
+        "compiler/sema/effects_test.nore" \
         "compiler/sema/enum_success_test.nore" \
         "compiler/sema/injected_success_test.nore" \
         "compiler/sema/type_success_test.nore"
