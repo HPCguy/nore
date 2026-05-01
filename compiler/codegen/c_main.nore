@@ -1239,7 +1239,8 @@ func function_definitions_dump(
     ref modules: loader.Modules,
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
-    ref module_range: span.Range
+    ref module_range: span.Range,
+    strip_asserts: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 512)
     mut wrote_any: bool = false
@@ -1276,7 +1277,8 @@ func function_definitions_dump(
                     ref nodes,
                     ref symbols_table,
                     ref types_table,
-                    decl_id
+                    decl_id,
+                    strip_asserts
                 )
                 wrote_any = true
             }
@@ -1373,7 +1375,8 @@ pub func c_file_dump(
     ref symbols_table: symbols.Symbols,
     mut ref types_table: types.Types,
     ref type_range: span.Range,
-    ref module_range: span.Range
+    ref module_range: span.Range,
+    strip_asserts: bool
 ): [u8] = {
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
     mut table_helpers: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
@@ -1527,7 +1530,8 @@ pub func c_file_dump(
         ref modules,
         ref symbols_table,
         ref types_table,
-        ref module_range
+        ref module_range,
+        strip_asserts
     )
     append_section(mut ref mem, mut ref out, ref definitions)
 

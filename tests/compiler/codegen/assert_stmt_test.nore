@@ -73,7 +73,8 @@ func main(): void = {
         ref symbols_table,
         mut ref types_table,
         ref checked.types,
-        ref loaded.modules
+        ref loaded.modules,
+        false
     )
 
     assert string.str_contains(ref dumped, ref "#include <stdio.h>\n")
@@ -82,4 +83,21 @@ func main(): void = {
     assert string.str_contains(ref dumped, ref "if (!(ni_flag)) {\n        fprintf(stderr, \"tests/compiler/codegen/assert_repo/root.nore:2:5: error[R001]: Assertion failed\\n\");\n        exit(2);\n    }\n")
     assert string.str_contains(ref dumped, ref "if (!(ni_a == ni_b)) {\n        fprintf(stderr, \"tests/compiler/codegen/assert_repo/root.nore:3:5: error[R001]: Assertion failed\\n\");\n        exit(2);\n    }\n")
     assert string.str_contains(ref dumped, ref "if (!(0)) {\n        fprintf(stderr, \"tests/compiler/codegen/assert_repo/root.nore:4:5: error[R001]: Assertion failed\\n\");\n        exit(2);\n    }\n")
+
+    val stripped: [u8] = cmain.c_file_dump(
+        mut ref mem,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref symbols_table,
+        mut ref types_table,
+        ref checked.types,
+        ref loaded.modules,
+        true
+    )
+    assert string.str_contains(ref stripped, ref "void ni_m0_check(int ni_flag, int64_t ni_a, int64_t ni_b) {\n")
+    assert !string.str_contains(ref stripped, ref "Assertion failed")
 }

@@ -73,7 +73,8 @@ func main(): void = {
         ref symbols_table,
         mut ref types_table,
         ref checked.types,
-        ref loaded.modules
+        ref loaded.modules,
+        false
     )
 
     assert string.str_contains(ref dumped, ref "int64_t ni_m0_pass_target_os(void) {\n    return ni_m0_takes_os(&(((ni_OS[]){NI_TARGET_OS})[0]));\n}\n")

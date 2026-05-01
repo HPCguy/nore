@@ -73,7 +73,8 @@ func main(): void = {
         ref symbols_table,
         mut ref types_table,
         ref checked.types,
-        ref loaded.modules
+        ref loaded.modules,
+        false
     )
 
     assert string.str_contains(ref dumped, ref "static inline ni_str ni_coerce__ni_str__from__ni_arr_3_uint8_t(ni_arr_3_uint8_t *ni_value) {\n    return (ni_str){.data = ni_value->data, .len = 3L};\n}\n")

@@ -49,6 +49,10 @@ func main(): void = {
         counter = counter + 1
         true
     }
+    val block_assert: bool = {
+        assert true
+        true
+    }
     val call_in_variant: Maybe = Maybe.Some(time_ns())
     val pure_slice: [i64] = numbers[0..2]
     val shadowed_table_len: i64 = table_len(10)

@@ -558,6 +558,9 @@ arr[i] <<= 1
 - `assert expr` (R001, exits with code 2)
 - `break` / `continue`
 
+`--strip-asserts` omits effect-free asserts from generated C. Effectful assert
+conditions are rejected with S091 under that flag.
+
 ---
 
 ## Native Declarations

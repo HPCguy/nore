@@ -247,6 +247,7 @@ func main(): void = {
     assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "native_now", true)
     assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "scratch", true)
     assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "block_mutation", true)
+    assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "block_assert", true)
     assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "call_in_variant", true)
     assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "shadowed_table_len", true)
     assert_var_effect(ref sources, ref text_pool, ref tokens, ref nodes, ref modules, ref symbols_table, ref "shadowed_table_get", true)

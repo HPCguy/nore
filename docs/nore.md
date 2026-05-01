@@ -895,6 +895,12 @@ val y: i64 = {
 - `assert expr` (runtime assertion, error R001)
 - `break` / `continue`
 
+`assert` conditions are evaluated exactly once in normal builds. With
+`--strip-asserts`, the compiler omits only asserts whose conditions are
+effect-free. If a stripped assert condition may mutate state, call a function,
+perform I/O, allocate/reset arena data, or otherwise have observable effects,
+the compiler rejects it with S091 instead of silently changing behavior.
+
 ---
 
 ## Built-in Functions

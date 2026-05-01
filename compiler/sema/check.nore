@@ -5595,6 +5595,7 @@ pub func expr_may_have_side_effects(
     if (kind == node.NodeKind.AssignStmt ||
         kind == node.NodeKind.CompoundAssignStmt ||
         kind == node.NodeKind.ReturnStmt ||
+        kind == node.NodeKind.AssertStmt ||
         kind == node.NodeKind.WhileStmt ||
         kind == node.NodeKind.ForStmt ||
         kind == node.NodeKind.BreakStmt ||
@@ -5630,8 +5631,7 @@ pub func expr_may_have_side_effects(
         kind == node.NodeKind.UnaryExpr ||
         kind == node.NodeKind.RefExpr ||
         kind == node.NodeKind.CastExpr ||
-        kind == node.NodeKind.ExprStmt ||
-        kind == node.NodeKind.AssertStmt) {
+        kind == node.NodeKind.ExprStmt) {
         return expr_may_have_side_effects(
             ref sources,
             ref text_pool,
@@ -5661,6 +5661,93 @@ pub func expr_may_have_side_effects(
     }
 
     false
+}
+
+func validate_assert_stripping_node(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    node_id: i64
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.AssertStmt) {
+        val cond_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        if (expr_may_have_side_effects(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref symbols_table,
+                cond_id
+            )) {
+            diag_error_node(
+                mut ref mem,
+                ref nodes,
+                mut ref diags,
+                mut ref diag_pool,
+                node_id,
+                ref "S091",
+                ref "Cannot strip assert with side effects"
+            )
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        validate_assert_stripping_node(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            mut ref diags,
+            mut ref diag_pool,
+            child_id
+        )
+        child_id = nodes.next_sibling[child_id]
+    }
+}
+
+// Assert stripping is only legal when every removed condition is effect-free.
+pub func validate_assert_stripping(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref symbols_table: symbols.Symbols,
+    mut ref diags: diag.Diagnostics,
+    mut ref diag_pool: bbuf.ByteBuf,
+    ref module_range: span.Range
+): span.Range = {
+    val diag_start: i64 = table_len(ref diags)
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        validate_assert_stripping_node(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            mut ref diags,
+            mut ref diag_pool,
+            modules.root_node[module_id]
+        )
+        module_id += 1
+    }
+    span.range(diag_start, table_len(ref diags) - diag_start)
 }
 
 // Expression nodes infer expected type from the same parent contexts as built-ins.

@@ -159,7 +159,8 @@ func dispatch_control_stmt(
     depth: i64,
     tail_mode: i64,
     func_return_type: i64,
-    tail_assign_name_token: i64
+    tail_assign_name_token: i64,
+    strip_asserts: bool
 ): void = {
     if (nodes.kind[node_id] == node.NodeKind.IfStmt) {
         append_if_stmt(
@@ -177,6 +178,7 @@ func dispatch_control_stmt(
             tail_mode,
             func_return_type,
             tail_assign_name_token,
+            strip_asserts,
             true
         )
     } else {
@@ -194,7 +196,8 @@ func dispatch_control_stmt(
             depth,
             tail_mode,
             func_return_type,
-            tail_assign_name_token
+            tail_assign_name_token,
+            strip_asserts
         )
     }
 }
@@ -500,7 +503,8 @@ func append_local_decl(
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
     decl_id: i64,
-    depth: i64
+    depth: i64,
+    strip_asserts: bool
 ): void = {
     val type_text: str = ctypes.type_name(
         mut ref mem,
@@ -537,7 +541,8 @@ func append_local_decl(
             depth,
             TAIL_MODE_ASSIGN_TEMP,
             nodes.type_id[decl_id],
-            decl_id
+            decl_id,
+            strip_asserts
         )
         append_indent(mut ref mem, mut ref out, depth)
         append_bytes(mut ref mem, mut ref out, ref type_text)
@@ -595,7 +600,8 @@ func append_assignment_stmt(
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
     stmt_id: i64,
-    depth: i64
+    depth: i64,
+    strip_asserts: bool
 ): void = {
     val target_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
     val value_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
@@ -648,7 +654,8 @@ func append_assignment_stmt(
             depth,
             TAIL_MODE_ASSIGN_TEMP,
             target_type,
-            stmt_id
+            stmt_id,
+            strip_asserts
         )
         append_indent(mut ref mem, mut ref out, depth)
         append_bytes(mut ref mem, mut ref out, ref "(*")
@@ -710,7 +717,8 @@ func append_block_contents(
     depth: i64,
     tail_mode: i64,
     func_return_type: i64,
-    tail_assign_name_token: i64
+    tail_assign_name_token: i64,
+    strip_asserts: bool
 ): void = {
     mut child_id: i64 = nodes.first_child[block_id]
     val value_id: i64 = block_value_expr(ref nodes, block_id)
@@ -730,7 +738,8 @@ func append_block_contents(
                 depth,
                 tail_mode,
                 func_return_type,
-                tail_assign_name_token
+                tail_assign_name_token,
+                strip_asserts
             )
         } else {
             append_statement(
@@ -745,7 +754,8 @@ func append_block_contents(
                 ref types_table,
                 child_id,
                 depth,
-                func_return_type
+                func_return_type,
+                strip_asserts
             )
         }
         child_id = nodes.next_sibling[child_id]
@@ -767,7 +777,8 @@ func append_braced_block(
     depth: i64,
     tail_mode: i64,
     func_return_type: i64,
-    tail_assign_name_token: i64
+    tail_assign_name_token: i64,
+    strip_asserts: bool
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "{\n")
     append_block_contents(
@@ -784,7 +795,8 @@ func append_braced_block(
         depth + 1,
         tail_mode,
         func_return_type,
-        tail_assign_name_token
+        tail_assign_name_token,
+        strip_asserts
     )
     append_indent(mut ref mem, mut ref out, depth)
     append_bytes(mut ref mem, mut ref out, ref "}")
@@ -832,7 +844,8 @@ func append_tail_value(
     depth: i64,
     tail_mode: i64,
     func_return_type: i64,
-    tail_assign_name_token: i64
+    tail_assign_name_token: i64,
+    strip_asserts: bool
 ): void = {
     if (tail_is_control_stmt(ref nodes, node_id)) {
         dispatch_control_stmt(
@@ -849,7 +862,8 @@ func append_tail_value(
             depth,
             tail_mode,
             func_return_type,
-            tail_assign_name_token
+            tail_assign_name_token,
+            strip_asserts
         )
         return
     }
@@ -988,7 +1002,8 @@ func append_match_arm_block(
     depth: i64,
     tail_mode: i64,
     func_return_type: i64,
-    tail_assign_name_token: i64
+    tail_assign_name_token: i64,
+    strip_asserts: bool
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "{\n")
     append_match_payload_binding(
@@ -1017,7 +1032,8 @@ func append_match_arm_block(
         depth + 1,
         tail_mode,
         func_return_type,
-        tail_assign_name_token
+        tail_assign_name_token,
+        strip_asserts
     )
     append_indent(mut ref mem, mut ref out, depth)
     append_bytes(mut ref mem, mut ref out, ref "}")
@@ -1038,7 +1054,8 @@ func append_match_stmt(
     depth: i64,
     tail_mode: i64,
     func_return_type: i64,
-    tail_assign_name_token: i64
+    tail_assign_name_token: i64,
+    strip_asserts: bool
 ): void = {
     val scrutinee_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
     val scrutinee_type: str = ctypes.type_name(
@@ -1131,7 +1148,8 @@ func append_match_stmt(
             depth,
             tail_mode,
             func_return_type,
-            tail_assign_name_token
+            tail_assign_name_token,
+            strip_asserts
         )
 
         wrote_any = true
@@ -1167,6 +1185,7 @@ func append_if_stmt(
     tail_mode: i64,
     func_return_type: i64,
     tail_assign_name_token: i64,
+    strip_asserts: bool,
     leading_indent: bool
 ): void = {
     val cond_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
@@ -1203,7 +1222,8 @@ func append_if_stmt(
         depth,
         tail_mode,
         func_return_type,
-        tail_assign_name_token
+        tail_assign_name_token,
+        strip_asserts
     )
 
     if (else_id >= 0) {
@@ -1223,7 +1243,8 @@ func append_if_stmt(
                 depth,
                 tail_mode,
                 func_return_type,
-                tail_assign_name_token
+                tail_assign_name_token,
+                strip_asserts
             )
             append_bytes(mut ref mem, mut ref out, ref "\n")
         } else {
@@ -1242,6 +1263,7 @@ func append_if_stmt(
                 tail_mode,
                 func_return_type,
                 tail_assign_name_token,
+                strip_asserts,
                 false
             )
         }
@@ -1264,7 +1286,8 @@ func append_while_stmt(
     ref types_table: types.Types,
     stmt_id: i64,
     depth: i64,
-    func_return_type: i64
+    func_return_type: i64,
+    strip_asserts: bool
 ): void = {
     append_indent(mut ref mem, mut ref out, depth)
     append_bytes(mut ref mem, mut ref out, ref "while ")
@@ -1294,7 +1317,8 @@ func append_while_stmt(
         depth,
         TAIL_MODE_STATEMENT,
         func_return_type,
-        -1
+        -1,
+        strip_asserts
     )
     append_bytes(mut ref mem, mut ref out, ref "\n")
 }
@@ -1312,7 +1336,8 @@ func append_for_stmt(
     ref types_table: types.Types,
     stmt_id: i64,
     depth: i64,
-    func_return_type: i64
+    func_return_type: i64,
+    strip_asserts: bool
 ): void = {
     val start_id: i64 = node.node_child_at(ref nodes, stmt_id, 0)
     val end_id: i64 = node.node_child_at(ref nodes, stmt_id, 1)
@@ -1403,7 +1428,8 @@ func append_for_stmt(
         depth,
         TAIL_MODE_STATEMENT,
         func_return_type,
-        -1
+        -1,
+        strip_asserts
     )
     append_bytes(mut ref mem, mut ref out, ref "\n")
 }
@@ -1421,13 +1447,18 @@ func append_statement(
     ref types_table: types.Types,
     stmt_id: i64,
     depth: i64,
-    func_return_type: i64
+    func_return_type: i64,
+    strip_asserts: bool
 ): void = {
     if (stmt_id < 0) {
         return
     }
 
     val kind: node.NodeKind = nodes.kind[stmt_id]
+    if (kind == node.NodeKind.AssertStmt && strip_asserts) {
+        return
+    }
+
     if (kind == node.NodeKind.VarDecl) {
         append_local_decl(
             mut ref mem,
@@ -1440,7 +1471,8 @@ func append_statement(
             ref symbols_table,
             ref types_table,
             stmt_id,
-            depth
+            depth,
+            strip_asserts
         )
         return
     }
@@ -1461,7 +1493,8 @@ func append_statement(
             depth,
             TAIL_MODE_STATEMENT,
             func_return_type,
-            -1
+            -1,
+            strip_asserts
         )
         append_bytes(mut ref mem, mut ref out, ref "\n")
         return
@@ -1484,7 +1517,8 @@ func append_statement(
                 depth,
                 TAIL_MODE_RETURN,
                 func_return_type,
-                -1
+                -1,
+                strip_asserts
             )
             return
         }
@@ -1543,6 +1577,7 @@ func append_statement(
             TAIL_MODE_STATEMENT,
             func_return_type,
             -1,
+            strip_asserts,
             true
         )
         return
@@ -1563,7 +1598,8 @@ func append_statement(
             depth,
             TAIL_MODE_STATEMENT,
             func_return_type,
-            -1
+            -1,
+            strip_asserts
         )
         return
     }
@@ -1581,7 +1617,8 @@ func append_statement(
             ref types_table,
             stmt_id,
             depth,
-            func_return_type
+            func_return_type,
+            strip_asserts
         )
         return
     }
@@ -1599,7 +1636,8 @@ func append_statement(
             ref types_table,
             stmt_id,
             depth,
-            func_return_type
+            func_return_type,
+            strip_asserts
         )
         return
     }
@@ -1628,7 +1666,8 @@ func append_statement(
             ref symbols_table,
             ref types_table,
             stmt_id,
-            depth
+            depth,
+            strip_asserts
         )
         return
     }
@@ -1663,7 +1702,8 @@ pub func append_function_body(
     ref nodes: node.Nodes,
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
-    decl_id: i64
+    decl_id: i64,
+    strip_asserts: bool
 ): void = {
     append_bytes(mut ref mem, mut ref out, ref "{\n")
 
@@ -1683,7 +1723,8 @@ pub func append_function_body(
             1,
             TAIL_MODE_RETURN,
             nodes.type_id[decl_id],
-            -1
+            -1,
+            strip_asserts
         )
     }
 

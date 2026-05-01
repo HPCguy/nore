@@ -122,6 +122,7 @@ make
 ./norec --lexer program.nore
 ./norec --parser program.nore
 ./norec --codegen program.nore
+./norec --strip-asserts program.nore
 ```
 
 For rebuild-from-seed and maintainer workflows, see [CONTRIBUTING.md](CONTRIBUTING.md) and [docs/compiler.md](docs/compiler.md).

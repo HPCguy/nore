@@ -73,7 +73,8 @@ func main(): void = {
         ref symbols_table,
         mut ref types_table,
         ref checked.types,
-        ref loaded.modules
+        ref loaded.modules,
+        false
     )
 
     assert string.str_contains(ref dumped, ref "ni_m0_arena(1L)")

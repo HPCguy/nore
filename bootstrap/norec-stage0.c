@@ -206,6 +206,7 @@ typedef enum {
     ERR_S088_INVALID_ASSIGN_TARGET = ERR_GROUP_SEMANTIC + 88,
     ERR_S089_CATCH_ALL_NOT_LAST    = ERR_GROUP_SEMANTIC + 89,
     ERR_S090_INVALID_NATIVE_SIGNATURE = ERR_GROUP_SEMANTIC + 90,
+    ERR_S091_ASSERT_STRIP_EFFECT   = ERR_GROUP_SEMANTIC + 91,
 
     /* Runtime errors: R001-R099 */
     ERR_R001_ASSERTION_FAILED      = ERR_GROUP_RUNTIME + 1,
@@ -10447,6 +10448,307 @@ static void typecheck_program(Ast *program) {
     g_codegen_func_table = func_table;
 }
 
+/* Conservative scan used by --strip-asserts before generated code drops assertions. */
+static bool ast_may_have_side_effects(Ast *node);
+
+static bool ast_list_may_have_side_effects(Ast **items, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        if (ast_may_have_side_effects(items[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool ast_block_may_have_side_effects(Ast *block) {
+    if (!block || block->kind != AST_BLOCK) {
+        return false;
+    }
+    if (ast_list_may_have_side_effects(block->as.block.statements,
+                                       block->as.block.count)) {
+        return true;
+    }
+    return ast_may_have_side_effects(block->as.block.value_expr);
+}
+
+static bool ast_may_have_side_effects(Ast *node) {
+    if (!node) {
+        return false;
+    }
+
+    switch (node->kind) {
+        case AST_NUMBER:
+        case AST_FLOAT:
+        case AST_BOOLEAN:
+        case AST_STRING_LITERAL:
+        case AST_IDENTIFIER:
+        case AST_NATIVE_DECL:
+        case AST_FUNC_DECL:
+        case AST_VALUE_DECL:
+        case AST_ENUM_DECL:
+        case AST_PROGRAM:
+            return false;
+
+        case AST_FUNC_CALL:
+        case AST_ARENA_NEW:
+        case AST_ARENA_ALLOC:
+        case AST_ARENA_RESET:
+        case AST_TABLE_ALLOC:
+        case AST_TABLE_INSERT:
+        case AST_FD_WRITE:
+        case AST_FD_READ:
+        case AST_FD_OPEN:
+        case AST_FD_CLOSE:
+        case AST_FD_SEEK:
+        case AST_EXIT:
+        case AST_MEM_COPY:
+        case AST_ARGS:
+        case AST_SHELL_RUN:
+        case AST_EXE_DIR:
+        case AST_PID:
+        case AST_TIME_NS:
+        case AST_ASSERT:
+        case AST_ASSIGNMENT:
+        case AST_COMPOUND_ASSIGNMENT:
+        case AST_RETURN:
+        case AST_WHILE:
+        case AST_FOR:
+        case AST_BREAK:
+        case AST_CONTINUE:
+            return true;
+
+        case AST_BINARY:
+            return ast_may_have_side_effects(node->as.binary.left) ||
+                   ast_may_have_side_effects(node->as.binary.right);
+        case AST_UNARY:
+            return ast_may_have_side_effects(node->as.unary.operand);
+        case AST_VAL_DECL:
+            return ast_may_have_side_effects(node->as.val_decl.initializer);
+        case AST_MUT_DECL:
+            return ast_may_have_side_effects(node->as.mut_decl.initializer);
+        case AST_IF:
+            return ast_may_have_side_effects(node->as.if_stmt.condition) ||
+                   ast_block_may_have_side_effects(node->as.if_stmt.then_block) ||
+                   ast_block_may_have_side_effects(node->as.if_stmt.else_block);
+        case AST_BLOCK:
+            return ast_block_may_have_side_effects(node);
+        case AST_VALUE_CONSTRUCTOR:
+            for (size_t i = 0; i < node->as.value_constructor.field_count; i++) {
+                if (ast_may_have_side_effects(node->as.value_constructor.fields[i].value)) {
+                    return true;
+                }
+            }
+            return false;
+        case AST_FIELD_ACCESS:
+            return ast_may_have_side_effects(node->as.field_access.object);
+        case AST_ARRAY_LITERAL:
+            return ast_list_may_have_side_effects(node->as.array_literal.elements,
+                                                  node->as.array_literal.element_count);
+        case AST_INDEX_ACCESS:
+            return ast_may_have_side_effects(node->as.index_access.object) ||
+                   ast_may_have_side_effects(node->as.index_access.index);
+        case AST_SLICE_ACCESS:
+            return ast_may_have_side_effects(node->as.slice_access.object) ||
+                   ast_may_have_side_effects(node->as.slice_access.start) ||
+                   ast_may_have_side_effects(node->as.slice_access.end);
+        case AST_TABLE_LEN:
+            return ast_may_have_side_effects(node->as.table_len.table);
+        case AST_TABLE_GET:
+            return ast_may_have_side_effects(node->as.table_get.table) ||
+                   ast_may_have_side_effects(node->as.table_get.index);
+        case AST_TYPE_CAST:
+            return ast_may_have_side_effects(node->as.type_cast.operand);
+        case AST_ENUM_VARIANT:
+            return ast_may_have_side_effects(node->as.enum_variant.payload);
+        case AST_MATCH:
+            if (ast_may_have_side_effects(node->as.match_expr.scrutinee)) {
+                return true;
+            }
+            return ast_list_may_have_side_effects(node->as.match_expr.arms,
+                                                  node->as.match_expr.arm_count);
+        case AST_MATCH_ARM:
+            return ast_block_may_have_side_effects(node->as.match_arm.body);
+    }
+
+    return true;
+}
+
+static void validate_assert_stripping_node(Ast *node) {
+    if (!node) {
+        return;
+    }
+
+    if (node->kind == AST_ASSERT &&
+        ast_may_have_side_effects(node->as.assert_stmt.condition)) {
+        diagnostic(node->loc.file, ERR_S091_ASSERT_STRIP_EFFECT,
+                   node->loc.line, node->loc.column,
+                   "Cannot strip assert with side effects");
+    }
+
+    switch (node->kind) {
+        case AST_PROGRAM:
+            for (size_t i = 0; i < node->as.program.count; i++) {
+                validate_assert_stripping_node(node->as.program.statements[i]);
+            }
+            break;
+        case AST_FUNC_DECL:
+            validate_assert_stripping_node(node->as.func_decl.body);
+            break;
+        case AST_FUNC_CALL:
+            for (size_t i = 0; i < node->as.func_call.arg_count; i++) {
+                validate_assert_stripping_node(node->as.func_call.arguments[i]);
+            }
+            break;
+        case AST_BINARY:
+            validate_assert_stripping_node(node->as.binary.left);
+            validate_assert_stripping_node(node->as.binary.right);
+            break;
+        case AST_UNARY:
+            validate_assert_stripping_node(node->as.unary.operand);
+            break;
+        case AST_VAL_DECL:
+            validate_assert_stripping_node(node->as.val_decl.initializer);
+            break;
+        case AST_MUT_DECL:
+            validate_assert_stripping_node(node->as.mut_decl.initializer);
+            break;
+        case AST_RETURN:
+            validate_assert_stripping_node(node->as.return_stmt.value);
+            break;
+        case AST_ASSIGNMENT:
+            validate_assert_stripping_node(node->as.assignment.target);
+            validate_assert_stripping_node(node->as.assignment.value);
+            break;
+        case AST_COMPOUND_ASSIGNMENT:
+            validate_assert_stripping_node(node->as.compound_assignment.target);
+            validate_assert_stripping_node(node->as.compound_assignment.value);
+            break;
+        case AST_BLOCK:
+            for (size_t i = 0; i < node->as.block.count; i++) {
+                validate_assert_stripping_node(node->as.block.statements[i]);
+            }
+            validate_assert_stripping_node(node->as.block.value_expr);
+            break;
+        case AST_IF:
+            validate_assert_stripping_node(node->as.if_stmt.condition);
+            validate_assert_stripping_node(node->as.if_stmt.then_block);
+            validate_assert_stripping_node(node->as.if_stmt.else_block);
+            break;
+        case AST_WHILE:
+            validate_assert_stripping_node(node->as.while_stmt.condition);
+            validate_assert_stripping_node(node->as.while_stmt.body);
+            break;
+        case AST_FOR:
+            validate_assert_stripping_node(node->as.for_stmt.start);
+            validate_assert_stripping_node(node->as.for_stmt.end);
+            validate_assert_stripping_node(node->as.for_stmt.body);
+            break;
+        case AST_VALUE_CONSTRUCTOR:
+            for (size_t i = 0; i < node->as.value_constructor.field_count; i++) {
+                validate_assert_stripping_node(node->as.value_constructor.fields[i].value);
+            }
+            break;
+        case AST_FIELD_ACCESS:
+            validate_assert_stripping_node(node->as.field_access.object);
+            break;
+        case AST_ARRAY_LITERAL:
+            for (size_t i = 0; i < node->as.array_literal.element_count; i++) {
+                validate_assert_stripping_node(node->as.array_literal.elements[i]);
+            }
+            break;
+        case AST_INDEX_ACCESS:
+            validate_assert_stripping_node(node->as.index_access.object);
+            validate_assert_stripping_node(node->as.index_access.index);
+            break;
+        case AST_SLICE_ACCESS:
+            validate_assert_stripping_node(node->as.slice_access.object);
+            validate_assert_stripping_node(node->as.slice_access.start);
+            validate_assert_stripping_node(node->as.slice_access.end);
+            break;
+        case AST_ARENA_NEW:
+            validate_assert_stripping_node(node->as.arena_new.capacity);
+            break;
+        case AST_ARENA_ALLOC:
+            validate_assert_stripping_node(node->as.arena_alloc.arena);
+            validate_assert_stripping_node(node->as.arena_alloc.count);
+            break;
+        case AST_ARENA_RESET:
+            validate_assert_stripping_node(node->as.arena_reset.arena);
+            break;
+        case AST_TABLE_ALLOC:
+            validate_assert_stripping_node(node->as.table_alloc.arena);
+            validate_assert_stripping_node(node->as.table_alloc.count);
+            break;
+        case AST_TABLE_LEN:
+            validate_assert_stripping_node(node->as.table_len.table);
+            break;
+        case AST_TABLE_GET:
+            validate_assert_stripping_node(node->as.table_get.table);
+            validate_assert_stripping_node(node->as.table_get.index);
+            break;
+        case AST_TABLE_INSERT:
+            validate_assert_stripping_node(node->as.table_insert.table);
+            validate_assert_stripping_node(node->as.table_insert.row);
+            break;
+        case AST_TYPE_CAST:
+            validate_assert_stripping_node(node->as.type_cast.operand);
+            break;
+        case AST_FD_WRITE:
+            validate_assert_stripping_node(node->as.fd_write.fd);
+            validate_assert_stripping_node(node->as.fd_write.data);
+            break;
+        case AST_FD_READ:
+            validate_assert_stripping_node(node->as.fd_read.fd);
+            validate_assert_stripping_node(node->as.fd_read.buf);
+            break;
+        case AST_FD_OPEN:
+            validate_assert_stripping_node(node->as.fd_open.path);
+            validate_assert_stripping_node(node->as.fd_open.flags);
+            break;
+        case AST_FD_CLOSE:
+            validate_assert_stripping_node(node->as.fd_close.fd);
+            break;
+        case AST_FD_SEEK:
+            validate_assert_stripping_node(node->as.fd_seek.fd);
+            validate_assert_stripping_node(node->as.fd_seek.offset);
+            validate_assert_stripping_node(node->as.fd_seek.whence);
+            break;
+        case AST_EXIT:
+            validate_assert_stripping_node(node->as.exit_call.code);
+            break;
+        case AST_MEM_COPY:
+            validate_assert_stripping_node(node->as.mem_copy.dst);
+            validate_assert_stripping_node(node->as.mem_copy.src);
+            break;
+        case AST_ARGS:
+            validate_assert_stripping_node(node->as.args.arena);
+            break;
+        case AST_SHELL_RUN:
+            validate_assert_stripping_node(node->as.shell_run.command);
+            break;
+        case AST_EXE_DIR:
+            validate_assert_stripping_node(node->as.exe_dir.arena);
+            break;
+        case AST_ENUM_VARIANT:
+            validate_assert_stripping_node(node->as.enum_variant.payload);
+            break;
+        case AST_MATCH:
+            validate_assert_stripping_node(node->as.match_expr.scrutinee);
+            for (size_t i = 0; i < node->as.match_expr.arm_count; i++) {
+                validate_assert_stripping_node(node->as.match_expr.arms[i]);
+            }
+            break;
+        case AST_MATCH_ARM:
+            for (size_t i = 0; i < node->as.match_arm.pattern_count; i++) {
+                validate_assert_stripping_node(node->as.match_arm.patterns[i].pattern_expr);
+            }
+            validate_assert_stripping_node(node->as.match_arm.body);
+            break;
+        default:
+            break;
+    }
+}
+
 /* ============================ Code Generation ============================= */
 
 /* Emit a module-prefixed name: ni_<alias>__<name> for module > 0, ni_<name> for module 0 */
@@ -11391,6 +11693,8 @@ static const char *codegen_type_to_c(Type type) {
     }
 }
 
+static int g_strip_asserts = 0;
+
 static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int indent);
 
 static void codegen_emit_lvalue(FILE *out, Ast *node) {
@@ -11932,6 +12236,9 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         }
 
         case AST_ASSERT:
+            if (g_strip_asserts) {
+                break;
+            }
             codegen_indent(out, indent);
             fprintf(out, "if (!(");
             codegen_emit_expression(out, node->as.assert_stmt.condition);
@@ -13034,6 +13341,7 @@ typedef struct {
     int print_ir;
     int benchmark;
     int run;
+    int strip_asserts;
 } CompilerFlags;
 
 /* Coarse benchmark timing uses the same wall-clock source as the self-hosted compiler. */
@@ -13074,7 +13382,7 @@ int main(int argc, char **argv) {
 
     if (argc < 2) {
         error(ERR_D001_NO_INPUT_FILE,
-                     "Usage: %s <file.nore> [--run] [--lexer] [--parser] [--codegen] [-o output]\n"
+                     "Usage: %s <file.nore> [--run] [--lexer] [--parser] [--codegen] [--strip-asserts] [-o output]\n"
                      "       %s --emit-c <input.nore> <output.c> [compiler_root]\n"
                      "       %s --version",
                      argv[0],
@@ -13103,6 +13411,8 @@ int main(int argc, char **argv) {
         for (int i = 4; i < argc; i++) {
             if (strcmp(argv[i], "--bench") == 0) {
                 flags.benchmark = 1;
+            } else if (strcmp(argv[i], "--strip-asserts") == 0) {
+                flags.strip_asserts = 1;
             } else if (argv[i][0] == '-') {
                 error(ERR_D002_UNKNOWN_FLAG, "Unknown flag: %s", argv[i]);
             } else if (!compiler_root_arg) {
@@ -13127,6 +13437,8 @@ int main(int argc, char **argv) {
                 flags.print_ir = 1;
             } else if (strcmp(argv[i], "--bench") == 0) {
                 flags.benchmark = 1;
+            } else if (strcmp(argv[i], "--strip-asserts") == 0) {
+                flags.strip_asserts = 1;
             } else if (strcmp(argv[i], "--version") == 0) {
                 puts(NOREC_STAGE0_VERSION_TEXT);
                 return 0;
@@ -13257,6 +13569,10 @@ int main(int argc, char **argv) {
         phase_start = compiler_time_ns();
     }
     typecheck_program(ast);
+    if (flags.strip_asserts) {
+        validate_assert_stripping_node(ast);
+    }
+    g_strip_asserts = flags.strip_asserts;
     if (flags.benchmark) {
         check_ns = compiler_time_ns() - phase_start;
     }

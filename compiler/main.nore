@@ -147,6 +147,7 @@ func main(): void = {
         print_tokens: false,
         print_ast: false,
         print_codegen: false,
+        strip_asserts: false,
         program_arg_start: -1
     }
     match (parsed) {
@@ -291,6 +292,33 @@ func main(): void = {
         }
     }
 
+    if (config.strip_asserts) {
+        val strip_diags: span.Range = check.validate_assert_stripping(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref modules,
+            ref symbols_table,
+            mut ref diags,
+            mut ref diag_pool,
+            ref loaded.modules
+        )
+        if (strip_diags.count > 0) {
+            emit_diag_range(
+                mut ref mem,
+                ref diags,
+                ref diag_pool,
+                ref sources,
+                ref path_pool,
+                ref line_starts,
+                ref strip_diags
+            )
+            exit(1)
+        }
+    }
+
     if (config.benchmark_mode) {
         phase_start = time_ns()
     }
@@ -305,7 +333,8 @@ func main(): void = {
         ref symbols_table,
         mut ref types_table,
         ref checked.types,
-        ref loaded.modules
+        ref loaded.modules,
+        config.strip_asserts
     )
     if (config.benchmark_mode) {
         codegen_ns = time_ns() - phase_start

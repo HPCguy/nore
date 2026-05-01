@@ -37,6 +37,7 @@ pub value CliConfig {
     print_tokens: bool,
     print_ast: bool,
     print_codegen: bool,
+    strip_asserts: bool,
     program_arg_start: i64
 }
 
@@ -119,6 +120,7 @@ func print_usage(): void = {
     io.eprintln(ref "  --lexer     print the token dump for the root module")
     io.eprintln(ref "  --parser    print the parse dump for the root module")
     io.eprintln(ref "  --codegen   print generated C instead of compiling")
+    io.eprintln(ref "  --strip-asserts  omit effect-free assert statements from generated C")
     io.eprintln(ref "  -o <path>   write the output binary to <path>")
     io.eprintln(ref "")
     io.eprintln(ref "notes:")
@@ -174,11 +176,15 @@ func parse_emit_mode(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref arg
     }
     mut compiler_root: str = exe_dir(mut ref mem)
     mut benchmark_mode: bool = false
+    mut strip_asserts: bool = false
     mut saw_compiler_root: bool = false
     mut i: i64 = 4
     while (i < argv.len) {
         if (string.str_eq(ref argv[i], ref "--bench")) {
             benchmark_mode = true
+            i += 1
+        } else if (string.str_eq(ref argv[i], ref "--strip-asserts")) {
+            strip_asserts = true
             i += 1
         } else {
             if (arg_is_flag(ref argv[i])) {
@@ -203,6 +209,7 @@ func parse_emit_mode(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref arg
         print_tokens: false,
         print_ast: false,
         print_codegen: false,
+        strip_asserts: strip_asserts,
         program_arg_start: -1
     })
 }
@@ -235,6 +242,7 @@ pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv:
     mut print_tokens: bool = false
     mut print_ast: bool = false
     mut print_codegen: bool = false
+    mut strip_asserts: bool = false
     mut program_arg_start: i64 = -1
     mut i: i64 = 1
 
@@ -259,34 +267,39 @@ pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv:
                             benchmark_mode = true
                             i += 1
                         } else {
-                            if (string.str_eq(ref argv[i], ref "--lexer")) {
-                                print_tokens = true
+                            if (string.str_eq(ref argv[i], ref "--strip-asserts")) {
+                                strip_asserts = true
                                 i += 1
                             } else {
-                                if (string.str_eq(ref argv[i], ref "--parser")) {
-                                    print_ast = true
+                                if (string.str_eq(ref argv[i], ref "--lexer")) {
+                                    print_tokens = true
                                     i += 1
                                 } else {
-                                    if (string.str_eq(ref argv[i], ref "--codegen")) {
-                                        print_codegen = true
+                                    if (string.str_eq(ref argv[i], ref "--parser")) {
+                                        print_ast = true
                                         i += 1
                                     } else {
-                                        if (string.str_eq(ref argv[i], ref "-o")) {
-                                            if (i + 1 >= argv.len) {
-                                                return emit_missing_output_error(mut ref mem)
-                                            }
-                                            output_path = store_cli_text(mut ref mem, mut ref cli_pool, ref argv[i + 1])
-                                            output_given = true
-                                            i += 2
-                                        } else {
-                                            if (arg_is_flag(ref argv[i])) {
-                                                return emit_unknown_flag_error(mut ref mem, ref argv[i])
-                                            }
-                                            if (input_path.len != 0) {
-                                                return emit_multiple_inputs_error(mut ref mem)
-                                            }
-                                            input_path = store_cli_text(mut ref mem, mut ref cli_pool, ref argv[i])
+                                        if (string.str_eq(ref argv[i], ref "--codegen")) {
+                                            print_codegen = true
                                             i += 1
+                                        } else {
+                                            if (string.str_eq(ref argv[i], ref "-o")) {
+                                                if (i + 1 >= argv.len) {
+                                                    return emit_missing_output_error(mut ref mem)
+                                                }
+                                                output_path = store_cli_text(mut ref mem, mut ref cli_pool, ref argv[i + 1])
+                                                output_given = true
+                                                i += 2
+                                            } else {
+                                                if (arg_is_flag(ref argv[i])) {
+                                                    return emit_unknown_flag_error(mut ref mem, ref argv[i])
+                                                }
+                                                if (input_path.len != 0) {
+                                                    return emit_multiple_inputs_error(mut ref mem)
+                                                }
+                                                input_path = store_cli_text(mut ref mem, mut ref cli_pool, ref argv[i])
+                                                i += 1
+                                            }
                                         }
                                     }
                                 }
@@ -319,6 +332,7 @@ pub func parse_cli(mut ref mem: Arena, mut ref cli_pool: bbuf.ByteBuf, ref argv:
         print_tokens: print_tokens,
         print_ast: print_ast,
         print_codegen: print_codegen,
+        strip_asserts: strip_asserts,
         program_arg_start: program_arg_start
     })
 }

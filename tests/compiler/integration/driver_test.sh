@@ -50,6 +50,10 @@ if [ "${COMPILER_TEST_MODE:-norec}" = "norec" ]; then
         echo "help output does not document debug dump flags"
         exit 1
     fi
+    if ! printf '%s\n' "$help_output" | grep -q -- "--strip-asserts"; then
+        echo "help output does not document --strip-asserts"
+        exit 1
+    fi
 fi
 
 if [ "${COMPILER_TEST_MODE:-norec}" = "norec" ]; then

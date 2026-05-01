@@ -30,6 +30,7 @@ make
 ./norec --lexer program.nore
 ./norec --parser program.nore
 ./norec --codegen program.nore
+./norec --strip-asserts program.nore
 ./norec --emit-c program.nore build/program.c
 ```
 

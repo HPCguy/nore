@@ -97,10 +97,14 @@ A `--release` flag that trades safety checks for performance. Today Nore is safe
 
 - **Bounds checks**: skip `NI_SLICE_BOUNDS_CHECK` and array index checks (biggest win)
 - **`mem_copy`**: emit `memcpy` instead of `memmove` (minor, single pointer comparison saved)
-- **Assert removal**: strip `assert` statements
 - **Cast overflow checks**: skip R003 range validation
 
-The pattern follows C optimization levels: debug is safe and predictable, release trusts the programmer. Each relaxation should be individually toggleable if possible, so users can keep bounds checks but drop asserts, etc.
+Assert stripping is no longer only a future release-mode idea: `--strip-asserts`
+already omits effect-free assert statements and rejects effectful assert
+conditions with S091. A future `--release` flag can compose that existing
+toggle with other relaxations.
+
+The pattern follows C optimization levels: debug is safe and predictable, release trusts the programmer. Each remaining relaxation should be individually toggleable if possible, so users can keep bounds checks while enabling assert stripping, etc.
 
 **Not worth adding yet.** The rough shape is clear, but Nore does not yet have enough performance pressure or runtime instrumentation to justify designing this in detail. Wait until real programs reveal where safety checks are actually costly. Bounds-check removal is still the most likely driver for this flag.
 
