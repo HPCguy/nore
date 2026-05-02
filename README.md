@@ -144,8 +144,9 @@ make test-success          # Success + stdlib tests through ./norec
 make test-std              # Stdlib tests through ./norec
 make test-compiler-fast    # Cheap compiler-internal regression loop
 make test-compiler-core    # Kept compiler-core coverage
-make test-compiler-bootstrap # Trusted-seed bootstrap checks
+make test-compiler-bootstrap # Trusted-seed and stripped self-host checks
 make test-examples         # Example programs through ./norec
+make norec-stripped        # Build ./norec-stripped with asserts stripped
 
 make test-compiler         # Broad self-hosted compiler suite
 make test-compiler-all     # Explicit alias for the broad self-hosted suite
@@ -160,7 +161,7 @@ make qa-full               # qa-ci + qa-bootstrap + test-examples
 - Stdlib tests in `tests/std/`: test each `std/` library module (e.g., `tests/std/math.nore`)
 - Compiler-specific tests live under `tests/compiler/`
 - `test-compiler` keeps the broad self-hosted compiler suite, with `test-compiler-all` as an explicit alias
-- `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes; use `qa-bootstrap` to run them together
+- `test-stage0` and `test-compiler-bootstrap` are the explicit stage-0 lanes; `test-compiler-bootstrap` also verifies stripped self-hosting
 - `qa-local` is the normal local loop, `qa-ci` is the self-hosted pre-merge gate, and `qa-full` combines self-hosted, bootstrap, and example confidence
 - For compiler build details, rebuild paths, and the benchmark command, see [docs/compiler.md](docs/compiler.md)
 

@@ -10,9 +10,10 @@ BIN_DIR="$ROOT_DIR/tmp/bootstrap/bins"
 STAGE0="$STAGE0_DIR/norec-stage0"
 STAGE1="$STAGE1_DIR/bootstrap-compiler"
 NOREC_C="$GENERATED_DIR/norec.c"
-NOREC="$ROOT_DIR/norec"
+NOREC="${NOREC_OUT:-$ROOT_DIR/norec}"
 CC_BIN="${CC:-clang}"
 CLANG_FLAGS=(-std=c99 -O2 -fwrapv)
+STRIP_ASSERTS="${STRIP_ASSERTS:-0}"
 
 build_stage0_compiler() {
     mkdir -p "$STAGE0_DIR"
@@ -24,6 +25,10 @@ build_stage0_compiler() {
 }
 
 compiler_sources_newer_than_norec() {
+    if [ "$STRIP_ASSERTS" = "1" ]; then
+        return 0
+    fi
+
     if [ ! -x "$NOREC" ]; then
         return 0
     fi
@@ -48,7 +53,11 @@ build_norec() {
     (
         cd "$ROOT_DIR"
         "$STAGE0" compiler/main.nore -o "$STAGE1"
-        "$STAGE1" --emit-c compiler/main.nore "$NOREC_C" .
+        if [ "$STRIP_ASSERTS" = "1" ]; then
+            "$STAGE1" --emit-c compiler/main.nore "$NOREC_C" . --strip-asserts
+        else
+            "$STAGE1" --emit-c compiler/main.nore "$NOREC_C" .
+        fi
     )
     "$CC_BIN" "${CLANG_FLAGS[@]}" "$NOREC_C" -o "$NOREC"
 }

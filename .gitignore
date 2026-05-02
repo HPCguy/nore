@@ -8,6 +8,7 @@
 a.out
 norec
 norec-stage0
+norec-stripped
 
 # Libraries
 *.a

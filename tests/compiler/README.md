@@ -11,7 +11,7 @@ Current groups:
 - `sema/`: semantic internal-state coverage
 - `codegen/`: backend contracts, invariants, and codegen fixtures
 - `integration/`: driver coverage
-- `bootstrap/`: trusted-seed smoke and self-compile coverage
+- `bootstrap/`: trusted-seed smoke, self-compile, and stripped self-hosting coverage
 
 Naming convention:
 
@@ -28,14 +28,14 @@ make test-compiler-bootstrap
 make test-compiler-all
 ```
 
-`test-compiler` keeps the broad self-hosted compiler suite. `test-compiler-bootstrap` is the trusted-seed bootstrap lane; use `make qa-bootstrap` when you want it together with the stage-0 language suite.
+`test-compiler` keeps the broad self-hosted compiler suite. `test-compiler-bootstrap` is the trusted-seed bootstrap lane, including stripped self-hosting; use `make qa-bootstrap` when you want it together with the stage-0 language suite.
 
 Target intent:
 
 - `test-compiler`: broad self-hosted compiler suite
 - `test-compiler-fast`: cheap daily loop for support, lexer, parser, imports, kept sema internals, kept backend invariants, and driver coverage
 - `test-compiler-core`: the kept compiler-core suite used by the normal self-hosted QA gate
-- `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, and self-compile
+- `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, self-compile, and stripped self-hosting
 - `test-compiler-all`: explicit alias for the broad self-hosted compiler suite
 
 Example-program behavior now lives outside this tree:

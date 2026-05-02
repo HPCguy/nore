@@ -21,6 +21,9 @@ This directory holds the trusted stage-0 compiler seed and the rebuild-from-seed
 make stage0
 ./norec-stage0 program.nore
 ./bootstrap/bootstrap.sh
+make norec-stripped
 ```
 
-`./norec` is the normal compiler path. This directory exists to preserve the trusted seed and the rebuild-from-seed workflow.
+`./norec` is the normal compiler path. `make norec-stripped` builds a separate `./norec-stripped` binary by running the same rebuild flow with `--strip-asserts`.
+
+For custom bootstrap outputs, set `NOREC_OUT=/path/to/bin`. Set `STRIP_ASSERTS=1` to emit the compiler with effect-free asserts omitted.

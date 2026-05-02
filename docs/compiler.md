@@ -40,9 +40,10 @@ Maintainer and fallback paths:
 make stage0
 ./norec-stage0 program.nore
 ./bootstrap/bootstrap.sh
+make norec-stripped
 ```
 
-`./norec` is the normal compiler interface. `./norec-stage0` and `bootstrap/bootstrap.sh` remain explicit trusted-seed and rebuild paths.
+`./norec` is the normal compiler interface. `./norec-stage0` and `bootstrap/bootstrap.sh` remain explicit trusted-seed and rebuild paths. `make norec-stripped` builds a separate `./norec-stripped` binary with effect-free asserts omitted; it does not replace the default assert-enabled compiler.
 
 ## Emit-C Mode
 
@@ -68,7 +69,7 @@ make qa-bootstrap # stage-0 confidence: test-stage0 + test-compiler-bootstrap
 make qa-full      # combined gate: qa-ci + qa-bootstrap + test-examples
 ```
 
-The stage-0 boundary is explicit: the `*-stage0` language targets and `test-compiler-bootstrap` run through `./norec-stage0`. The normal language, example, compiler, and self-hosted QA targets run through `./norec`.
+The stage-0 boundary is explicit: the `*-stage0` language targets run through `./norec-stage0`, and `test-compiler-bootstrap` starts from the trusted seed before exercising bootstrap-built compilers. The normal language, example, compiler, and self-hosted QA targets run through `./norec`.
 
 Language and stdlib suite targets:
 
@@ -99,7 +100,7 @@ Compiler-specific suite targets now split by intent:
 - `test-compiler`: broad self-hosted compiler suite
 - `test-compiler-fast`: cheap daily loop for parser, imports, kept sema internals, kept backend invariants, and driver coverage
 - `test-compiler-core`: the kept compiler-core suite used by the normal self-hosted QA gate
-- `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, and self-compile
+- `test-compiler-bootstrap`: stage-0 bootstrap trust checks, including driver, smoke, self-compile, and stripped self-hosting
 - `test-compiler-all`: explicit alias for the broad self-hosted compiler suite
 - `test-examples`: example-program behavior, kept separate from compiler integration
 

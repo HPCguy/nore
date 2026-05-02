@@ -22,6 +22,7 @@ ROOT_DIR := $(CURDIR)
 BOOTSTRAP_DIR := $(ROOT_DIR)/bootstrap
 STAGE0_BIN := norec-stage0
 NOREC := norec
+STRIPPED_NOREC := norec-stripped
 BOOTSTRAP_BIN := $(BOOTSTRAP_DIR)/bootstrap.sh
 STAGE0_SOURCE := $(BOOTSTRAP_DIR)/norec-stage0.c
 
@@ -44,9 +45,14 @@ $(NOREC): $(BOOTSTRAP_DIR)/bootstrap.sh $(BOOTSTRAP_DIR)/Makefile $(STAGE0_SOURC
 	@chmod +x $(BOOTSTRAP_DIR)/bootstrap.sh
 	@"$(BOOTSTRAP_DIR)/bootstrap.sh"
 
+# Rebuild a stripped self-hosted compiler without replacing the default compiler.
+norec-stripped: $(BOOTSTRAP_DIR)/bootstrap.sh $(BOOTSTRAP_DIR)/Makefile $(STAGE0_SOURCE)
+	@chmod +x $(BOOTSTRAP_DIR)/bootstrap.sh
+	@STRIP_ASSERTS=1 NOREC_OUT="$(ROOT_DIR)/$(STRIPPED_NOREC)" "$(BOOTSTRAP_DIR)/bootstrap.sh"
+
 # Clean build artifacts
 clean:
-	rm -f "$(ROOT_DIR)/$(STAGE0_BIN)" "$(ROOT_DIR)/$(NOREC)" "$(ROOT_DIR)/nore"
+	rm -f "$(ROOT_DIR)/$(STAGE0_BIN)" "$(ROOT_DIR)/$(NOREC)" "$(ROOT_DIR)/$(STRIPPED_NOREC)" "$(ROOT_DIR)/nore"
 	rm -rf "$(ROOT_DIR)/tmp/bootstrap"
 
 # Run error code tests through the default self-hosted path
@@ -128,7 +134,7 @@ test-compiler: $(NOREC)
 # Explicit alias for the broad legacy compiler test tree during migration
 test-compiler-all: test-compiler
 
-# Run bootstrap and trusted-seed compiler checks with the explicit stage-0 path
+# Run bootstrap and trusted-seed checks, including stripped self-hosting.
 test-compiler-bootstrap: $(STAGE0_BIN)
 	@chmod +x tests/run_compiler_tests.sh
 	@NORE_BIN="$(ROOT_DIR)/$(STAGE0_BIN)" COMPILER_TEST_MODE="stage0" COMPILER_TEST_PROFILE="bootstrap" ./tests/run_compiler_tests.sh
@@ -165,4 +171,4 @@ bench-compiler-matrix: $(STAGE0_BIN) $(NOREC)
 	@CC="$(CC)" ./benchmark/compiler_matrix.sh
 
 # Phony targets
-.PHONY: all stage0 debug clean norec test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-examples test-compiler-fast test-compiler-core test-compiler test-compiler-all test-compiler-bootstrap qa-local qa-ci qa-bootstrap qa-full bench-compiler bench-compiler-matrix test test-stage0 test-parity
+.PHONY: all stage0 debug clean norec norec-stripped test-errors test-errors-stage0 test-errors-norec test-success test-success-stage0 test-success-norec test-std test-std-stage0 test-std-norec test-examples test-compiler-fast test-compiler-core test-compiler test-compiler-all test-compiler-bootstrap qa-local qa-ci qa-bootstrap qa-full bench-compiler bench-compiler-matrix test test-stage0 test-parity

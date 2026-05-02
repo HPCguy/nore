@@ -34,6 +34,7 @@ When submitting code:
 
 ```bash
 make              # Build the compiler
+make norec-stripped # Build ./norec-stripped with asserts stripped
 make test         # Run language suites through ./norec
 make test-errors  # Run error code tests only
 make test-success # Run success tests only
@@ -51,6 +52,7 @@ The normal compiler entrypoint is `./norec`. The explicit rebuild and trusted-se
 make stage0
 ./norec-stage0 program.nore
 ./bootstrap/bootstrap.sh
+make norec-stripped
 ```
 
 Compiler-specific verification paths:
@@ -64,7 +66,7 @@ make test-compiler
 make test-examples
 ```
 
-`test-compiler` remains the broad self-hosted compiler gate. For stage-0 confidence, use `qa-bootstrap`; it groups `test-stage0` and `test-compiler-bootstrap`. All other compiler and QA targets run through `./norec`.
+`test-compiler` remains the broad self-hosted compiler gate. For stage-0 confidence, use `qa-bootstrap`; it groups `test-stage0` and `test-compiler-bootstrap`, including the stripped self-hosting check. All other compiler and QA targets run through `./norec`.
 
 ## Branch Policy
 
