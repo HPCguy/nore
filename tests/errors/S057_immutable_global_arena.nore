@@ -1,0 +1,4 @@
+val mem: Arena = arena(1024)
+
+func main(): void = {
+}

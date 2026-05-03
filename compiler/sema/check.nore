@@ -5157,7 +5157,7 @@ func expr_is_untyped_constant(
     false
 }
 
-// Global initializers accept a broader constant-expression subset plus `arena()`.
+// Global initializers accept constants; mut Arena globals handle arena() as a declaration exception.
 func expr_is_global_initializer(
     ref sources: source.Sources,
     ref text_pool: bbuf.ByteBuf,
@@ -5287,31 +5287,6 @@ func expr_is_global_initializer(
 
     if (kind == node.NodeKind.CallExpr) {
         val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
-        if (callee_id >= 0 && nodes.kind[callee_id] == node.NodeKind.Identifier &&
-            builtin_call_kind(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id]) == BUILTIN_CALL_ARENA &&
-            nodes.type_id[node_id] == builtins.arena_type) {
-            mut arg_id: i64 = nodes.next_sibling[callee_id]
-            while (arg_id >= 0) {
-                if (!expr_is_global_initializer(
-                        ref sources,
-                        ref text_pool,
-                        ref tokens,
-                        ref nodes,
-                        ref scopes_table,
-                        ref symbols_table,
-                        mut ref types_table,
-                        ref builtins,
-                        module_id,
-                        arg_id,
-                        budget - 1
-                    )) {
-                    return false
-                }
-                arg_id = nodes.next_sibling[arg_id]
-            }
-            return true
-        }
-
         if (callee_id < 0 || nodes.kind[callee_id] != node.NodeKind.FieldAccess) {
             return false
         }
@@ -5459,6 +5434,57 @@ func expr_is_global_initializer(
     }
 
     false
+}
+
+// Global arena construction is a mut Arena declaration exception, not a general constant expression.
+func expr_is_global_arena_initializer(
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref scopes_table: scopes.Scopes,
+    ref symbols_table: symbols.Symbols,
+    mut ref types_table: types.Types,
+    ref builtins: types.BuiltinTypes,
+    module_id: i64,
+    node_id: i64,
+    budget: i64
+): bool = {
+    if (node_id < 0 ||
+        budget <= 0 ||
+        nodes.kind[node_id] != node.NodeKind.CallExpr ||
+        nodes.type_id[node_id] != builtins.arena_type) {
+        return false
+    }
+
+    val callee_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    if (callee_id < 0 ||
+        nodes.kind[callee_id] != node.NodeKind.Identifier ||
+        builtin_call_kind(ref sources, ref text_pool, ref tokens, nodes.data0[callee_id]) != BUILTIN_CALL_ARENA) {
+        return false
+    }
+
+    mut arg_id: i64 = nodes.next_sibling[callee_id]
+    while (arg_id >= 0) {
+        if (!expr_is_global_initializer(
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref scopes_table,
+                ref symbols_table,
+                mut ref types_table,
+                ref builtins,
+                module_id,
+                arg_id,
+                budget - 1
+            )) {
+            return false
+        }
+        arg_id = nodes.next_sibling[arg_id]
+    }
+
+    true
 }
 
 // Conservative predicate for future assert stripping and effect-aware diagnostics.
@@ -9476,6 +9502,22 @@ func check_global_decl(
         module_id,
         init_node,
         64
+    ) || (
+        decl_is_mut(ref nodes, decl_id) &&
+        type_id == builtins.arena_type &&
+        expr_is_global_arena_initializer(
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref scopes_table,
+            ref symbols_table,
+            mut ref types_table,
+            ref builtins,
+            module_id,
+            init_node,
+            64
+        )
     )
     if (!is_constant_init) {
         if (decl_is_mut(ref nodes, decl_id)) {
