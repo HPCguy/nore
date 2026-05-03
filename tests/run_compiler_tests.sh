@@ -131,6 +131,7 @@ run_profile_bootstrap() {
 
     run_named_tests "bootstrap" "shell" \
         "compiler/bootstrap/smoke_test.sh" \
+        "compiler/bootstrap/float_literal_codegen_test.sh" \
         "compiler/bootstrap/self_compile_test.sh" \
         "compiler/bootstrap/stripped_self_compile_test.sh"
 }

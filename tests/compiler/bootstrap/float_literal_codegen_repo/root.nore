@@ -1,0 +1,10 @@
+val gammaa: f64 = 1.4142135
+val gammaInverse: f64 = 0.70710678
+
+func main(): void = {
+    val shifted: f64 = gammaa - 1.0
+    assert shifted > 0.4142134
+    assert shifted < 0.4142136
+    assert gammaInverse > 0.7071067
+    assert gammaInverse < 0.7071068
+}

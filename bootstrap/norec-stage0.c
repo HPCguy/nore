@@ -10854,6 +10854,25 @@ static void codegen_emit_i64_literal(FILE *out, long value) {
     }
 }
 
+/* Emit round-trip double text while keeping integral values as C float literals. */
+static void codegen_emit_f64_literal(FILE *out, double value) {
+    char buf[64];
+    bool has_float_marker = false;
+
+    snprintf(buf, sizeof(buf), "%.17g", value);
+    for (char *p = buf; *p; p++) {
+        if (*p == '.' || *p == 'e' || *p == 'E') {
+            has_float_marker = true;
+            break;
+        }
+    }
+
+    fputs(buf, out);
+    if (!has_float_marker) {
+        fputs(".0", out);
+    }
+}
+
 /* Emit a ref-aware identifier: (*ni_X) for ref params, ni_X otherwise */
 static void codegen_emit_identifier(FILE *out, const char *name_start, size_t name_length) {
     /* Inline comptime values (they have no C variable) */
@@ -10863,7 +10882,7 @@ static void codegen_emit_identifier(FILE *out, const char *name_start, size_t na
             if (v->type == TYPE_COMPTIME_INT || type_is_enum(v->type)) {
                 codegen_emit_i64_literal(out, v->comptime_value.int_value);
             } else {
-                fprintf(out, "%g", v->comptime_value.float_value);
+                codegen_emit_f64_literal(out, v->comptime_value.float_value);
             }
             return;
         }
@@ -11085,7 +11104,7 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             break;
 
         case AST_FLOAT:
-            fprintf(out, "%g", node->as.float_lit.value);
+            codegen_emit_f64_literal(out, node->as.float_lit.value);
             break;
 
         case AST_BOOLEAN:
