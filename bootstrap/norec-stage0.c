@@ -9945,6 +9945,7 @@ static bool is_global_initializer(Ast *node, Scope *scope) {
         case AST_FLOAT:
         case AST_BOOLEAN:
         case AST_STRING_LITERAL:
+            return true;
         case AST_ARENA_NEW:
         case AST_ENUM_VARIANT:
             if (node->as.enum_variant.payload)
