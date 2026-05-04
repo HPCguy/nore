@@ -36,6 +36,37 @@ func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
     append_bytes(mut ref mem, mut ref out, ref text)
 }
 
+// Bounds helpers centralize runtime R002/R004 formatting for expression lowering and table helpers.
+func bounds_helpers_dump(mut ref mem: Arena): [u8] = {
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 1024)
+    append_bytes(mut ref mem, mut ref out, ref "static void ni_bounds_fail(int64_t ni_idx, int64_t ni_size,\n")
+    append_bytes(mut ref mem, mut ref out, ref "                           const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    fprintf(stderr, \"%s:%lu:%lu: error[R002]: Array index out of bounds: %ld not in [0, %ld)\\n\",\n")
+    append_bytes(mut ref mem, mut ref out, ref "            ni_file, ni_line, ni_col, (long)ni_idx, (long)ni_size);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    exit(2);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static inline int64_t ni_checked_index(int64_t ni_idx, int64_t ni_size,\n")
+    append_bytes(mut ref mem, mut ref out, ref "                                       const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if ((uint64_t)ni_idx >= (uint64_t)ni_size) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_bounds_fail(ni_idx, ni_size, ni_file, ni_line, ni_col);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return ni_idx;\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static void ni_slice_bounds_fail(int64_t ni_start, int64_t ni_end, int64_t ni_len,\n")
+    append_bytes(mut ref mem, mut ref out, ref "                                 const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    fprintf(stderr, \"%s:%lu:%lu: error[R004]: Slice bounds out of range: [%ld..%ld) not in [0, %ld)\\n\",\n")
+    append_bytes(mut ref mem, mut ref out, ref "            ni_file, ni_line, ni_col, (long)ni_start, (long)ni_end, (long)ni_len);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    exit(2);\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n\n")
+    append_bytes(mut ref mem, mut ref out, ref "static inline void ni_check_slice_bounds(int64_t ni_start, int64_t ni_end, int64_t ni_len,\n")
+    append_bytes(mut ref mem, mut ref out, ref "                                         const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    if (ni_start < 0L || ni_end < ni_start || ni_end > ni_len) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_slice_bounds_fail(ni_start, ni_end, ni_len, ni_file, ni_line, ni_col);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    }\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+    out.data[0..out.count]
+}
+
 // Keep section spacing centralized so later codegen slices can extend the file layout without churn.
 func append_section(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref data: [u8]): void = {
     if (data.len == 0) {
@@ -92,7 +123,8 @@ func collect_runtime_usage(
     mut ref needs_exit: bool,
     mut ref needs_args: bool,
     mut ref needs_time: bool,
-    mut ref needs_driver: bool
+    mut ref needs_driver: bool,
+    mut ref needs_bounds: bool
 ): void = {
     if (node_id < 0) {
         return
@@ -120,6 +152,7 @@ func collect_runtime_usage(
                 nodes.type_id[table_value_id] < table_helpers.len) {
                 table_helpers[nodes.type_id[table_value_id]] = table_helpers[nodes.type_id[table_value_id]] | TABLE_HELPER_GET
             }
+            needs_bounds = true
         } else if (identifier_token_is(ref sources, ref text_pool, ref tokens, ref nodes, callee_id, ref "table_insert")) {
             val table_value_id: i64 = cexpr.ref_arg_value_id(ref nodes, node.node_child_at(ref nodes, node_id, 1))
             if (table_value_id >= 0 &&
@@ -128,6 +161,11 @@ func collect_runtime_usage(
                 table_helpers[nodes.type_id[table_value_id]] = table_helpers[nodes.type_id[table_value_id]] | TABLE_HELPER_INSERT
             }
         }
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.IndexExpr ||
+        nodes.kind[node_id] == node.NodeKind.SliceExpr) {
+        needs_bounds = true
     }
 
     if (nodes.kind[node_id] == node.NodeKind.NativeFuncDecl) {
@@ -180,7 +218,8 @@ func collect_runtime_usage(
             mut ref needs_exit,
             mut ref needs_args,
             mut ref needs_time,
-            mut ref needs_driver
+            mut ref needs_driver,
+            mut ref needs_bounds
         )
         child_id = nodes.next_sibling[child_id]
     }
@@ -220,6 +259,7 @@ func append_global_initializer_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -254,6 +294,7 @@ func append_global_initializer_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -276,6 +317,7 @@ func append_global_initializer_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -288,6 +330,7 @@ func append_global_initializer_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -301,6 +344,7 @@ func append_global_initializer_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -313,6 +357,7 @@ func append_global_initializer_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -329,6 +374,7 @@ func append_global_initializer_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -343,6 +389,7 @@ func append_arena_global_definition(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -382,6 +429,7 @@ func append_arena_global_definition(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -397,6 +445,7 @@ func append_global_definition(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -417,6 +466,7 @@ func append_global_definition(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -458,6 +508,7 @@ func append_global_definition(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -491,6 +542,7 @@ func emit_global_decl_recursive(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -525,6 +577,7 @@ func emit_global_decl_recursive(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -555,6 +608,7 @@ func emit_global_decl_recursive(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -570,6 +624,7 @@ func emit_global_decl_recursive(
 pub func global_definitions_dump(
     mut ref mem: Arena,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -597,6 +652,7 @@ pub func global_definitions_dump(
                     mut ref mem,
                     mut ref out,
                     ref sources,
+                    ref path_pool,
                     ref text_pool,
                     ref tokens,
                     ref nodes,
@@ -753,10 +809,9 @@ func append_table_get_helper(
     append_bytes(mut ref mem, mut ref out, ref helper_name)
     append_bytes(mut ref mem, mut ref out, ref "(const ")
     append_bytes(mut ref mem, mut ref out, ref table_name)
-    append_bytes(mut ref mem, mut ref out, ref " *ni_table, int64_t ni_idx) {\n")
+    append_bytes(mut ref mem, mut ref out, ref " *ni_table, int64_t ni_idx, const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
     append_bytes(mut ref mem, mut ref out, ref "    if ((uint64_t)ni_idx >= (uint64_t)ni_table->ni__len) {\n")
-    append_bytes(mut ref mem, mut ref out, ref "        fprintf(stderr, \"error[R002]: Table index out of bounds: %ld not in [0, %ld)\\n\", (long)ni_idx, (long)ni_table->ni__len);\n")
-    append_bytes(mut ref mem, mut ref out, ref "        exit(2);\n")
+    append_bytes(mut ref mem, mut ref out, ref "        ni_bounds_fail(ni_idx, ni_table->ni__len, ni_file, ni_line, ni_col);\n")
     append_bytes(mut ref mem, mut ref out, ref "    }\n")
     append_bytes(mut ref mem, mut ref out, ref "    return (")
     append_bytes(mut ref mem, mut ref out, ref row_name)
@@ -950,6 +1005,224 @@ func table_helpers_dump(
     out.data[0..out.count]
 }
 
+// Per-type index helpers keep slice/string source values single-evaluated for checked indexing.
+func append_index_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    source_type: i64
+): void = {
+    val source_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+    val helper_name: str = cexpr.index_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+
+    append_bytes(mut ref mem, mut ref out, ref "static inline ")
+    if (types_table.kind[source_type] == types.TypeKind.StrType) {
+        append_bytes(mut ref mem, mut ref out, ref "uint8_t")
+    } else {
+        val elem_name: str = ctypes.type_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            types_table.data0[source_type]
+        )
+        append_bytes(mut ref mem, mut ref out, ref elem_name)
+    }
+    append_bytes(mut ref mem, mut ref out, ref " *")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_bytes(mut ref mem, mut ref out, ref source_name)
+    append_bytes(mut ref mem, mut ref out, ref " ni_value, int64_t ni_idx, const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return &ni_value.data[ni_checked_index(ni_idx, ni_value.len, ni_file, ni_line, ni_col)];\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
+// Index helper discovery only tracks slice/string sources because arrays use compile-time lengths.
+func collect_index_helpers(
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    node_id: i64,
+    mut ref index_helper_sources: [i64]
+): void = {
+    if (node_id < 0) {
+        return
+    }
+
+    if (nodes.kind[node_id] == node.NodeKind.IndexExpr) {
+        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val object_type: i64 = if (object_id >= 0) { nodes.type_id[object_id] } else { -1 }
+        if (object_type >= 0 &&
+            object_type < index_helper_sources.len &&
+            (types_table.kind[object_type] == types.TypeKind.SliceType ||
+             types_table.kind[object_type] == types.TypeKind.StrType)) {
+            index_helper_sources[object_type] = 1
+        }
+    }
+
+    mut child_id: i64 = nodes.first_child[node_id]
+    while (child_id >= 0) {
+        collect_index_helpers(
+            ref nodes,
+            ref types_table,
+            child_id,
+            mut ref index_helper_sources
+        )
+        child_id = nodes.next_sibling[child_id]
+    }
+}
+
+// Index helpers live after typedefs so they can return typed element pointers.
+func index_helpers_dump(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref modules: loader.Modules,
+    ref types_table: types.Types,
+    ref module_range: span.Range
+): [u8] = {
+    mut index_helper_sources: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
+    mut index: i64 = 0
+    while (index < index_helper_sources.len) {
+        index_helper_sources[index] = 0
+        index += 1
+    }
+
+    mut module_id: i64 = module_range.start
+    val end: i64 = span.range_end(ref module_range)
+    while (module_id < end && module_id < table_len(ref modules)) {
+        collect_index_helpers(
+            ref nodes,
+            ref types_table,
+            modules.root_node[module_id],
+            mut ref index_helper_sources
+        )
+        module_id += 1
+    }
+
+    mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
+    mut wrote_any: bool = false
+    index = 0
+    while (index < index_helper_sources.len && index < table_len(ref types_table)) {
+        if (index_helper_sources[index] != 0) {
+            if (wrote_any) {
+                append_bytes(mut ref mem, mut ref out, ref "\n")
+            }
+            append_index_helper(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                index
+            )
+            wrote_any = true
+        }
+        index += 1
+    }
+
+    out.data[0..out.count]
+}
+
+// Range helpers construct checked slices from one evaluated source/start/end tuple.
+func append_slice_range_helper(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    source_type: i64,
+    result_type: i64
+): void = {
+    val source_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+    val result_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        result_type
+    )
+    val helper_name: str = cexpr.slice_range_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        source_type
+    )
+    val is_array_source: bool = types_table.kind[source_type] == types.TypeKind.ArrayType
+
+    append_bytes(mut ref mem, mut ref out, ref "static inline ")
+    append_bytes(mut ref mem, mut ref out, ref result_name)
+    append_bytes(mut ref mem, mut ref out, ref " ")
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    if (is_array_source) {
+        append_bytes(mut ref mem, mut ref out, ref source_name)
+        append_bytes(mut ref mem, mut ref out, ref " *ni_value")
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref source_name)
+        append_bytes(mut ref mem, mut ref out, ref " ni_value")
+    }
+    append_bytes(mut ref mem, mut ref out, ref ", int64_t ni_start, int64_t ni_end, const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_check_slice_bounds(ni_start, ni_end, ")
+    if (is_array_source) {
+        append_i64(mut ref mem, mut ref out, types_table.data1[source_type])
+        append_bytes(mut ref mem, mut ref out, ref "L")
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref "ni_value.len")
+    }
+    append_bytes(mut ref mem, mut ref out, ref ", ni_file, ni_line, ni_col);\n")
+    append_bytes(mut ref mem, mut ref out, ref "    return (")
+    append_bytes(mut ref mem, mut ref out, ref result_name)
+    append_bytes(mut ref mem, mut ref out, ref "){.data = ")
+    if (is_array_source) {
+        append_bytes(mut ref mem, mut ref out, ref "ni_value->data")
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref "ni_value.data")
+    }
+    append_bytes(mut ref mem, mut ref out, ref " + ni_start, .len = (ni_end - ni_start)};\n")
+    append_bytes(mut ref mem, mut ref out, ref "}\n")
+}
+
 // The helper body is tiny but centralizes the single-evaluation contract for open-ended sub-slices.
 func append_slice_tail_helper(
     mut ref mem: Arena,
@@ -996,7 +1269,8 @@ func append_slice_tail_helper(
     append_bytes(mut ref mem, mut ref out, ref helper_name)
     append_bytes(mut ref mem, mut ref out, ref "(")
     append_bytes(mut ref mem, mut ref out, ref source_name)
-    append_bytes(mut ref mem, mut ref out, ref " ni_value, int64_t ni_start) {\n")
+    append_bytes(mut ref mem, mut ref out, ref " ni_value, int64_t ni_start, const char *ni_file, unsigned long ni_line, unsigned long ni_col) {\n")
+    append_bytes(mut ref mem, mut ref out, ref "    ni_check_slice_bounds(ni_start, ni_value.len, ni_value.len, ni_file, ni_line, ni_col);\n")
     append_bytes(mut ref mem, mut ref out, ref "    return (")
     append_bytes(mut ref mem, mut ref out, ref result_name)
     append_bytes(mut ref mem, mut ref out, ref "){.data = ni_value.data + ni_start, .len = (ni_value.len - ni_start)};\n")
@@ -1008,6 +1282,7 @@ func collect_slice_tail_helpers(
     ref nodes: node.Nodes,
     ref types_table: types.Types,
     node_id: i64,
+    mut ref slice_range_results: [i64],
     mut ref slice_helper_results: [i64],
     mut ref str_helper_source_type: i64,
     mut ref str_helper_result_type: i64
@@ -1029,6 +1304,18 @@ func collect_slice_tail_helpers(
                    str_helper_result_type < 0) {
             str_helper_source_type = object_type
             str_helper_result_type = nodes.type_id[node_id]
+        } else if (object_type >= 0 &&
+                   object_type < slice_range_results.len &&
+                   slice_range_results[object_type] < 0) {
+            slice_range_results[object_type] = nodes.type_id[node_id]
+        }
+    } else if (nodes.kind[node_id] == node.NodeKind.SliceExpr) {
+        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+        val object_type: i64 = if (object_id >= 0) { nodes.type_id[object_id] } else { -1 }
+        if (object_type >= 0 &&
+            object_type < slice_range_results.len &&
+            slice_range_results[object_type] < 0) {
+            slice_range_results[object_type] = nodes.type_id[node_id]
         }
     }
 
@@ -1038,6 +1325,7 @@ func collect_slice_tail_helpers(
             ref nodes,
             ref types_table,
             child_id,
+            mut ref slice_range_results,
             mut ref slice_helper_results,
             mut ref str_helper_source_type,
             mut ref str_helper_result_type
@@ -1057,9 +1345,11 @@ func slice_helpers_dump(
     ref types_table: types.Types,
     ref module_range: span.Range
 ): [u8] = {
+    mut slice_range_results: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
     mut slice_helper_results: [i64] = arena_alloc(mut ref mem, table_len(ref types_table))
     mut index: i64 = 0
-    while (index < slice_helper_results.len) {
+    while (index < slice_helper_results.len && index < slice_range_results.len) {
+        slice_range_results[index] = -1
         slice_helper_results[index] = -1
         index += 1
     }
@@ -1073,6 +1363,7 @@ func slice_helpers_dump(
             ref nodes,
             ref types_table,
             modules.root_node[module_id],
+            mut ref slice_range_results,
             mut ref slice_helper_results,
             mut ref str_helper_source_type,
             mut ref str_helper_result_type
@@ -1082,6 +1373,28 @@ func slice_helpers_dump(
 
     mut out: bbuf.ByteBuf = bbuf.byte_buf_new(mut ref mem, 256)
     mut wrote_any: bool = false
+    index = 0
+    while (index < slice_range_results.len) {
+        if (slice_range_results[index] >= 0) {
+            if (wrote_any) {
+                append_bytes(mut ref mem, mut ref out, ref "\n")
+            }
+            append_slice_range_helper(
+                mut ref mem,
+                mut ref out,
+                ref sources,
+                ref text_pool,
+                ref tokens,
+                ref nodes,
+                ref types_table,
+                index,
+                slice_range_results[index]
+            )
+            wrote_any = true
+        }
+        index += 1
+    }
+
     index = 0
     while (index < slice_helper_results.len) {
         if (slice_helper_results[index] >= 0) {
@@ -1392,6 +1705,7 @@ pub func c_file_dump(
     mut needs_args: bool = false
     mut needs_time: bool = false
     mut needs_driver: bool = false
+    mut needs_bounds: bool = false
     mut module_id: i64 = module_range.start
     val module_end: i64 = span.range_end(ref module_range)
     while (module_id < module_end && module_id < table_len(ref modules)) {
@@ -1408,7 +1722,8 @@ pub func c_file_dump(
             mut ref needs_exit,
             mut ref needs_args,
             mut ref needs_time,
-            mut ref needs_driver
+            mut ref needs_driver,
+            mut ref needs_bounds
         )
         module_id += 1
     }
@@ -1423,6 +1738,11 @@ pub func c_file_dump(
         needs_driver
     )
     append_section(mut ref mem, mut ref out, ref prelude)
+
+    if (needs_bounds) {
+        val bounds_helpers: [u8] = bounds_helpers_dump(mut ref mem)
+        append_section(mut ref mem, mut ref out, ref bounds_helpers)
+    }
 
     val type_defs: [u8] = ctypes.type_defs_dump(
         mut ref mem,
@@ -1449,6 +1769,7 @@ pub func c_file_dump(
     val globals: [u8] = global_definitions_dump(
         mut ref mem,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1484,6 +1805,18 @@ pub func c_file_dump(
         ref table_helpers
     )
     append_section(mut ref mem, mut ref out, ref table_helper_text)
+
+    val index_helper_text: [u8] = index_helpers_dump(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref modules,
+        ref types_table,
+        ref module_range
+    )
+    append_section(mut ref mem, mut ref out, ref index_helper_text)
 
     val helpers: [u8] = slice_helpers_dump(
         mut ref mem,

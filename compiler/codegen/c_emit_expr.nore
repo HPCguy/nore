@@ -45,6 +45,82 @@ func append_i64(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, n: i64): void = {
     append_bytes(mut ref mem, mut ref out, ref text)
 }
 
+value ExprLineCol {
+    line: i64,
+    col: i64
+}
+
+// Runtime-check diagnostics use source offsets directly so expression lowering stays independent of line maps.
+func expr_line_col(ref sources: source.Sources, ref text_pool: bbuf.ByteBuf, source_id: i64, offset: i64): ExprLineCol = {
+    val text: [u8] = source.source_text(ref text_pool, ref sources, source_id)
+    mut clamped: i64 = offset
+    if (clamped < 0) {
+        clamped = 0
+    }
+    if (clamped > text.len) {
+        clamped = text.len
+    }
+
+    mut line: i64 = 1
+    mut col: i64 = 1
+    mut i: i64 = 0
+    while (i < clamped) {
+        if (text[i] == '\n') {
+            line += 1
+            col = 1
+        } else {
+            col += 1
+        }
+        i += 1
+    }
+
+    ExprLineCol { line: line, col: col }
+}
+
+// Runtime helpers receive ordinary C string literals, so generated paths must be escaped once here.
+func append_c_string_literal(mut ref mem: Arena, mut ref out: bbuf.ByteBuf, ref text: [u8]): void = {
+    append_bytes(mut ref mem, mut ref out, ref "\"")
+    mut i: i64 = 0
+    while (i < text.len) {
+        val ch: u8 = text[i]
+        if (ch == '\\') {
+            append_bytes(mut ref mem, mut ref out, ref "\\\\")
+        } else if (ch == '"') {
+            append_bytes(mut ref mem, mut ref out, ref "\\\"")
+        } else if (ch == '\n') {
+            append_bytes(mut ref mem, mut ref out, ref "\\n")
+        } else if (ch == '\r') {
+            append_bytes(mut ref mem, mut ref out, ref "\\r")
+        } else if (ch == '\t') {
+            append_bytes(mut ref mem, mut ref out, ref "\\t")
+        } else {
+            bbuf.byte_buf_push(mut ref mem, mut ref out, ch)
+        }
+        i += 1
+    }
+    append_bytes(mut ref mem, mut ref out, ref "\"")
+}
+
+// Bounds checks embed the Nore source location that should appear in runtime diagnostics.
+func append_location_args(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf,
+    ref nodes: node.Nodes,
+    node_id: i64
+): void = {
+    val loc: ExprLineCol = expr_line_col(ref sources, ref text_pool, nodes.source_id[node_id], nodes.start[node_id])
+    val display_path: [u8] = source.source_display_path(ref path_pool, ref sources, nodes.source_id[node_id])
+    append_c_string_literal(mut ref mem, mut ref out, ref display_path)
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_i64(mut ref mem, mut ref out, loc.line)
+    append_bytes(mut ref mem, mut ref out, ref "UL, ")
+    append_i64(mut ref mem, mut ref out, loc.col)
+    append_bytes(mut ref mem, mut ref out, ref "UL")
+}
+
 // The bootstrap type table keeps builtin rows small, so a linear u8 lookup stays cheap and local.
 func u8_type_id(ref types_table: types.Types): i64 = {
     mut type_id: i64 = 0
@@ -584,6 +660,7 @@ func append_array_like_data_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -596,6 +673,7 @@ func append_array_like_data_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -611,6 +689,7 @@ func append_array_like_len_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -630,6 +709,7 @@ func append_array_like_len_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -685,17 +765,71 @@ pub func slice_tail_helper_name(
     string.str_concat(mut ref mem, ref object_type_name, ref "_tail")
 }
 
+// Slice and string index helpers return an element pointer from one evaluated source value.
+pub func index_helper_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    object_type: i64
+): str = {
+    if (object_type >= 0 && types_table.kind[object_type] == types.TypeKind.StrType) {
+        return "ni_str_at"
+    }
+
+    val object_type_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        object_type
+    )
+    string.str_concat(mut ref mem, ref object_type_name, ref "_at")
+}
+
+// Closed-range helpers keep source/start/end single-evaluated before checking and building the view.
+pub func slice_range_helper_name(
+    mut ref mem: Arena,
+    ref sources: source.Sources,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref types_table: types.Types,
+    object_type: i64
+): str = {
+    if (object_type >= 0 && types_table.kind[object_type] == types.TypeKind.StrType) {
+        return "ni_str_slice"
+    }
+
+    val object_type_name: str = ctypes.type_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        object_type
+    )
+    string.str_concat(mut ref mem, ref object_type_name, ref "_slice")
+}
+
 // The helper call keeps both `.data` and `.len` derived from the same already-evaluated source value.
 func append_open_ended_slice_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
     ref symbols_table: symbols.Symbols,
     ref types_table: types.Types,
     object_id: i64,
+    slice_id: i64,
     start_id: i64
 ): void = {
     val helper_name: str = slice_tail_helper_name(
@@ -713,6 +847,7 @@ func append_open_ended_slice_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -726,6 +861,7 @@ func append_open_ended_slice_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -736,7 +872,115 @@ func append_open_ended_slice_expr(
     } else {
         append_bytes(mut ref mem, mut ref out, ref "0L")
     }
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_location_args(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref nodes, slice_id)
     append_bytes(mut ref mem, mut ref out, ref ")")
+}
+
+// Indexed slice/string values route through helpers so `.data` and `.len` share one source evaluation.
+func append_checked_index_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64
+): void = {
+    val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
+    val index_id: i64 = node.node_child_at(ref nodes, node_id, 1)
+    val object_type: i64 = nodes.type_id[object_id]
+    if (object_type >= 0 &&
+        (types_table.kind[object_type] == types.TypeKind.SliceType ||
+         types_table.kind[object_type] == types.TypeKind.StrType)) {
+        val helper_name: str = index_helper_name(
+            mut ref mem,
+            ref sources,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref types_table,
+            object_type
+        )
+        append_bytes(mut ref mem, mut ref out, ref "(*")
+        append_bytes(mut ref mem, mut ref out, ref helper_name)
+        append_bytes(mut ref mem, mut ref out, ref "(")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            object_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ", ")
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            index_id
+        )
+        append_bytes(mut ref mem, mut ref out, ref ", ")
+        append_location_args(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref nodes, node_id)
+        append_bytes(mut ref mem, mut ref out, ref "))")
+        return
+    }
+
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    append_array_like_data_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        object_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref "[ni_checked_index(")
+    append_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        index_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_array_like_len_expr(
+        mut ref mem,
+        mut ref out,
+        ref sources,
+        ref path_pool,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref symbols_table,
+        ref types_table,
+        object_id
+    )
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_location_args(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref nodes, node_id)
+    append_bytes(mut ref mem, mut ref out, ref ")])")
 }
 
 // Addressable expressions share one lvalue-like spelling path for ref arguments.
@@ -744,6 +988,7 @@ func append_place_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -802,6 +1047,7 @@ func append_place_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -815,33 +1061,18 @@ func append_place_expr(
     }
 
     if (kind == node.NodeKind.IndexExpr) {
-        val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
-        val index_id: i64 = node.node_child_at(ref nodes, node_id, 1)
-        append_bytes(mut ref mem, mut ref out, ref "(")
-        append_array_like_data_expr(
+        append_checked_index_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
             ref symbols_table,
             ref types_table,
-            object_id
+            node_id
         )
-        append_bytes(mut ref mem, mut ref out, ref "[")
-        append_expr(
-            mut ref mem,
-            mut ref out,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            ref nodes,
-            ref symbols_table,
-            ref types_table,
-            index_id
-        )
-        append_bytes(mut ref mem, mut ref out, ref "])")
         return
     }
 
@@ -853,6 +1084,7 @@ func append_view_literal_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -877,6 +1109,7 @@ func append_view_literal_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -889,6 +1122,7 @@ func append_view_literal_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -904,6 +1138,7 @@ func append_array_value_pointer(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -939,6 +1174,7 @@ func append_array_value_pointer(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -965,6 +1201,7 @@ func append_array_value_pointer(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -975,11 +1212,117 @@ func append_array_value_pointer(
     append_bytes(mut ref mem, mut ref out, ref "})[0])")
 }
 
+// Range helpers preserve one evaluation of the source object and both range bounds.
+func append_slice_range_expr(
+    mut ref mem: Arena,
+    mut ref out: bbuf.ByteBuf,
+    ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
+    ref text_pool: bbuf.ByteBuf,
+    ref tokens: token.Tokens,
+    ref nodes: node.Nodes,
+    ref symbols_table: symbols.Symbols,
+    ref types_table: types.Types,
+    node_id: i64,
+    object_id: i64,
+    start_id: i64,
+    end_id: i64
+): void = {
+    val object_type: i64 = nodes.type_id[object_id]
+    val helper_name: str = slice_range_helper_name(
+        mut ref mem,
+        ref sources,
+        ref text_pool,
+        ref tokens,
+        ref nodes,
+        ref types_table,
+        object_type
+    )
+    append_bytes(mut ref mem, mut ref out, ref helper_name)
+    append_bytes(mut ref mem, mut ref out, ref "(")
+    if (object_type >= 0 && types_table.kind[object_type] == types.TypeKind.ArrayType) {
+        append_array_value_pointer(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            object_id
+        )
+    } else {
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            object_id
+        )
+    }
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    if (start_id >= 0) {
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            start_id
+        )
+    } else {
+        append_bytes(mut ref mem, mut ref out, ref "0L")
+    }
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    if (end_id >= 0) {
+        append_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            end_id
+        )
+    } else {
+        append_array_like_len_expr(
+            mut ref mem,
+            mut ref out,
+            ref sources,
+            ref path_pool,
+            ref text_pool,
+            ref tokens,
+            ref nodes,
+            ref symbols_table,
+            ref types_table,
+            object_id
+        )
+    }
+    append_bytes(mut ref mem, mut ref out, ref ", ")
+    append_location_args(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref nodes, node_id)
+    append_bytes(mut ref mem, mut ref out, ref ")")
+}
+
 // Value coercions call one generated helper so the source expression only runs once.
 pub func append_expr_as_type(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1011,6 +1354,7 @@ pub func append_expr_as_type(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -1023,6 +1367,7 @@ pub func append_expr_as_type(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -1039,6 +1384,7 @@ pub func append_expr_as_type(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1053,6 +1399,7 @@ func append_ref_source_pointer(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1102,6 +1449,7 @@ func append_ref_source_pointer(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1118,6 +1466,7 @@ func append_ref_source_pointer(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1132,6 +1481,7 @@ func append_ref_arg_expr_as_type(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1163,6 +1513,7 @@ func append_ref_arg_expr_as_type(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -1191,6 +1542,7 @@ func append_ref_arg_expr_as_type(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -1204,6 +1556,7 @@ func append_ref_arg_expr_as_type(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -1221,6 +1574,7 @@ func append_ref_arg_expr_as_type(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1235,6 +1589,7 @@ func append_ref_arg_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1246,6 +1601,7 @@ func append_ref_arg_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1309,6 +1665,7 @@ func append_arena_alloc_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1348,6 +1705,7 @@ func append_arena_alloc_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1360,6 +1718,7 @@ func append_arena_alloc_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1376,6 +1735,7 @@ func append_arena_alloc_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1391,6 +1751,7 @@ func append_table_alloc_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1417,6 +1778,7 @@ func append_table_alloc_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1429,6 +1791,7 @@ func append_table_alloc_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1444,6 +1807,7 @@ func append_table_helper_call(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1470,6 +1834,7 @@ func append_table_helper_call(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -1484,6 +1849,7 @@ func append_builtin_call_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1498,6 +1864,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1514,6 +1881,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1530,6 +1898,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1546,6 +1915,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1562,6 +1932,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1578,6 +1949,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1591,6 +1963,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1598,6 +1971,8 @@ func append_builtin_call_expr(
             ref types_table,
             node.node_child_at(ref nodes, node_id, 2)
         )
+        append_bytes(mut ref mem, mut ref out, ref ", ")
+        append_location_args(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref nodes, node_id)
         append_bytes(mut ref mem, mut ref out, ref ")")
         return
     }
@@ -1607,6 +1982,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1620,6 +1996,7 @@ func append_builtin_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1740,6 +2117,7 @@ func append_enum_variant_call_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1784,6 +2162,7 @@ func append_enum_variant_call_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1803,6 +2182,7 @@ func append_constructor_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1848,6 +2228,7 @@ func append_constructor_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1867,6 +2248,7 @@ func append_array_lit_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1897,6 +2279,7 @@ func append_array_lit_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -1960,6 +2343,7 @@ func append_unary_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -1989,6 +2373,7 @@ func append_unary_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -2004,6 +2389,7 @@ func append_binary_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -2017,6 +2403,7 @@ func append_binary_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -2035,6 +2422,7 @@ func append_binary_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -2050,6 +2438,7 @@ func append_cast_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -2073,6 +2462,7 @@ func append_cast_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
@@ -2088,6 +2478,7 @@ func append_index_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -2095,33 +2486,18 @@ func append_index_expr(
     ref types_table: types.Types,
     node_id: i64
 ): void = {
-    val object_id: i64 = node.node_child_at(ref nodes, node_id, 0)
-    val index_id: i64 = node.node_child_at(ref nodes, node_id, 1)
-    append_bytes(mut ref mem, mut ref out, ref "(")
-    append_array_like_data_expr(
+    append_checked_index_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
         ref symbols_table,
         ref types_table,
-        object_id
+        node_id
     )
-    append_bytes(mut ref mem, mut ref out, ref "[")
-    append_expr(
-        mut ref mem,
-        mut ref out,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        ref nodes,
-        ref symbols_table,
-        ref types_table,
-        index_id
-    )
-    append_bytes(mut ref mem, mut ref out, ref "])")
 }
 
 // Sub-slicing lowers to the standard `{data,len}` shape shared by slices and strings.
@@ -2129,6 +2505,7 @@ func append_slice_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -2140,15 +2517,6 @@ func append_slice_expr(
     val start_id: i64 = slice_start_id(ref nodes, node_id)
     val end_id: i64 = slice_end_id(ref nodes, node_id)
     val object_type: i64 = nodes.type_id[object_id]
-    val type_text: str = ctypes.type_name(
-        mut ref mem,
-        ref sources,
-        ref text_pool,
-        ref tokens,
-        ref nodes,
-        ref types_table,
-        nodes.type_id[node_id]
-    )
 
     if (end_id < 0 &&
         object_type >= 0 &&
@@ -2158,129 +2526,34 @@ func append_slice_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
             ref symbols_table,
             ref types_table,
             object_id,
+            node_id,
             start_id
         )
         return
     }
 
-    append_bytes(mut ref mem, mut ref out, ref "(")
-    append_bytes(mut ref mem, mut ref out, ref type_text)
-    append_bytes(mut ref mem, mut ref out, ref "){.data = ")
-    append_array_like_data_expr(
+    append_slice_range_expr(
         mut ref mem,
         mut ref out,
         ref sources,
+        ref path_pool,
         ref text_pool,
         ref tokens,
         ref nodes,
         ref symbols_table,
         ref types_table,
-        object_id
+        node_id,
+        object_id,
+        start_id,
+        end_id
     )
-    if (start_id >= 0) {
-        append_bytes(mut ref mem, mut ref out, ref " + ")
-        append_expr(
-            mut ref mem,
-            mut ref out,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            ref nodes,
-            ref symbols_table,
-            ref types_table,
-            start_id
-        )
-    }
-
-    append_bytes(mut ref mem, mut ref out, ref ", .len = ")
-    if (end_id >= 0 && start_id >= 0) {
-        append_bytes(mut ref mem, mut ref out, ref "(")
-        append_expr(
-            mut ref mem,
-            mut ref out,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            ref nodes,
-            ref symbols_table,
-            ref types_table,
-            end_id
-        )
-        append_bytes(mut ref mem, mut ref out, ref " - ")
-        append_expr(
-            mut ref mem,
-            mut ref out,
-            ref sources,
-            ref text_pool,
-            ref tokens,
-            ref nodes,
-            ref symbols_table,
-            ref types_table,
-            start_id
-        )
-        append_bytes(mut ref mem, mut ref out, ref ")")
-    } else {
-        if (end_id >= 0) {
-            append_expr(
-                mut ref mem,
-                mut ref out,
-                ref sources,
-                ref text_pool,
-                ref tokens,
-                ref nodes,
-                ref symbols_table,
-                ref types_table,
-                end_id
-            )
-        } else {
-            if (start_id >= 0) {
-                append_bytes(mut ref mem, mut ref out, ref "(")
-                append_array_like_len_expr(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref symbols_table,
-                    ref types_table,
-                    object_id
-                )
-                append_bytes(mut ref mem, mut ref out, ref " - ")
-                append_expr(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref symbols_table,
-                    ref types_table,
-                    start_id
-                )
-                append_bytes(mut ref mem, mut ref out, ref ")")
-            } else {
-                append_array_like_len_expr(
-                    mut ref mem,
-                    mut ref out,
-                    ref sources,
-                    ref text_pool,
-                    ref tokens,
-                    ref nodes,
-                    ref symbols_table,
-                    ref types_table,
-                    object_id
-                )
-            }
-        }
-    }
-    append_bytes(mut ref mem, mut ref out, ref "}")
 }
 
 // Later statement/codegen layers share one expression entry point for the currently supported subset.
@@ -2288,6 +2561,7 @@ pub func append_expr(
     mut ref mem: Arena,
     mut ref out: bbuf.ByteBuf,
     ref sources: source.Sources,
+    ref path_pool: bbuf.ByteBuf,
     ref text_pool: bbuf.ByteBuf,
     ref tokens: token.Tokens,
     ref nodes: node.Nodes,
@@ -2329,15 +2603,15 @@ pub func append_expr(
         return
     }
     if (kind == node.NodeKind.UnaryExpr) {
-        append_unary_expr(mut ref mem, mut ref out, ref sources, ref text_pool, ref tokens, ref nodes, ref symbols_table, ref types_table, node_id)
+        append_unary_expr(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref tokens, ref nodes, ref symbols_table, ref types_table, node_id)
         return
     }
     if (kind == node.NodeKind.BinaryExpr) {
-        append_binary_expr(mut ref mem, mut ref out, ref sources, ref text_pool, ref tokens, ref nodes, ref symbols_table, ref types_table, node_id)
+        append_binary_expr(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref tokens, ref nodes, ref symbols_table, ref types_table, node_id)
         return
     }
     if (kind == node.NodeKind.CastExpr) {
-        append_cast_expr(mut ref mem, mut ref out, ref sources, ref text_pool, ref tokens, ref nodes, ref symbols_table, ref types_table, node_id)
+        append_cast_expr(mut ref mem, mut ref out, ref sources, ref path_pool, ref text_pool, ref tokens, ref nodes, ref symbols_table, ref types_table, node_id)
         return
     }
     if (kind == node.NodeKind.FieldAccess) {
@@ -2396,6 +2670,7 @@ pub func append_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -2412,6 +2687,7 @@ pub func append_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -2426,6 +2702,7 @@ pub func append_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -2443,6 +2720,7 @@ pub func append_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -2459,6 +2737,7 @@ pub func append_expr(
                 mut ref mem,
                 mut ref out,
                 ref sources,
+                ref path_pool,
                 ref text_pool,
                 ref tokens,
                 ref nodes,
@@ -2498,6 +2777,7 @@ pub func append_expr(
                     mut ref mem,
                     mut ref out,
                     ref sources,
+                    ref path_pool,
                     ref text_pool,
                     ref tokens,
                     ref nodes,
@@ -2511,6 +2791,7 @@ pub func append_expr(
                     mut ref mem,
                     mut ref out,
                     ref sources,
+                    ref path_pool,
                     ref text_pool,
                     ref tokens,
                     ref nodes,
@@ -2532,6 +2813,7 @@ pub func append_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
@@ -2546,6 +2828,7 @@ pub func append_expr(
             mut ref mem,
             mut ref out,
             ref sources,
+            ref path_pool,
             ref text_pool,
             ref tokens,
             ref nodes,
