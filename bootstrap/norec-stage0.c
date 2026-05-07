@@ -10976,24 +10976,15 @@ static void codegen_emit_target_path(FILE *out, Ast *node,
         }
 
         case AST_INDEX_ACCESS: {
-            Ast *index_expr = node->as.index_access.index;
-            if (index_expr->kind == AST_IDENTIFIER) {
-                codegen_emit_target_path(out, node->as.index_access.object,
-                                         temps, temp_count);
-                fprintf(out, ".data[");
-                codegen_emit_expression(out, index_expr);
-            }
-            else {
-                int temp_idx = codegen_find_target_index_temp(temps, temp_count,
-                                                              node);
-                codegen_emit_target_path(out, node->as.index_access.object,
-                                         temps, temp_count);
-                fprintf(out, ".data[");
-                if (temp_idx >= 0) {
-                    codegen_emit_target_index_name(out, temp_idx);
-                } else {
-                    codegen_emit_expression(out, index_expr);
-                }
+            int temp_idx = codegen_find_target_index_temp(temps, temp_count,
+                                                          node);
+            codegen_emit_target_path(out, node->as.index_access.object,
+                                     temps, temp_count);
+            fprintf(out, ".data[");
+            if (temp_idx >= 0) {
+                codegen_emit_target_index_name(out, temp_idx);
+            } else {
+                codegen_emit_expression(out, node->as.index_access.index);
             }
             fprintf(out, "]");
             break;
@@ -11749,9 +11740,6 @@ static void codegen_prepare_target_indices(FILE *out, Ast *node, int indent,
 
     if (node->kind != AST_INDEX_ACCESS) return;
 
-    Ast *index_expr = node->as.index_access.index;
-    if (index_expr->kind == AST_IDENTIFIER) return;
-
     codegen_prepare_target_indices(out, node->as.index_access.object,
                                    indent, temps, temp_count);
 
@@ -11759,23 +11747,33 @@ static void codegen_prepare_target_indices(FILE *out, Ast *node, int indent,
     if (slot >= MAX_TARGET_INDEX_DEPTH) {
         panic(ERR_I002_INTERNAL_ERROR, "assignment target too deeply nested");
     }
+    Ast *index_expr = node->as.index_access.index;
     temps[slot].index_node = node;
-    temps[slot].temp_idx = codegen_temp_counter++;
+    temps[slot].temp_idx   = -1;
+    if (index_expr->kind != AST_IDENTIFIER) {
+        temps[slot].temp_idx = codegen_temp_counter++;
+    }
     (*temp_count)++;
 
-    codegen_indent(out, indent);
-    fprintf(out, "%s ", codegen_type_to_c(index_expr->expr_type));
-    codegen_emit_target_index_name(out, temps[slot].temp_idx);
-    fprintf(out, " = ");
-    codegen_emit_expression(out, index_expr);
-    fprintf(out, ";\n");
+    if (index_expr->kind != AST_IDENTIFIER) {
+        codegen_indent(out, indent);
+        fprintf(out, "%s ", codegen_type_to_c(index_expr->expr_type));
+        codegen_emit_target_index_name(out, temps[slot].temp_idx);
+        fprintf(out, " = ");
+        codegen_emit_expression(out, index_expr);
+        fprintf(out, ";\n");
+    }
 
     if (g_bounds_check) {
         Type obj_type = node->as.index_access.object->expr_type;
         if (type_is_slice(obj_type)) {
             codegen_indent(out, indent);
             fprintf(out, "NI_BOUNDS_CHECK(");
-            codegen_emit_target_index_name(out, temps[slot].temp_idx);
+            if (index_expr->kind == AST_IDENTIFIER) {
+                codegen_emit_expression(out, index_expr);
+            } else {
+                codegen_emit_target_index_name(out, temps[slot].temp_idx);
+            }
             fprintf(out, ", ");
             codegen_emit_target_path(out, node->as.index_access.object,
                                      temps, *temp_count);
@@ -11786,7 +11784,11 @@ static void codegen_prepare_target_indices(FILE *out, Ast *node, int indent,
             if (at) {
                 codegen_indent(out, indent);
                 fprintf(out, "NI_BOUNDS_CHECK(");
-                codegen_emit_target_index_name(out, temps[slot].temp_idx);
+                if (index_expr->kind == AST_IDENTIFIER) {
+                    codegen_emit_expression(out, index_expr);
+                } else {
+                    codegen_emit_target_index_name(out, temps[slot].temp_idx);
+                }
                 fprintf(out, ", %zu, \"%s\", %zuUL, %zuUL);\n",
                         at->size, node->loc.file,
                         node->loc.line, node->loc.column);
