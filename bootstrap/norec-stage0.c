@@ -8680,6 +8680,58 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_INDEX_ACCESS: {
+            if (node->as.index_access.object->kind == AST_IDENTIFIER) {
+                Ast *id = node->as.index_access.object;
+                const char *id_start = id->as.identifier.start;
+                size_t id_len = id->as.identifier.length;
+
+                // verify this identifier is not defined
+                if (scope && scope_lookup(scope, id_start, id_len) == NULL) {
+                    // walk the scope tree in order of table creation, last to first
+                    Scope *lscope = scope;
+                    while (lscope != NULL) {
+                        for (int i = lscope->count - 1; i >= 0; --i) {
+                            Variable *v = &lscope->vars[i];
+                            if (type_is_value(v->type)) {
+                                ValueTypeEntry *va = value_table_get(v->type);
+                                for (size_t j = 0; j < va->field_count; ++j) {
+                                    Parameter *p = &va->fields[j];
+                                    // check for table arrays
+                                    if (id_len == p->name_length &&
+                                        memcmp(id_start, p->name_start, id_len) == 0) {
+                                        Ast *fi = ast_make_field_access(id, id_start, id_len, id->loc);
+                                        id->as.identifier.start = v->name_start;
+                                        id->as.identifier.length = v->name_length;
+                                        node->as.index_access.object = fi;
+                                        goto expansion_index_access;
+                                    }
+                                    else { // check table structs
+                                        SliceTypeEntry *s = slice_table_get(p->type);
+                                        if (s != NULL) {
+                                            ValueTypeEntry *vs = &g_value_table->types[s->element_type - 16];
+                                            for (size_t k = 0; k < vs->field_count; ++k) {
+                                                Parameter *pt = &vs->fields[k];
+                                                if (id_len == pt->name_length &&
+                                                    memcmp(id_start, pt->name_start, id_len) == 0) {
+                                                    Ast *fa = ast_make_field_access(id, p->name_start, p->name_length, id->loc);
+                                                    id->as.identifier.start = v->name_start;
+                                                    id->as.identifier.length = v->name_length;
+                                                    Ast *fi = ast_make_index_access(fa, node->as.index_access.index, id->loc);
+                                                    fa = ast_make_field_access(fi, id_start, id_len, id->loc);
+                                                    memcpy((void *)node, (void *)fa, sizeof(Ast));
+                                                    goto expansion_field_access;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        lscope = lscope->parent;
+                    }
+                }
+            }
+expansion_index_access:
             Type obj_type = typecheck_expression(node->as.index_access.object,
                                                   scope, func_table);
             Type idx_type = typecheck_expression(node->as.index_access.index,
@@ -8747,6 +8799,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
         }
 
         case AST_FIELD_ACCESS: {
+expansion_field_access:
             Type obj_type = typecheck_expression(node->as.field_access.object,
                                                   scope, func_table);
             /* Slice .len field access */
@@ -13442,8 +13495,6 @@ int main(int argc, char **argv) {
     const char *compiler_root_arg = NULL;
     int emit_c_mode = 0;
     CompilerFlags flags = {0};
-
-    flags.print_ir = 1; // generate C language backend IR by default
 
     /* Extra arguments after -- (forwarded to program in --run mode) */
     int extra_argc = 0;
