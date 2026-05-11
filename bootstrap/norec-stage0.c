@@ -6802,6 +6802,16 @@ static void scope_inject_platform_constants(Scope *scope) {
 
 /* ========================== Function Table ========================== */
 
+typedef struct name_cache {
+    ValueTypeEntry *table;  // Namespace used for field member resolution
+    const char *name_start; // slice name
+    size_t name_length;
+    Type element_type;      // slice element type
+    Ast **nodes;            // nodes having this (namespace, name) signature
+    struct name_cache *table_next; // next table index
+    struct name_cache *slice_next; // slices within a given table
+} codegen_debug_help;
+
 typedef struct {
     const char *name_start;
     size_t name_length;
@@ -6814,6 +6824,7 @@ typedef struct {
     bool returns_arena_slices;
     bool is_public;
     size_t module_id;
+    codegen_debug_help *cached_decls;
 } FunctionEntry;
 
 typedef struct {
@@ -6922,6 +6933,7 @@ static void func_table_add(FunctionTable *table, Ast *func_decl) {
         entry->param_is_ref = NULL;
         entry->param_is_mut_ref = NULL;
     }
+    entry->cached_decls = NULL; // These are created during typecheck_program
 }
 
 /* Current function entry for escape analysis (set during typecheck_function) */
@@ -6929,6 +6941,90 @@ static FunctionEntry *g_current_func_entry = NULL;
 
 /* Current module being typechecked (for module-aware lookups) */
 static size_t g_typecheck_module_id = 0;
+
+/* ========================== codegen_debug_help  ========================== */
+
+static void add_debug_xform_node(Ast *node, const char *name, size_t name_len,
+                            Type elem_type,  ValueTypeEntry *table) {
+    codegen_debug_help **scan = &g_current_func_entry->cached_decls;
+    while (*scan != NULL && (*scan)->table != table) {
+        scan = &(*scan)->table_next;
+    }
+    if (*scan != NULL) {  // found a registered table
+        while (*scan != NULL && !(name_len == (*scan)->name_length &&
+                                  memcmp(name, (*scan)->name_start, name_len) == 0)) {
+            scan = &(*scan)->slice_next;
+        }
+        if (*scan != NULL) { // found matching slice
+            size_t count = 0;
+            while ((*scan)->nodes[count] != NULL) ++count;
+            (*scan)->nodes[count] = node;
+            if ((count++ & 15) == 15) {
+                (*scan)->nodes = realloc((*scan)->nodes, (count+16) * sizeof(Ast *));
+                for (size_t i = 0; i<16; ++i) (*scan)->nodes[count+i] = NULL;
+            }
+        }
+        else { // create matching slice
+            *scan = (codegen_debug_help *) calloc(1, sizeof(codegen_debug_help));
+            (*scan)->name_start = name;
+            (*scan)->name_length = name_len;
+            (*scan)->element_type = elem_type;
+            (*scan)->nodes = calloc(16, sizeof(Ast *));
+            (*scan)->nodes[0] = node;
+        }
+        return;
+    }
+    else { // create new table and register slice
+        *scan = (codegen_debug_help *) calloc(1, sizeof(codegen_debug_help));
+        (*scan)->table = table;
+        (*scan)->name_start = name;
+        (*scan)->name_length = name_len;
+        (*scan)->element_type = elem_type;
+        (*scan)->nodes = calloc(16, sizeof(Ast *));
+        (*scan)->nodes[0] = node;
+    }
+}
+
+static int check_debug_xform(Ast *node) {
+    Ast *onode = node->as.index_access.object;
+    if (onode->kind != AST_FIELD_ACCESS) return 0;
+    int count = 0;
+    const char *oname = onode->as.field_access.field_start;
+    int olength = onode->as.field_access.field_length;
+
+    codegen_debug_help *table_scan = g_current_func_entry->cached_decls;
+    while (table_scan != NULL) {
+        codegen_debug_help *slice_scan = table_scan;
+        do {
+            if (olength == slice_scan->name_length &&
+                memcmp(oname, slice_scan->name_start, olength) == 0) {
+                ++count;
+                Ast **node_scan = slice_scan->nodes;
+                while (*node_scan != NULL && *node_scan != node) ++node_scan;
+                if (*node_scan != NULL) return count;
+            }
+            slice_scan = slice_scan->slice_next;
+        } while (slice_scan != NULL);
+        table_scan = table_scan->table_next;
+    }
+    return count;
+}
+
+static void free_codegen_debug(codegen_debug_help *decls)  {
+    codegen_debug_help *table_scan = decls;
+    while (table_scan != NULL) {
+        codegen_debug_help *slice_scan = table_scan;
+        while (slice_scan != NULL) {
+            free(slice_scan->nodes);
+            codegen_debug_help *slice_last = slice_scan;
+            slice_scan = slice_scan->slice_next;
+            if (slice_last != table_scan) free(slice_last);
+        }
+        codegen_debug_help *table_last = table_scan;
+        table_scan = table_scan->table_next;
+        free(table_last);
+    }
+}
 
 /* ============================= Constant Folding ============================ */
 
@@ -8696,6 +8792,7 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                 ValueTypeEntry *va = value_table_get(v->type);
                                 for (size_t j = 0; j < va->field_count; ++j) {
                                     Parameter *p = &va->fields[j];
+                                    SliceTypeEntry *s = slice_table_get(p->type);
                                     // check for table arrays
                                     if (id_len == p->name_length &&
                                         memcmp(id_start, p->name_start, id_len) == 0) {
@@ -8703,10 +8800,10 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                         id->as.identifier.start = v->name_start;
                                         id->as.identifier.length = v->name_length;
                                         node->as.index_access.object = fi;
+                                        add_debug_xform_node(fi, id_start, id_len, s->element_type, va);
                                         goto expansion_index_access;
                                     }
                                     else { // check table structs
-                                        SliceTypeEntry *s = slice_table_get(p->type);
                                         if (s != NULL) {
                                             ValueTypeEntry *vs = &g_value_table->types[s->element_type - 16];
                                             for (size_t k = 0; k < vs->field_count; ++k) {
@@ -8717,6 +8814,8 @@ static Type typecheck_expression(Ast *node, Scope *scope, FunctionTable *func_ta
                                                     id->as.identifier.start = v->name_start;
                                                     id->as.identifier.length = v->name_length;
                                                     Ast *fi = ast_make_index_access(fa, node->as.index_access.index, id->loc);
+                                                    add_debug_xform_node(fi->as.index_access.object,
+                                                                         p->name_start, p->name_length, s->element_type, va);
                                                     fa = ast_make_field_access(fi, id_start, id_len, id->loc);
                                                     memcpy((void *)node, (void *)fa, sizeof(Ast));
                                                     goto expansion_field_access;
@@ -11031,9 +11130,21 @@ static void codegen_emit_target_path(FILE *out, Ast *node,
         case AST_INDEX_ACCESS: {
             int temp_idx = codegen_find_target_index_temp(temps, temp_count,
                                                           node);
-            codegen_emit_target_path(out, node->as.index_access.object,
-                                     temps, temp_count);
-            fprintf(out, ".data[");
+            int cache_idx = check_debug_xform(node);
+            if (cache_idx-- != 0) {
+                Ast *fa = node->as.index_access.object;
+                fprintf(out, "%.*s", (int)fa->as.field_access.field_length,
+                        fa->as.field_access.field_start);
+                if (cache_idx != 0) {
+                    fprintf(out, "__%d", cache_idx);
+                }
+                fprintf(out, "[");
+            }
+            else {
+                codegen_emit_target_path(out, node->as.index_access.object,
+                                         temps, temp_count);
+                fprintf(out, ".data[");
+            }
             if (temp_idx >= 0) {
                 codegen_emit_target_index_name(out, temp_idx);
             } else {
@@ -11363,8 +11474,20 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
                     fprintf(out, ".len, \"%s\", %zuUL, %zuUL), ",
                             node->loc.file, node->loc.line, node->loc.column);
                 }
-                codegen_emit_expression(out, obj);
-                fprintf(out, ".data[");
+                int cache_idx = check_debug_xform(node);
+                if (cache_idx-- != 0) {
+                    Ast *fa = node->as.index_access.object;
+                    fprintf(out, "%.*s", (int)fa->as.field_access.field_length,
+                            fa->as.field_access.field_start);
+                    if (cache_idx != 0) {
+                        fprintf(out, "__%d", cache_idx);
+                    }
+                    fprintf(out, "[");
+                }
+                else {
+                    codegen_emit_expression(out, obj);
+                    fprintf(out, ".data[");
+                }
                 codegen_emit_expression(out, node->as.index_access.index);
                 fprintf(out, (g_bounds_check ? "])" : "]") );
             } else {
@@ -12700,6 +12823,33 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
         fprintf(out, "ni_argv = argv;\n");
     }
 
+    // Set current function for cached_decl
+    g_current_func_entry = func_table_lookup_in_module(
+        g_codegen_func_table,
+        func_decl->as.func_decl.name_start,
+        func_decl->as.func_decl.name_length,
+        module_for_file(func_decl->loc.file) );
+
+    if (g_current_func_entry->cached_decls) {
+        codegen_debug_help *table_scan = g_current_func_entry->cached_decls;
+        while (table_scan != NULL) {
+            codegen_debug_help *slice_scan = table_scan;
+            do {
+                codegen_indent(out, 1);
+                fprintf(out, "%s * __restrict__ %.*s = ",
+                        codegen_type_to_c(slice_scan->element_type),
+                        (int)slice_scan->name_length, slice_scan->name_start);
+                int tmp = g_bounds_check;
+                g_bounds_check = 0;
+                codegen_emit_expression(out, slice_scan->nodes[0]);
+                g_bounds_check = tmp;
+                fprintf(out, ".data;\n");
+                slice_scan = slice_scan->slice_next;
+            } while (slice_scan != NULL);
+            table_scan = table_scan->table_next;
+        }
+    }
+
     /* Emit body */
     Ast *body = func_decl->as.func_decl.body;
     for (size_t i = 0; i < body->as.block.count; i++) {
@@ -12748,6 +12898,8 @@ static void codegen_emit_function(FILE *out, Ast *func_decl) {
     /* For main: free global arenas */
     if (is_main) codegen_emit_global_arena_frees(out, 1);
 
+    free_codegen_debug(g_current_func_entry->cached_decls);
+    g_current_func_entry = NULL;
     g_codegen_scope = NULL;
     scope_destroy(scope);
 
