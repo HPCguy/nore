@@ -12513,19 +12513,30 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             Ast *body = node->as.for_stmt.body;
             const char *var = node->as.for_stmt.var_start;
             int var_len = (int)node->as.for_stmt.var_length;
-            int end_temp = codegen_temp_counter++;
+            if (node->as.for_stmt.end->kind == AST_IDENTIFIER &&
+                node->as.for_stmt.end->expr_type == TYPE_I64) {
+                Ast *end = node->as.for_stmt.end;
+                codegen_indent(out, indent);
+                fprintf(out, "for (int64_t %.*s = (int64_t)", var_len, var);
+                codegen_emit_expression(out, node->as.for_stmt.start);
+                fprintf(out, "; %.*s < %.*s; ++%.*s) {\n", var_len, var,
+                        (int)end->as.identifier.length, end->as.identifier.start,
+                        var_len, var);
+            } else {
+                int end_temp = codegen_temp_counter++;
 
-            /* Evaluate end once into a temp */
-            codegen_indent(out, indent);
-            fprintf(out, "const int64_t __for_end_%d = (int64_t)", end_temp);
-            codegen_emit_expression(out, node->as.for_stmt.end);
-            fprintf(out, ";\n");
+                /* Evaluate end once into a temp */
+                codegen_indent(out, indent);
+                fprintf(out, "const int64_t __for_end_%d = (int64_t)", end_temp);
+                codegen_emit_expression(out, node->as.for_stmt.end);
+                fprintf(out, ";\n");
 
-            codegen_indent(out, indent);
-            fprintf(out, "for (int64_t %.*s = (int64_t)", var_len, var);
-            codegen_emit_expression(out, node->as.for_stmt.start);
-            fprintf(out, "; %.*s < __for_end_%d; %.*s++) {\n",
-                    var_len, var, end_temp, var_len, var);
+                codegen_indent(out, indent);
+                fprintf(out, "for (int64_t %.*s = (int64_t)", var_len, var);
+                codegen_emit_expression(out, node->as.for_stmt.start);
+                fprintf(out, "; %.*s < __for_end_%d; ++%.*s) {\n",
+                        var_len, var, end_temp, var_len, var);
+            }
 
             /* Emit body with loop variable injected into scope */
             *scope = scope_create(*scope);
