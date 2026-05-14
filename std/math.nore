@@ -1,5 +1,15 @@
 // Standard math utilities for Nore
 
+native func sqrt(dval: f64): f64
+native func cbrt(dval: f64): f64
+
+pub func sqrt(dval: f64): f64 = {
+    sqrt(dval)
+}
+pub func cbrt(dval: f64): f64 = {
+    cbrt(dval)
+}
+
 pub func min_i64(a: i64, b: i64): i64 = { if (a < b) { a } else { b } }
 pub func max_i64(a: i64, b: i64): i64 = { if (a > b) { a } else { b } }
 pub func abs_i64(a: i64): i64 = { if (a < 0) { 0 - a } else { a } }
