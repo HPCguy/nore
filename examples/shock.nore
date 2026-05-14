@@ -1,0 +1,280 @@
+/**************************************************************************
+ * Program:  ShockTube.C
+ * Purpose:  1D shock tube, split flux Euler equations
+ *
+ *         | m  |            |    mv    |
+ *     Q = | mv |        F = | mv^2 + P |
+ *         | E  |            |  v(E+P)  |
+ *
+ *     P = (gamma - 1.0)[E - 0.5 mv^2 ]
+ *
+ *             Cp
+ *     gamma = --     m = mass/volume   v = velocity
+ *             Cv
+ *
+ *     All quantities are non-dimensionalized.
+ *
+ *     @Q   @F    @Q   @F @Q
+ *     -- + -- =  -- + -- -- = 0
+ *     @t   @x    @t   @Q @x
+ *
+ *************************************************************************/
+import math "std/math.nore"
+
+val gammaa:       f64 = 1.4142135
+val gammaInverse: f64 = 0.70710678
+
+// shock1.nore
+table face { f0: f64 , f1: f64 , f2: f64 }
+table elem { mass: f64 , mom: f64 , energy: f64 , pres: f64 }
+
+/*
+// shock2.nore
+value _flux { f0: f64, f1: f64, f2: f64 }
+value _con  { mass: f64, mom: f64, energy: f64 }
+
+table face {
+  fl: _flux
+}
+
+table elem {
+  con: _con,
+  pres: f64
+}
+*/
+
+/*
+// shock3.nore
+value _flux { f0: f64, f1: f64, f2: f64 }
+
+table face {
+  fl: _flux
+}
+
+table elem {
+  mass: f64,
+  mom: f64,
+  energy: f64,
+  pres: f64
+}
+*/
+
+/**************************************************************************
+ * Subroutine:  CreateShockTubeMesh
+ * Purpose   :  Build an empty mesh for the shock tube
+
+
+     Gaps between elements are faces
+                    |
+     -------------------------------
+     |   |   |             |   |   |
+
+  ### ### ### ###       ### ### ### ###
+  ### ### ### ###  ...  ### ### ### ###  <--- 1D Shock tube model
+  ### ### ### ###       ### ### ### ###
+
+   |  |                           |  |
+   |  -----------------------------  |
+  Inflow           |               Outflow
+  Element      Tube Elements       Element
+
+
+ *************************************************************************/
+
+func InitializeShockTubeMesh(mut ref e : elem, numElem: i64): void = 
+{
+   mut midTube: i64 = numElem / 2
+
+   mut massInitial:     f64 = 1.0
+   mut pressureInitial: f64 = gammaInverse
+   mut energyInitial:   f64 = pressureInitial/(gammaa-1.0)
+
+   val pressureRatio = 0.4
+   val densityRatio  = 0.7
+
+   for i in 0..midTube {
+      mass[i]   = massInitial
+      energy[i] = energyInitial
+      pres[i]   = pressureInitial
+   }
+
+   massInitial     = massInitial * densityRatio
+   pressureInitial = pressureInitial * pressureRatio
+   energyInitial   = pressureInitial/(gammaa - 1.0)
+
+   for i in midTube..numElem {
+      mass[i]   = massInitial
+      energy[i] = energyInitial
+      pres[i]   = pressureInitial
+   }
+
+   for i in 0..numElem {
+      mom[i] = 0.0
+   }
+}
+
+
+/**************************************************************************
+ * Subroutine:  ComputeFaceInfo
+ * Purpose   :  Compute F quantities at faces.
+ *
+ *  @F   @F0   @F1   @F2
+ *  -- = --- + --- + ---
+ *  @x   @x    @x    @x
+ *
+ *  Calculate F0, F1 and F2 at the face centers.
+ *
+ *************************************************************************/
+
+func ComputeFaceInfo(mut ref e: elem, mut ref f: face, numFace: i64): void =
+{
+   for i in 0..numFace {
+      // each face has an upwind and downwind element
+      mut upWind:   i64 = i     // upwind element
+      mut downWind: i64 = i + 1 // downwind element
+
+      // calculate face centered quantities
+      mut massf:     f64 = 0.5*(mass[upWind]   + mass[downWind])
+      mut momentumf: f64 = 0.5*(mom[upWind]    + mom[downWind])
+      mut energyf:   f64 = 0.5*(energy[upWind] + energy[downWind])
+      mut pressuref: f64 = (gammaa - 1.0) *
+                        (energyf - 0.5*momentumf*momentumf/massf)
+      mut c: f64 = math.sqrt(gammaa*pressuref/massf)
+      mut v: f64 = momentumf/massf
+
+      // Now that we have the wave speeds, we might want to
+      // look for the max wave speed here, and update dt
+      // appropriately right before leaving this function.
+
+      // OK, calculate face quantities
+
+      mut contributor: i64 = if (v >= 0.0) { upWind } else { downWind }
+      massf = mass[contributor]
+      momentumf = mom[contributor]
+      energyf = energy[contributor]
+      pressuref = energyf - 0.5*momentumf*momentumf/massf
+      mut ev: f64 = v*(gammaa - 1.0)
+
+      f0[i] = ev*massf
+      f1[i] = ev*momentumf
+      f2[i] = ev*(energyf - pressuref)
+
+      contributor = if (v + c >= 0.0) { upWind } else { downWind }
+      massf = mass[contributor]
+      momentumf = mom[contributor]
+      energyf = energy[contributor]
+      pressuref = (gammaa - 1.0)*(energyf - 0.5*momentumf*momentumf/massf)
+      ev = 0.5*(v + c)
+      mut cLocal: f64 = math.sqrt(gammaa*pressuref/massf)
+
+      f0[i] += ev*massf
+      f1[i] += ev*(momentumf + massf*cLocal)
+      f2[i] += ev*(energyf + pressuref + momentumf*cLocal)
+
+      contributor = if (v - c >= 0.0) { upWind } else { downWind }
+      massf = mass[contributor]
+      momentumf = mom[contributor]
+      energyf = energy[contributor]
+      pressuref = (gammaa - 1.0)*(energyf - 0.5*momentumf*momentumf/massf)
+      ev = 0.5*(v - c)
+      cLocal = math.sqrt(gammaa*pressuref/massf)
+
+      f0[i] += ev*massf
+      f1[i] += ev*(momentumf - massf*cLocal)
+      f2[i] += ev*(energyf + pressuref - momentumf*cLocal)
+   }
+}
+
+
+/**************************************************************************
+ * Subroutine:  UpdateElemInfo
+ * Purpose   :  Q(elem) = Q(elem) + deltaQ(elem)
+ *
+ *  deltaQ(elem) = - (F(downWindFace) - F(upWindFace)) * dt / dx ;
+ *
+ *************************************************************************/
+
+func UpdateElemInfo(mut ref e: elem, mut ref f: face, numElem: i64, dtdx: f64): void =
+{
+   for i in 1..numElem {
+      // each element inside the tube has an upwind and downwind face
+
+      mut upWind: i64 = i - 1     // upwind face
+      mut downWind: i64 = i   // downwind face
+
+      mass[i]   -= gammaInverse*(f0[downWind] - f0[upWind])*dtdx
+      mom[i]    -= gammaInverse*(f1[downWind] - f1[upWind])*dtdx
+      energy[i] -= gammaInverse*(f2[downWind] - f2[upWind])*dtdx
+      pres[i]    = (gammaa - 1.0) * (energy[i] - 0.5*mom[i]*mom[i]/mass[i])
+   }
+}
+
+/**************************************************************************
+ * Subroutine:  DumpField
+ * Purpose   :  Create a plot for a single field
+ *************************************************************************
+
+void DumpField(char *tag, int numElem, float *field, int stride)
+{
+   int i;
+
+   printf(tag);
+   for (i = 0; i < numElem; ++i) {
+      printf("%d.0 %f\n", i, field[i*stride]);
+   }
+}
+
+*/
+
+/**************************************************************************
+ * Subroutine:  DumpPlot
+ * Purpose   :  create output that can be viewed with gnuplot: plot "file"
+ *************************************************************************
+
+void DumpPlot(int numElem, struct con *cv, float *pressure)
+{
+   DumpField("# mass\n", numElem, &cv[0].mass, 3);
+   DumpField("\n\n# momentum\n", numElem, &cv[0].mom, 3);
+   DumpField("\n\n# energy\n", numElem, &cv[0].energy, 3);
+   DumpField("\n\n# pressure\n", numElem, pressure, 1);
+}
+
+*/
+
+/**************************************************************************
+ * Subroutine:  main
+ * Purpose   :  Simulate a 1D Shock Tube using split flux Euler formulation
+ *************************************************************************/
+
+func main(): void =
+{
+   val numElems = 8192          // 8192
+   val numFaces = numElems - 1
+   val numTotalCycles = 4096    // 4096
+   // val dumpInterval = 20
+
+   mut elemMem: Arena = arena((numElems+1)*4*8) // numElems * sizeof(elem[0])
+   mut faceMem: Arena = arena(numFaces*3*8) // numFaces * sizeof(face[0])
+
+   mut e: elem = table_alloc(mut ref elemMem, (numElems+1))
+   mut f: face = table_alloc(mut ref faceMem, numFaces)
+
+   InitializeShockTubeMesh(mut ref e, (numElems+1))
+
+   mut time: f64 = 0.0
+   val dx = 1.0 / numElems
+   val dt = 0.4 * dx
+
+   for currCycle in 0..numTotalCycles {
+      // if (currCycle % dumpInterval == 0)
+      //    DumpPlot(numElems, mass, momentum, energy, pressure);
+
+      ComputeFaceInfo(mut ref e, mut ref f, numFaces)
+      UpdateElemInfo (mut ref e, mut ref f, numElems-1, dt/dx)
+
+      time = time + dt
+   }
+
+   // DumpPlot(numElems, cn, pressure);
+}
+

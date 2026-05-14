@@ -1071,6 +1071,10 @@ static bool type_is_unsigned(Type type) {
     return type == TYPE_U8 || type == TYPE_U32;
 }
 
+static bool type_is_double(Type type) {
+    return type == TYPE_F64;
+}
+
 static bool type_is_arena(Type type) {
     return type == TYPE_ARENA;
 }
@@ -1392,6 +1396,7 @@ static bool g_has_arena = false;
 static bool g_has_casts = false;
 static bool g_has_io = false;
 static bool g_has_mem = false;
+static bool g_has_math = false;
 static bool g_has_args = false;
 static bool g_has_time = false;
 static bool g_has_driver = false;
@@ -1418,7 +1423,7 @@ static bool is_known_native(const char *name, size_t length) {
         {"fd_write", 8}, {"fd_read", 7}, {"fd_open", 7},
         {"fd_close", 8}, {"fd_seek", 7}, {"mem_copy", 8}, {"exit", 4},
         {"args", 4}, {"shell_run", 9}, {"exe_dir", 7}, {"pid", 3},
-        {"time_ns", 7}
+        {"time_ns", 7}, {"sqrt", 4}, {"cbrt", 4}
     };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         if (length == known[i].len && memcmp(name, known[i].name, length) == 0)
@@ -1842,6 +1847,8 @@ typedef enum {
     AST_FD_SEEK,
     AST_EXIT,
     AST_MEM_COPY,
+    AST_SQRT,
+    AST_CBRT,
     AST_ARGS,
     AST_SHELL_RUN,
     AST_EXE_DIR,
@@ -2092,6 +2099,8 @@ typedef struct Ast {
         struct { struct Ast *fd; struct Ast *offset; struct Ast *whence; } fd_seek;
         struct { struct Ast *code; } exit_call;
         struct { struct Ast *dst; struct Ast *src; } mem_copy;
+        struct { struct Ast *dval;} sqrt_m;
+        struct { struct Ast *dval;} cbrt_m;
         struct { struct Ast *arena; } args;
         struct { struct Ast *command; } shell_run;
         struct { struct Ast *arena; } exe_dir;
@@ -2780,6 +2789,24 @@ static Ast *ast_make_mem_copy(Ast *dst, Ast *src, SourceLoc loc) {
     return node;
 }
 
+static Ast *ast_make_sqrt(Ast *dval, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_SQRT;
+    node->loc = loc;
+    node->as.sqrt_m.dval = dval;
+    return node;
+}
+
+static Ast *ast_make_cbrt(Ast *dval, SourceLoc loc) {
+    Ast *node = malloc(sizeof(Ast));
+    if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
+    node->kind = AST_CBRT;
+    node->loc = loc;
+    node->as.cbrt_m.dval = dval;
+    return node;
+}
+
 static Ast *ast_make_args(Ast *arena, SourceLoc loc) {
     Ast *node = malloc(sizeof(Ast));
     if (!node) panic(ERR_I001_OUT_OF_MEMORY, "allocating AST node");
@@ -2993,6 +3020,12 @@ static void ast_free(Ast *node) {
         case AST_MEM_COPY:
             ast_free(node->as.mem_copy.dst);
             ast_free(node->as.mem_copy.src);
+            break;
+        case AST_SQRT:
+            ast_free(node->as.sqrt_m.dval);
+            break;
+        case AST_CBRT:
+            ast_free(node->as.cbrt_m.dval);
             break;
         case AST_ARGS:
             ast_free(node->as.args.arena);
@@ -4019,6 +4052,36 @@ static Ast *parser_parse_primary(Parser *parser) {
             return ast_make_mem_copy(dst, src, loc);
         }
 
+        /* sqrt(dval) — built-in math function */
+        if (name_length == 4 && memcmp(name_start, "sqrt", 4) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *dval = parser_parse_expression(parser);
+            if (!dval) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after sqrt dval");
+                ast_free(dval);
+                return NULL;
+            }
+            return ast_make_sqrt(dval, loc);
+        }
+
+        /* cbrt(dval) — built-in math function */
+        if (name_length == 4 && memcmp(name_start, "cbrt", 4) == 0 &&
+            parser_check(parser, TOKEN_LPAREN)) {
+            parser_advance(parser);  /* consume '(' */
+            Ast *dval = parser_parse_expression(parser);
+            if (!dval) return NULL;
+            if (!parser_match(parser, TOKEN_RPAREN)) {
+                diagnostic(g_source_file, ERR_P002_EXPECTED_RPAREN, parser->current.line,
+                           parser->current.column, "Expected ')' after cbrt dval");
+                ast_free(dval);
+                return NULL;
+            }
+            return ast_make_cbrt(dval, loc);
+        }
+
         /* args(mut ref arena) — built-in command-line argument access */
         if (name_length == 4 && memcmp(name_start, "args", 4) == 0 &&
             parser_check(parser, TOKEN_LPAREN)) {
@@ -4785,6 +4848,8 @@ static Ast *parser_parse_block(Parser *parser) {
                            expr->kind == AST_FD_SEEK ||
                            expr->kind == AST_MEM_COPY ||
                            expr->kind == AST_EXIT ||
+                           expr->kind == AST_SQRT ||
+                           expr->kind == AST_CBRT ||
                            expr->kind == AST_ARGS ||
                            expr->kind == AST_SHELL_RUN) {
                     /* Bare function call or built-in as statement */
@@ -6526,6 +6591,20 @@ static void parser_print_ast_step(Ast *node, int indent) {
             parser_print_ast_step(node->as.mem_copy.src, indent + 2);
             break;
 
+        case AST_SQRT:
+            printf("SQRT\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("CODE:\n");
+            parser_print_ast_step(node->as.sqrt_m.dval, indent + 2);
+            break;
+
+        case AST_CBRT:
+            printf("CBRT\n");
+            for (int i = 0; i < indent + 1; i++) printf("  ");
+            printf("CODE:\n");
+            parser_print_ast_step(node->as.cbrt_m.dval, indent + 2);
+            break;
+
         case AST_ARGS:
             printf("ARGS\n");
             for (int i = 0; i < indent + 1; i++) printf("  ");
@@ -8043,6 +8122,18 @@ static bool native_entry_has_builtin_signature(const NativeEntry *entry) {
                native_entry_param_matches(entry, 0, TYPE_I32, false, false);
     }
     if (entry->name_length == 4 &&
+        memcmp(entry->name_start, "sqrt", 4) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == TYPE_F64 &&
+               native_entry_param_matches(entry, 0, TYPE_F64, false, false);
+    }
+    if (entry->name_length == 4 &&
+        memcmp(entry->name_start, "cbrt", 4) == 0) {
+        return entry->param_count == 1 &&
+               entry->return_type == TYPE_F64 &&
+               native_entry_param_matches(entry, 0, TYPE_F64, false, false);
+    }
+    if (entry->name_length == 4 &&
         memcmp(entry->name_start, "args", 4) == 0) {
         return entry->param_count == 1 &&
                entry->return_type == str_slice &&
@@ -9343,6 +9434,34 @@ expansion_field_access:
             return TYPE_I64;
         }
 
+        case AST_SQRT: {
+            require_native_decl(node, "sqrt", 4, "native func sqrt(dval: f64): f64");
+            Type code_type = typecheck_expression(node->as.sqrt_m.dval, scope, func_table);
+            if (!type_is_double(code_type)) {
+                diagnostic(node->as.sqrt_m.dval->loc.file, ERR_S006_TYPE_MISMATCH, node->as.sqrt_m.dval->loc.line,
+                           node->as.sqrt_m.dval->loc.column,
+                           "sqrt() dval must be double, got %s",
+                           type_name(code_type));
+            }
+            g_has_math = true;
+            node->expr_type = TYPE_F64;
+            return TYPE_F64;
+        }
+
+        case AST_CBRT: {
+            require_native_decl(node, "cbrt", 4, "native func cbrt(dval: f64): f64");
+            Type code_type = typecheck_expression(node->as.cbrt_m.dval, scope, func_table);
+            if (!type_is_double(code_type)) {
+                diagnostic(node->as.cbrt_m.dval->loc.file, ERR_S006_TYPE_MISMATCH, node->as.cbrt_m.dval->loc.line,
+                           node->as.cbrt_m.dval->loc.column,
+                           "cbrt() dval must be double, got %s",
+                           type_name(code_type));
+            }
+            g_has_math = true;
+            node->expr_type = TYPE_F64;
+            return TYPE_F64;
+        }
+
         case AST_ARGS: {
             require_native_decl(node, "args", 4,
                 "native func args(mut ref mem: Arena): [str]");
@@ -10072,6 +10191,8 @@ static void typecheck_statement(Ast *node, Scope **scope, Type return_type, Func
         case AST_FD_SEEK:
         case AST_MEM_COPY:
         case AST_EXIT:
+        case AST_SQRT:
+        case AST_CBRT:
         case AST_ARGS:
         case AST_SHELL_RUN:
         case AST_EXE_DIR:
@@ -10639,6 +10760,8 @@ static bool ast_may_have_side_effects(Ast *node) {
         case AST_VALUE_DECL:
         case AST_ENUM_DECL:
         case AST_PROGRAM:
+        case AST_SQRT:
+        case AST_CBRT:
             return false;
 
         case AST_FUNC_CALL:
@@ -10871,6 +10994,12 @@ static void validate_assert_stripping_node(Ast *node) {
         case AST_MEM_COPY:
             validate_assert_stripping_node(node->as.mem_copy.dst);
             validate_assert_stripping_node(node->as.mem_copy.src);
+            break;
+        case AST_SQRT:
+            validate_assert_stripping_node(node->as.sqrt_m.dval);
+            break;
+        case AST_CBRT:
+            validate_assert_stripping_node(node->as.cbrt_m.dval);
             break;
         case AST_ARGS:
             validate_assert_stripping_node(node->as.args.arena);
@@ -11798,6 +11927,18 @@ static void codegen_emit_expression(FILE *out, Ast *node) {
             fprintf(out, ")");
             break;
 
+        case AST_SQRT:
+            fprintf(out, "ni_sqrt(");
+            codegen_emit_expression(out, node->as.sqrt_m.dval);
+            fprintf(out, ")");
+            break;
+
+        case AST_CBRT:
+            fprintf(out, "ni_cbrt(");
+            codegen_emit_expression(out, node->as.cbrt_m.dval);
+            fprintf(out, ")");
+            break;
+
         case AST_ARGS:
             fprintf(out, "ni_args(&");
             codegen_emit_lvalue(out, node->as.args.arena);
@@ -12514,7 +12655,8 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
             const char *var = node->as.for_stmt.var_start;
             int var_len = (int)node->as.for_stmt.var_length;
             if (node->as.for_stmt.end->kind == AST_IDENTIFIER &&
-                node->as.for_stmt.end->expr_type == TYPE_I64) {
+                (node->as.for_stmt.end->expr_type == TYPE_I64 ||
+                 node->as.for_stmt.end->expr_type == TYPE_COMPTIME_INT)) {
                 Ast *end = node->as.for_stmt.end;
                 codegen_indent(out, indent);
                 fprintf(out, "for (int64_t %.*s = (int64_t)", var_len, var);
@@ -12615,6 +12757,8 @@ static void codegen_emit_statement(FILE *out, Ast *node, Scope **scope, int inde
         case AST_FD_SEEK:
         case AST_MEM_COPY:
         case AST_EXIT:
+        case AST_SQRT:
+        case AST_CBRT:
         case AST_ARGS:
         case AST_SHELL_RUN:
             codegen_indent(out, indent);
@@ -12951,6 +13095,9 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
     if (g_has_io) {
         fprintf(out, "#include <fcntl.h>\n");
     }
+    if (g_has_math) {
+        fprintf(out, "#include <math.h>\n");
+    }
     if (g_has_time || g_has_driver) {
         fprintf(out, "#include <sys/time.h>\n");
     }
@@ -13184,6 +13331,12 @@ static void codegen_emit_ir(FILE *out, Ast *ast) {
         fprintf(out, "    memmove(dst.data, src.data, (size_t)n);\n");
         fprintf(out, "    return n;\n");
         fprintf(out, "}\n\n");
+    }
+
+    /* Emit math runtime helpers if any math built-ins are used */
+    if (g_has_math) {
+        fprintf(out, "static double ni_sqrt(double dval) { return sqrt(dval); }\n");
+        fprintf(out, "static double ni_cbrt(double dval) { return cbrt(dval); }\n\n");
     }
 
     /* Emit args runtime helper if used */
